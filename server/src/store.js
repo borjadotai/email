@@ -46,7 +46,14 @@ export class MailStore {
         status TEXT NOT NULL DEFAULT 'needs_auth',
         sync_history INTEGER NOT NULL DEFAULT 1,
         last_sync_at TEXT,
+        provider_metadata_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS mailboxes (
@@ -135,7 +142,31 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_emails_mailbox_received ON emails(mailbox_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_tracking ON emails(tracking_id);
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
+        ON emails(account_id, provider_uid)
+        WHERE provider_uid IS NOT NULL;
     `);
+    this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+  }
+
+  ensureColumn(table, column, definition) {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some(item => item.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  getSetting(key, fallback = null) {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+    return row?.value ?? fallback;
+  }
+
+  setSetting(key, value) {
+    this.db.prepare(`
+      INSERT INTO settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(key, String(value), new Date().toISOString());
   }
 
   createAccount(input) {
@@ -166,16 +197,53 @@ export class MailStore {
     return this.getAccount(id);
   }
 
+  createOrUpdateAccount(input) {
+    const provider = normalizeProvider(input.provider);
+    const email = requiredString(input.email, "email").toLowerCase();
+    const now = new Date().toISOString();
+    const existing = this.db.prepare("SELECT id FROM accounts WHERE email = ?").get(email);
+
+    if (existing) {
+      this.db.prepare(`
+        UPDATE accounts
+        SET provider = ?, display_name = ?, avatar_url = ?, auth_type = ?,
+            status = ?, sync_history = ?, last_sync_at = COALESCE(?, last_sync_at),
+            provider_metadata_json = ?
+        WHERE id = ?
+      `).run(
+        provider,
+        input.displayName?.trim() || email,
+        input.avatarURL ?? null,
+        input.authType ?? "not_configured",
+        input.status ?? "connected",
+        input.syncHistory === false ? 0 : 1,
+        input.lastSyncAt ?? null,
+        JSON.stringify(input.providerMetadata ?? {}),
+        existing.id
+      );
+      this.ensureDefaultsForAccount(existing.id);
+      return this.getAccount(existing.id);
+    }
+
+    const account = this.createAccount(input);
+    if (input.providerMetadata) {
+      this.updateAccountMetadata(account.id, input.providerMetadata);
+    }
+    return this.getAccount(account.id);
+  }
+
   listAccounts() {
     return this.db.prepare(`
       SELECT id, provider, email, display_name AS displayName, avatar_url AS avatarURL,
              auth_type AS authType, status, sync_history AS syncHistory,
-             last_sync_at AS lastSyncAt, created_at AS createdAt
+             last_sync_at AS lastSyncAt, provider_metadata_json AS providerMetadataJSON,
+             created_at AS createdAt
       FROM accounts
       ORDER BY created_at ASC
     `).all().map(row => ({
       ...row,
-      syncHistory: Boolean(row.syncHistory)
+      syncHistory: Boolean(row.syncHistory),
+      providerMetadata: parseJSON(row.providerMetadataJSON, {})
     }));
   }
 
@@ -183,12 +251,45 @@ export class MailStore {
     const row = this.db.prepare(`
       SELECT id, provider, email, display_name AS displayName, avatar_url AS avatarURL,
              auth_type AS authType, status, sync_history AS syncHistory,
-             last_sync_at AS lastSyncAt, created_at AS createdAt
+             last_sync_at AS lastSyncAt, provider_metadata_json AS providerMetadataJSON,
+             created_at AS createdAt
       FROM accounts
       WHERE id = ?
     `).get(id);
     if (!row) return null;
-    return { ...row, syncHistory: Boolean(row.syncHistory) };
+    return { ...row, syncHistory: Boolean(row.syncHistory), providerMetadata: parseJSON(row.providerMetadataJSON, {}) };
+  }
+
+  updateAccountStatus(id, status, metadata = null) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+    const nextMetadata = metadata ? { ...account.providerMetadata, ...metadata } : account.providerMetadata;
+    this.db.prepare(`
+      UPDATE accounts
+      SET status = ?, provider_metadata_json = ?
+      WHERE id = ?
+    `).run(status, JSON.stringify(nextMetadata), id);
+    return this.getAccount(id);
+  }
+
+  markAccountSynced(id, metadata = null) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+    const nextMetadata = metadata ? { ...account.providerMetadata, ...metadata } : account.providerMetadata;
+    this.db.prepare(`
+      UPDATE accounts
+      SET status = 'connected', last_sync_at = ?, provider_metadata_json = ?
+      WHERE id = ?
+    `).run(new Date().toISOString(), JSON.stringify(nextMetadata), id);
+    return this.getAccount(id);
+  }
+
+  updateAccountMetadata(id, metadata) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+    const nextMetadata = { ...account.providerMetadata, ...metadata };
+    this.db.prepare("UPDATE accounts SET provider_metadata_json = ? WHERE id = ?").run(JSON.stringify(nextMetadata), id);
+    return this.getAccount(id);
   }
 
   listMailboxes(accountId = null) {
@@ -243,6 +344,23 @@ export class MailStore {
       VALUES (?, ?, ?, ?, 0)
     `).run(id, input.accountId ?? null, name, input.color ?? "gray");
     return this.listLabels(input.accountId ?? null).find(label => label.id === id);
+  }
+
+  findOrCreateLabel(input) {
+    const name = requiredString(input.name, "name");
+    const accountId = input.accountId ?? null;
+    const existing = this.db.prepare(`
+      SELECT id FROM labels
+      WHERE name = ? AND ${accountId ? "account_id = ?" : "account_id IS NULL"}
+    `).get(...(accountId ? [name, accountId] : [name]));
+    if (existing) {
+      return this.listLabels(accountId).find(label => label.id === existing.id);
+    }
+    return this.createLabel({
+      accountId,
+      name,
+      color: input.color ?? "gray"
+    });
   }
 
   listEmails(filters = {}) {
@@ -445,6 +563,30 @@ export class MailStore {
     };
   }
 
+  markOutboundSent(outboundId, providerUID = null) {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE outbound_messages
+      SET status = 'sent', sent_at = ?, error = NULL
+      WHERE id = ?
+    `).run(now, outboundId);
+    if (providerUID) {
+      this.db.prepare(`
+        UPDATE emails
+        SET provider_uid = ?
+        WHERE id = (SELECT email_id FROM outbound_messages WHERE id = ?)
+      `).run(providerUID, outboundId);
+    }
+  }
+
+  markOutboundFailed(outboundId, error) {
+    this.db.prepare(`
+      UPDATE outbound_messages
+      SET status = 'failed', error = ?
+      WHERE id = ?
+    `).run(String(error?.message ?? error), outboundId);
+  }
+
   recordOpen(trackingId, meta = {}) {
     const email = this.db.prepare("SELECT id, opened_at AS openedAt FROM emails WHERE tracking_id = ?").get(trackingId);
     if (!email) return null;
@@ -633,6 +775,57 @@ export class MailStore {
       email.createdAt
     );
 
+    this.insertEmailFTS(email);
+  }
+
+  upsertProviderEmail(email) {
+    const existing = email.providerUID
+      ? this.db.prepare("SELECT id, mailbox_id AS mailboxId FROM emails WHERE account_id = ? AND provider_uid = ?").get(email.accountId, email.providerUID)
+      : null;
+
+    if (existing) {
+      this.db.prepare(`
+        UPDATE emails
+        SET mailbox_id = ?, thread_id = ?, sender_name = ?, sender_email = ?,
+            sender_avatar_url = ?, recipients_json = ?, cc_json = ?, bcc_json = ?,
+            subject = ?, snippet = ?, body_text = ?, body_html = ?,
+            sent_at = ?, received_at = ?, is_read = ?, is_starred = ?,
+            importance = ?, has_attachments = ?
+        WHERE id = ?
+      `).run(
+        email.mailboxId,
+        email.threadId,
+        email.senderName,
+        email.senderEmail,
+        email.senderAvatarURL,
+        JSON.stringify(email.recipients ?? []),
+        JSON.stringify(email.cc ?? []),
+        JSON.stringify(email.bcc ?? []),
+        email.subject,
+        email.snippet,
+        email.bodyText,
+        email.bodyHTML,
+        email.sentAt,
+        email.receivedAt,
+        email.isRead ? 1 : 0,
+        email.isStarred ? 1 : 0,
+        email.importance ?? "normal",
+        email.hasAttachments ? 1 : 0,
+        existing.id
+      );
+      this.db.prepare("DELETE FROM email_fts WHERE email_id = ?").run(existing.id);
+      this.insertEmailFTS({ ...email, id: existing.id });
+      this.refreshMailboxUnread(existing.mailboxId);
+      this.refreshMailboxUnread(email.mailboxId);
+      return this.getEmail(existing.id);
+    }
+
+    this.insertEmail(email);
+    this.refreshMailboxUnread(email.mailboxId);
+    return this.getEmail(email.id);
+  }
+
+  insertEmailFTS(email) {
     this.db.prepare(`
       INSERT INTO email_fts (email_id, account_id, subject, sender_name, sender_email, recipients, snippet, body_text)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)

@@ -35,6 +35,19 @@ struct HealthResponse: Decodable {
   var timestamp: String
 }
 
+struct AuthSettingsResponse: Decodable {
+  var settings: AuthSettings
+}
+
+struct ErrorEnvelope: Decodable {
+  var error: ServerError
+}
+
+struct ServerError: Decodable {
+  var message: String
+  var status: Int
+}
+
 enum MailAPIError: LocalizedError {
   case invalidURL
   case server(status: Int, message: String)
@@ -68,6 +81,29 @@ struct MailAPIClient {
   func addAccount(_ input: AddAccountRequest) async throws -> MailAccount {
     let response: AccountResponse = try await request("api/accounts", method: "POST", body: input)
     return response.account
+  }
+
+  func authSettings() async throws -> AuthSettings {
+    let response: AuthSettingsResponse = try await request("api/auth/settings")
+    return response.settings
+  }
+
+  func saveAuthSettings(_ input: AuthSettingsRequest) async throws -> AuthSettings {
+    let response: AuthSettingsResponse = try await request("api/auth/settings", method: "PUT", body: input)
+    return response.settings
+  }
+
+  func startGmailAuth(_ input: GmailAuthStartRequest) async throws -> GmailAuthStartResponse {
+    try await request("api/auth/gmail/start", method: "POST", body: input)
+  }
+
+  func connectICloud(_ input: ICloudConnectRequest) async throws -> ProviderConnectResponse {
+    try await request("api/auth/icloud/connect", method: "POST", body: input)
+  }
+
+  func syncAccount(id: String) async throws -> ProviderSyncResult {
+    let response: SyncResponse = try await request("api/accounts/\(id)/sync", method: "POST", body: EmptyBody())
+    return response.sync
   }
 
   func mailboxes() async throws -> [Mailbox] {
@@ -178,7 +214,9 @@ struct MailAPIClient {
     let (data, response) = try await session.data(for: request)
     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
     guard (200..<300).contains(status) else {
-      let message = String(data: data, encoding: .utf8) ?? "Request failed."
+      let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.message) ??
+        String(data: data, encoding: .utf8) ??
+        "Request failed."
       throw MailAPIError.server(status: status, message: message)
     }
     guard !data.isEmpty else {
@@ -190,3 +228,5 @@ struct MailAPIClient {
     return try decoder.decode(T.self, from: data)
   }
 }
+
+private struct EmptyBody: Encodable {}

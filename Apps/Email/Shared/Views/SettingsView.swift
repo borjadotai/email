@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
   @Environment(AppModel.self) private var model
+  @State private var gmailClientId = ""
+  @State private var gmailClientSecret = ""
 
   var body: some View {
     @Bindable var model = model
@@ -38,6 +40,45 @@ struct SettingsView: View {
         }
       }
 
+      Section("Gmail") {
+        TextField("Client ID", text: $gmailClientId)
+          #if os(iOS)
+          .textInputAutocapitalization(.never)
+          .keyboardType(.URL)
+          #endif
+
+        SecureField(
+          model.authSettings?.hasGmailClientSecret == true ? "Client secret saved" : "Client secret",
+          text: $gmailClientSecret
+        )
+        #if os(iOS)
+        .textInputAutocapitalization(.never)
+        #endif
+
+        if let redirectURI = model.authSettings?.gmailRedirectURI {
+          LabeledContent("Redirect URI") {
+            Text(redirectURI)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .textSelection(.enabled)
+              .lineLimit(2)
+          }
+        }
+
+        Button {
+          Task {
+            await model.saveAuthSettings(
+              gmailClientId: gmailClientId,
+              gmailClientSecret: gmailClientSecret
+            )
+            gmailClientSecret = ""
+          }
+        } label: {
+          Label("Save Gmail", systemImage: "checkmark.circle")
+        }
+        .disabled(gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      }
+
       if !model.accounts.isEmpty {
         Section("Accounts") {
           ForEach(model.accounts) { account in
@@ -57,13 +98,31 @@ struct SettingsView: View {
               Text(account.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+              Button {
+                Task { await model.syncAccount(account) }
+              } label: {
+                Image(systemName: "arrow.clockwise")
+              }
+              .buttonStyle(.borderless)
+              .disabled(model.syncingAccountID == account.id)
+              .accessibilityLabel("Sync \(account.displayName)")
             }
           }
+        }
+      }
+
+      if let statusMessage = model.statusMessage {
+        Section {
+          Text(statusMessage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
       }
     }
     .formStyle(.grouped)
     .navigationTitle("Settings")
+    .task(id: model.authSettings) {
+      gmailClientId = model.authSettings?.gmailClientId ?? ""
+    }
   }
 }
-

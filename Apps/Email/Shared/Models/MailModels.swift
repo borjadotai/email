@@ -114,6 +114,50 @@ struct AddAccountRequest: Encodable {
   var syncHistory: Bool
 }
 
+struct AuthSettings: Codable, Hashable {
+  var gmailClientId: String
+  var hasGmailClientSecret: Bool
+  var gmailRedirectURI: String
+}
+
+struct AuthSettingsRequest: Encodable {
+  var gmailClientId: String
+  var gmailClientSecret: String
+}
+
+struct GmailAuthStartRequest: Encodable {
+  var displayName: String
+  var syncHistory: Bool
+}
+
+struct GmailAuthStartResponse: Decodable {
+  var provider: String
+  var authorizationURL: String
+  var state: String
+  var redirectURI: String
+}
+
+struct ICloudConnectRequest: Encodable {
+  var email: String
+  var displayName: String
+  var appPassword: String
+  var syncHistory: Bool
+}
+
+struct ProviderSyncResult: Codable, Hashable {
+  var provider: String
+  var imported: Int
+}
+
+struct ProviderConnectResponse: Decodable {
+  var account: MailAccount
+  var sync: ProviderSyncResult
+}
+
+struct SyncResponse: Decodable {
+  var sync: ProviderSyncResult
+}
+
 struct SendMessageRequest: Encodable {
   var accountId: String
   var to: String
@@ -155,4 +199,3 @@ enum ThemePreference: String, CaseIterable, Identifiable {
     }
   }
 }
-

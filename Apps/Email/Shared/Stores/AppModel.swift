@@ -17,8 +17,12 @@ final class AppModel {
   var searchText: String = ""
   var isLoading = false
   var isSending = false
+  var isConnectingAccount = false
+  var syncingAccountID: String?
   var errorMessage: String?
+  var statusMessage: String?
   var health: HealthResponse?
+  var authSettings: AuthSettings?
 
   var serverURLString: String {
     didSet {
@@ -80,6 +84,7 @@ final class AppModel {
 
     do {
       health = try await apiClient.health()
+      authSettings = try? await apiClient.authSettings()
       accounts = try await apiClient.accounts()
       mailboxes = try await apiClient.mailboxes()
       labels = try await apiClient.labels()
@@ -172,6 +177,71 @@ final class AppModel {
         displayName: displayName,
         syncHistory: syncHistory
       ))
+      await refreshAll()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func saveAuthSettings(gmailClientId: String, gmailClientSecret: String) async {
+    do {
+      authSettings = try await apiClient.saveAuthSettings(AuthSettingsRequest(
+        gmailClientId: gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines),
+        gmailClientSecret: gmailClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+      ))
+      statusMessage = "Settings saved"
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func startGmailAuth(displayName: String, syncHistory: Bool) async -> URL? {
+    isConnectingAccount = true
+    defer { isConnectingAccount = false }
+
+    do {
+      let response = try await apiClient.startGmailAuth(GmailAuthStartRequest(
+        displayName: displayName,
+        syncHistory: syncHistory
+      ))
+      errorMessage = nil
+      return URL(string: response.authorizationURL)
+    } catch {
+      errorMessage = error.localizedDescription
+      return nil
+    }
+  }
+
+  func connectICloud(email: String, displayName: String, appPassword: String, syncHistory: Bool) async -> Bool {
+    isConnectingAccount = true
+    defer { isConnectingAccount = false }
+
+    do {
+      let result = try await apiClient.connectICloud(ICloudConnectRequest(
+        email: email,
+        displayName: displayName,
+        appPassword: appPassword,
+        syncHistory: syncHistory
+      ))
+      statusMessage = "Imported \(result.sync.imported) messages"
+      errorMessage = nil
+      await refreshAll()
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  func syncAccount(_ account: MailAccount) async {
+    syncingAccountID = account.id
+    defer { syncingAccountID = nil }
+
+    do {
+      let result = try await apiClient.syncAccount(id: account.id)
+      statusMessage = "Imported \(result.imported) messages"
+      errorMessage = nil
       await refreshAll()
     } catch {
       errorMessage = error.localizedDescription

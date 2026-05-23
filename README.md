@@ -10,6 +10,7 @@ A private native email app foundation with:
 ## Run the Server
 
 ```sh
+npm install
 npm run server:dev
 ```
 
@@ -47,6 +48,12 @@ Core endpoints live under `/api`:
 - `GET /api/health`
 - `GET /api/accounts`
 - `POST /api/accounts`
+- `GET /api/auth/settings`
+- `PUT /api/auth/settings`
+- `POST /api/auth/gmail/start`
+- `GET /api/auth/gmail/callback`
+- `POST /api/auth/icloud/connect`
+- `POST /api/accounts/:id/sync`
 - `GET /api/mailboxes`
 - `GET /api/labels`
 - `POST /api/labels`
@@ -58,7 +65,30 @@ Core endpoints live under `/api`:
 - `GET /api/events`
 - `GET /api/track/open/:trackingId.gif`
 
-## Current Scope
+## Real Account Setup
 
-This first commit is the product foundation. Gmail and iCloud are modeled as account providers and the server has adapter boundaries for OAuth, IMAP/SMTP, and full-history sync. Real provider credential flows are intentionally isolated from the UI and storage layer so they can be added without reshaping the app.
+### Gmail
 
+1. In Google Cloud Console, enable the Gmail API for the project.
+2. Create an OAuth client for a desktop app.
+3. Open Email settings and save the OAuth client ID and client secret.
+4. Use Add Account -> Gmail. The app opens the system browser and receives the callback at:
+
+```text
+http://127.0.0.1:7331/api/auth/gmail/callback
+```
+
+The server stores the OAuth client ID in SQLite and stores the client secret and per-account refresh tokens in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
+
+### iCloud
+
+1. Generate an app-specific password at `https://account.apple.com`.
+2. Use Add Account -> iCloud with your iCloud Mail address and the generated password.
+
+The server verifies IMAP and SMTP before saving the account. It stores the app-specific password in the macOS Keychain, imports INBOX messages over IMAP, and sends via iCloud SMTP.
+
+## Runtime Notes
+
+- `EMAIL_INITIAL_SYNC_LIMIT` controls how many messages are imported per sync pass. The default is `500`.
+- `EMAIL_PUBLIC_BASE_URL` must point at a reachable server URL for outbound open tracking pixels to work outside the local machine.
+- The current iCloud importer focuses on INBOX. Gmail imports all non-spam/trash messages returned by the Gmail API and places them into Inbox, Sent, Drafts, Trash, or Archive based on Gmail system labels.

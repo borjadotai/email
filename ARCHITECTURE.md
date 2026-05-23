@@ -26,9 +26,10 @@ Storage uses SQLite with WAL mode and an FTS5 table. Metadata stays normalized i
 
 Provider integration is split behind adapters:
 
-- Gmail: OAuth first, Gmail API or IMAP fallback where available.
-- iCloud: app-password based IMAP/SMTP.
-- Outbound: queued in `outbound_messages`, then provider adapter sends and updates status.
+- Gmail: OAuth 2.0 loopback flow, Gmail API sync, Gmail API send, and local label import.
+- iCloud: app-specific password verification, IMAP INBOX sync, and SMTP send.
+- Secrets: OAuth client secrets, Gmail refresh tokens, and iCloud app-specific passwords are stored in the macOS Keychain.
+- Outbound: queued in `outbound_messages`, then provider adapters send and update status.
 - Open tracking: tracked messages receive a tracking id and can embed `/api/track/open/:id.gif`.
 
 ## Apps
@@ -45,4 +46,3 @@ The macOS target uses the same split-view foundation but gets desktop affordance
 ## Search
 
 Search requests go to the server so every platform uses the same indexed history. FTS queries are normalized into prefix terms, joined against the email table, and sorted by `bm25(email_fts)` plus recent received date.
-

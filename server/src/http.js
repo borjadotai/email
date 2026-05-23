@@ -3,13 +3,13 @@ import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 
-export function createServer({ store, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
+export function createServer({ store, providers, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
   const baseURL = publicBaseURL ?? `http://${host}:${port}`;
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, events, baseURL });
+      await route({ req, res, store, providers, events, baseURL });
     } catch (error) {
       const status = error.status ?? 500;
       sendJSON(res, status, {
@@ -27,7 +27,7 @@ export function createServer({ store, host = "127.0.0.1", port = 7331, publicBas
   return { server, events };
 }
 
-async function route({ req, res, store, events, baseURL }) {
+async function route({ req, res, store, providers, events, baseURL }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
 
@@ -57,10 +57,55 @@ async function route({ req, res, store, events, baseURL }) {
     return;
   }
 
+  if (req.method === "GET" && path === "/api/auth/settings") {
+    requireProviders(providers);
+    sendJSON(res, 200, { settings: providers.getAuthSettings() });
+    return;
+  }
+
+  if (req.method === "PUT" && path === "/api/auth/settings") {
+    requireProviders(providers);
+    sendJSON(res, 200, { settings: providers.saveAuthSettings(await readJSON(req)) });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/auth/gmail/start") {
+    requireProviders(providers);
+    sendJSON(res, 200, await providers.startGmailAuth(await readJSON(req)));
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/auth/gmail/callback") {
+    requireProviders(providers);
+    const result = await providers.completeGmailAuth(Object.fromEntries(url.searchParams.entries()));
+    events.emit("accounts.changed", { accountId: result.account.id });
+    events.emit("emails.changed", { accountId: result.account.id });
+    sendHTML(res, 200, authSuccessPage(result));
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/auth/icloud/connect") {
+    requireProviders(providers);
+    const result = await providers.connectICloud(await readJSON(req));
+    events.emit("accounts.changed", { accountId: result.account.id });
+    events.emit("emails.changed", { accountId: result.account.id });
+    sendJSON(res, 200, result);
+    return;
+  }
+
   if (req.method === "POST" && path === "/api/accounts") {
     const account = store.createAccount(await readJSON(req));
     events.emit("accounts.changed", { accountId: account.id });
     sendJSON(res, 201, { account });
+    return;
+  }
+
+  const accountSyncMatch = path.match(/^\/api\/accounts\/([^/]+)\/sync$/);
+  if (accountSyncMatch && req.method === "POST") {
+    requireProviders(providers);
+    const sync = await providers.syncAccount(accountSyncMatch[1]);
+    events.emit("emails.changed", { accountId: accountSyncMatch[1] });
+    sendJSON(res, 200, { sync });
     return;
   }
 
@@ -113,7 +158,24 @@ async function route({ req, res, store, events, baseURL }) {
   }
 
   if (req.method === "POST" && path === "/api/messages/send") {
-    const email = store.sendMessage(await readJSON(req));
+    const body = await readJSON(req);
+    const email = store.sendMessage(body);
+    if (providers) {
+      try {
+        const result = await providers.sendMessage(email, body);
+        if (result.status === "sent") {
+          store.markOutboundSent(email.outboundId, result.providerUID);
+          email.outboundStatus = "sent";
+        }
+      } catch (error) {
+        const message = error?.message ?? String(error);
+        store.markOutboundFailed(email.outboundId, error);
+        email.outboundStatus = "failed";
+        email.outboundError = message;
+        events.emit("emails.changed", { emailId: email.id });
+        throw httpError(502, `Sending failed: ${message}`);
+      }
+    }
     events.emit("emails.changed", { emailId: email.id });
     sendJSON(res, 202, {
       email,
@@ -154,10 +216,57 @@ function sendJSON(res, status, payload) {
   res.end(body);
 }
 
+function sendHTML(res, status, html) {
+  const body = Buffer.from(html);
+  sendCORS(res);
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length
+  });
+  res.end(body);
+}
+
 function sendCORS(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
+function requireProviders(providers) {
+  if (!providers) throw httpError(500, "Provider services are not configured.");
+}
+
+function authSuccessPage(result) {
+  const account = result.account;
+  const imported = result.sync?.imported ?? 0;
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Email connected</title>
+    <style>
+      body { font: 15px -apple-system, BlinkMacSystemFont, sans-serif; margin: 40px; color: CanvasText; background: Canvas; }
+      main { max-width: 520px; }
+      h1 { font-size: 24px; letter-spacing: 0; }
+      p { color: color-mix(in srgb, CanvasText 72%, transparent); line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Gmail connected</h1>
+      <p>${escapeHTML(account.email)} is connected. Imported ${imported} messages into the local search index.</p>
+      <p>You can close this window and return to Email.</p>
+    </main>
+  </body>
+</html>`;
+}
+
+function escapeHTML(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 async function readJSON(req) {
@@ -202,4 +311,3 @@ class EventHub {
     }
   }
 }
-
