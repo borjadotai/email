@@ -2,8 +2,6 @@ import SwiftUI
 
 struct SettingsView: View {
   @Environment(AppModel.self) private var model
-  @State private var gmailClientId = ""
-  @State private var gmailClientSecret = ""
 
   var body: some View {
     @Bindable var model = model
@@ -40,43 +38,28 @@ struct SettingsView: View {
         }
       }
 
-      Section("Gmail") {
-        TextField("Client ID", text: $gmailClientId)
-          #if os(iOS)
-          .textInputAutocapitalization(.never)
-          .keyboardType(.URL)
-          #endif
-
-        SecureField(
-          model.authSettings?.hasGmailClientSecret == true ? "Client secret saved" : "Client secret",
-          text: $gmailClientSecret
+      Section("Connections") {
+        ProviderStatusRow(
+          title: "Google",
+          systemImage: "envelope.circle",
+          status: model.authSettings?.gmailConfigured == true ? "Available" : "Unavailable"
         )
-        #if os(iOS)
-        .textInputAutocapitalization(.never)
-        #endif
 
-        if let redirectURI = model.authSettings?.gmailRedirectURI {
-          LabeledContent("Redirect URI") {
+        ProviderStatusRow(
+          title: "iCloud Mail",
+          systemImage: "icloud",
+          status: "App password"
+        )
+
+        if let redirectURI = model.authSettings?.gmailRedirectURI, model.authSettings?.gmailConfigured == true {
+          LabeledContent("Google callback") {
             Text(redirectURI)
               .font(.caption)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
-              .lineLimit(2)
+              .lineLimit(1)
           }
         }
-
-        Button {
-          Task {
-            await model.saveAuthSettings(
-              gmailClientId: gmailClientId,
-              gmailClientSecret: gmailClientSecret
-            )
-            gmailClientSecret = ""
-          }
-        } label: {
-          Label("Save Gmail", systemImage: "checkmark.circle")
-        }
-        .disabled(gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
 
       if !model.accounts.isEmpty {
@@ -121,8 +104,24 @@ struct SettingsView: View {
     }
     .formStyle(.grouped)
     .navigationTitle("Settings")
-    .task(id: model.authSettings) {
-      gmailClientId = model.authSettings?.gmailClientId ?? ""
+  }
+}
+
+private struct ProviderStatusRow: View {
+  var title: String
+  var systemImage: String
+  var status: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: systemImage)
+        .foregroundStyle(.secondary)
+        .frame(width: 18)
+      Text(title)
+      Spacer()
+      Text(status)
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
   }
 }

@@ -183,19 +183,6 @@ final class AppModel {
     }
   }
 
-  func saveAuthSettings(gmailClientId: String, gmailClientSecret: String) async {
-    do {
-      authSettings = try await apiClient.saveAuthSettings(AuthSettingsRequest(
-        gmailClientId: gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines),
-        gmailClientSecret: gmailClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-      ))
-      statusMessage = "Settings saved"
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
   func startGmailAuth(displayName: String, syncHistory: Bool) async -> URL? {
     isConnectingAccount = true
     defer { isConnectingAccount = false }

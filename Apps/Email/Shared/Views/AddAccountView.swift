@@ -36,9 +36,9 @@ struct AddAccountView: View {
           Toggle("Full history", isOn: $syncHistory)
         }
 
-        if provider == .gmail, model.authSettings?.gmailClientId.isEmpty ?? true {
+        if provider == .gmail, model.authSettings?.gmailConfigured != true {
           Section {
-            Text("Google OAuth is not configured.")
+            Text("Google sign-in is unavailable in this build.")
               .foregroundStyle(.secondary)
           }
         }
@@ -52,7 +52,7 @@ struct AddAccountView: View {
           }
         }
         ToolbarItem(placement: .confirmationAction) {
-          Button(provider == .gmail ? "Connect" : "Add") {
+          Button(primaryActionTitle) {
             Task {
               switch provider {
               case .gmail:
@@ -88,10 +88,17 @@ struct AddAccountView: View {
     }
     switch provider {
     case .gmail:
-      return model.authSettings?.gmailClientId.isEmpty ?? true
+      return model.authSettings?.gmailConfigured != true
     case .icloud:
       return email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         appPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+  }
+
+  private var primaryActionTitle: String {
+    switch provider {
+    case .gmail: "Sign in with Google"
+    case .icloud: "Connect iCloud Mail"
     }
   }
 }

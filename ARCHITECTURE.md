@@ -26,9 +26,9 @@ Storage uses SQLite with WAL mode and an FTS5 table. Metadata stays normalized i
 
 Provider integration is split behind adapters:
 
-- Gmail: OAuth 2.0 loopback flow, Gmail API sync, Gmail API send, and local label import.
-- iCloud: app-specific password verification, IMAP INBOX sync, and SMTP send.
-- Secrets: OAuth client secrets, Gmail refresh tokens, and iCloud app-specific passwords are stored in the macOS Keychain.
+- Gmail: app-owned OAuth 2.0 loopback flow with PKCE, Gmail API sync, Gmail API send, and local label import.
+- iCloud: app-specific password verification, IMAP INBOX sync, and SMTP send. Sign in with Apple is not a mail-access grant.
+- Secrets: Gmail refresh tokens and iCloud app-specific passwords are stored in the macOS Keychain. App-owned OAuth credentials are provided by the build/server environment.
 - Outbound: queued in `outbound_messages`, then provider adapters send and update status.
 - Open tracking: tracked messages receive a tracking id and can embed `/api/track/open/:id.gif`.
 

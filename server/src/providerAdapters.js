@@ -23,28 +23,18 @@ export class ProviderService {
 
   getAuthSettings() {
     return {
-      gmailClientId: this.getGoogleClientId(),
-      hasGmailClientSecret: Boolean(this.getGoogleClientSecret()),
-      gmailRedirectURI: this.gmailRedirectURI()
+      gmailConfigured: Boolean(this.getGoogleClientId()),
+      gmailRedirectURI: this.gmailRedirectURI(),
+      icloudConfigured: true,
+      icloudAuthType: "app_specific_password",
+      appleMailOAuthAvailable: false
     };
-  }
-
-  saveAuthSettings(input) {
-    if (typeof input.gmailClientId === "string") {
-      this.store.setSetting("gmail.client_id", input.gmailClientId.trim());
-    }
-
-    if (typeof input.gmailClientSecret === "string" && input.gmailClientSecret.trim()) {
-      this.secretStore.set("gmail.client_secret", input.gmailClientSecret.trim());
-    }
-
-    return this.getAuthSettings();
   }
 
   async startGmailAuth(input = {}) {
     const clientId = this.getGoogleClientId();
     if (!clientId) {
-      throw httpError(400, "Add a Google OAuth client ID in Settings before connecting Gmail.");
+      throw httpError(400, "Gmail sign-in is not configured for this build.");
     }
 
     const client = this.gmailOAuthClient();
@@ -360,11 +350,11 @@ export class ProviderService {
   }
 
   getGoogleClientId() {
-    return this.store.getSetting("gmail.client_id", this.config.googleOAuthClientId ?? "");
+    return this.config.googleOAuthClientId ?? "";
   }
 
   getGoogleClientSecret() {
-    return this.secretStore.get("gmail.client_secret") ?? this.config.googleOAuthClientSecret ?? "";
+    return this.config.googleOAuthClientSecret ?? "";
   }
 
   initialSyncLimit() {

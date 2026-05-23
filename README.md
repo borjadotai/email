@@ -26,6 +26,8 @@ For an always-running local daemon:
 ./scripts/install-launch-agent.sh
 ```
 
+Copy `.env.example` to `.env` for local app-owned provider credentials. The launch agent reads `.env` through `scripts/start-server.sh`.
+
 ## Build the Apps
 
 ```sh
@@ -49,7 +51,6 @@ Core endpoints live under `/api`:
 - `GET /api/accounts`
 - `POST /api/accounts`
 - `GET /api/auth/settings`
-- `PUT /api/auth/settings`
 - `POST /api/auth/gmail/start`
 - `GET /api/auth/gmail/callback`
 - `POST /api/auth/icloud/connect`
@@ -71,21 +72,23 @@ Core endpoints live under `/api`:
 
 1. In Google Cloud Console, enable the Gmail API for the project.
 2. Create an OAuth client for a desktop app.
-3. Open Email settings and save the OAuth client ID and client secret.
-4. Use Add Account -> Gmail. The app opens the system browser and receives the callback at:
+3. Configure the app/server with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
+4. Use Add Account -> Gmail. The app opens the system browser for Google OAuth and receives the callback at:
 
 ```text
 http://127.0.0.1:7331/api/auth/gmail/callback
 ```
 
-The server stores the OAuth client ID in SQLite and stores the client secret and per-account refresh tokens in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
+Users do not enter Google OAuth client credentials. Those credentials belong to the app build or server environment. Per-account refresh tokens are stored in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
 
 ### iCloud
 
 1. Generate an app-specific password at `https://account.apple.com`.
 2. Use Add Account -> iCloud with your iCloud Mail address and the generated password.
 
-The server verifies IMAP and SMTP before saving the account. It stores the app-specific password in the macOS Keychain, imports INBOX messages over IMAP, and sends via iCloud SMTP.
+Sign in with Apple identifies a user to an app, but it does not provide iCloud Mail IMAP/SMTP access. The server verifies IMAP and SMTP before saving the account. It stores the app-specific password in the macOS Keychain, imports INBOX messages over IMAP, and sends via iCloud SMTP.
+
+Public Gmail distribution will require Google OAuth consent screen configuration and, because this app requests Gmail mail access scopes, Google verification before broad external use.
 
 ## Runtime Notes
 

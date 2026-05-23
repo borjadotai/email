@@ -8,7 +8,7 @@ import { ProviderService } from "../src/providerAdapters.js";
 import { MemorySecretStore } from "../src/secretStore.js";
 import { MailStore } from "../src/store.js";
 
-test("auth settings persist and Gmail auth starts with a configured client", async () => {
+test("provider availability is app-owned and Gmail auth starts when configured", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 
@@ -17,23 +17,21 @@ test("auth settings persist and Gmail auth starts with a configured client", asy
     const providers = new ProviderService({
       store,
       secretStore: new MemorySecretStore(),
-      config: {},
+      config: {
+        googleOAuthClientId: "test-client-id.apps.googleusercontent.com",
+        googleOAuthClientSecret: "test-secret"
+      },
       baseURL: "http://127.0.0.1:7331"
     });
     server = createServer({ store, providers }).server;
     await listen(server, 0);
     const baseURL = `http://127.0.0.1:${server.address().port}`;
 
-    const saved = await requestJSON(`${baseURL}/api/auth/settings`, {
-      method: "PUT",
-      body: JSON.stringify({
-        gmailClientId: "test-client-id.apps.googleusercontent.com",
-        gmailClientSecret: "test-secret"
-      }),
-      headers: { "Content-Type": "application/json" }
-    });
-    assert.equal(saved.settings.gmailClientId, "test-client-id.apps.googleusercontent.com");
-    assert.equal(saved.settings.hasGmailClientSecret, true);
+    const availability = await requestJSON(`${baseURL}/api/auth/settings`);
+    assert.equal(availability.settings.gmailConfigured, true);
+    assert.equal(availability.settings.icloudConfigured, true);
+    assert.equal(availability.settings.appleMailOAuthAvailable, false);
+    assert.equal(Object.hasOwn(availability.settings, "gmailClientId"), false);
 
     const auth = await requestJSON(`${baseURL}/api/auth/gmail/start`, {
       method: "POST",

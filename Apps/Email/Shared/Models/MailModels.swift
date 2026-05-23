@@ -115,14 +115,11 @@ struct AddAccountRequest: Encodable {
 }
 
 struct AuthSettings: Codable, Hashable {
-  var gmailClientId: String
-  var hasGmailClientSecret: Bool
+  var gmailConfigured: Bool
   var gmailRedirectURI: String
-}
-
-struct AuthSettingsRequest: Encodable {
-  var gmailClientId: String
-  var gmailClientSecret: String
+  var icloudConfigured: Bool
+  var icloudAuthType: String
+  var appleMailOAuthAvailable: Bool
 }
 
 struct GmailAuthStartRequest: Encodable {

@@ -88,11 +88,6 @@ struct MailAPIClient {
     return response.settings
   }
 
-  func saveAuthSettings(_ input: AuthSettingsRequest) async throws -> AuthSettings {
-    let response: AuthSettingsResponse = try await request("api/auth/settings", method: "PUT", body: input)
-    return response.settings
-  }
-
   func startGmailAuth(_ input: GmailAuthStartRequest) async throws -> GmailAuthStartResponse {
     try await request("api/auth/gmail/start", method: "POST", body: input)
   }

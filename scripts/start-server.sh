@@ -2,6 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env"
+  set +a
+fi
+
 export EMAIL_DATA_DIR="${EMAIL_DATA_DIR:-$HOME/Library/Application Support/EmailApp}"
 export EMAIL_SERVER_HOST="${EMAIL_SERVER_HOST:-127.0.0.1}"
 export EMAIL_SERVER_PORT="${EMAIL_SERVER_PORT:-7331}"

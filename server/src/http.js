@@ -63,12 +63,6 @@ async function route({ req, res, store, providers, events, baseURL }) {
     return;
   }
 
-  if (req.method === "PUT" && path === "/api/auth/settings") {
-    requireProviders(providers);
-    sendJSON(res, 200, { settings: providers.saveAuthSettings(await readJSON(req)) });
-    return;
-  }
-
   if (req.method === "POST" && path === "/api/auth/gmail/start") {
     requireProviders(providers);
     sendJSON(res, 200, await providers.startGmailAuth(await readJSON(req)));
@@ -228,7 +222,7 @@ function sendHTML(res, status, html) {
 
 function sendCORS(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
