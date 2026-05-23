@@ -81,6 +81,13 @@ http://127.0.0.1:7331/api/auth/gmail/callback
 
 Users do not enter Google OAuth client credentials. Those credentials belong to the app build or server environment. Per-account refresh tokens are stored in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
 
+After creating the OAuth client, download its JSON file and import it locally:
+
+```sh
+node scripts/import-google-oauth.mjs ~/Downloads/client_secret_*.json
+launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
+```
+
 ### iCloud
 
 1. Generate an app-specific password at `https://account.apple.com`.
