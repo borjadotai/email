@@ -71,9 +71,15 @@ Core endpoints live under `/api`:
 ### Gmail
 
 1. In Google Cloud Console, enable the Gmail API for the project.
-2. Create an OAuth client for a desktop app.
-3. Configure the app/server with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
-4. Use Add Account -> Gmail. The app opens the system browser for Google OAuth and receives the callback at:
+2. Create an OAuth client for a web application.
+3. Add this authorized redirect URI:
+
+```text
+http://127.0.0.1:7331/api/auth/gmail/callback
+```
+
+4. Configure the app/server with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
+5. Use Add Account -> Gmail. The app opens the system browser for Google OAuth and receives the callback at:
 
 ```text
 http://127.0.0.1:7331/api/auth/gmail/callback
