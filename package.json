@@ -1,0 +1,17 @@
+{
+  "name": "email",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "server": "node --no-warnings server/src/main.js",
+    "server:dev": "EMAIL_SEED_DEMO=1 node --no-warnings server/src/main.js",
+    "test": "node --no-warnings --test server/test/*.test.mjs",
+    "build:mac": "xcodebuild -project Apps/Email.xcodeproj -scheme EmailMac -configuration Debug -destination 'platform=macOS' build",
+    "build:ios": "xcodebuild -project Apps/Email.xcodeproj -scheme EmailiOS -configuration Debug -destination 'generic/platform=iOS Simulator' build"
+  }
+}
+

@@ -1,0 +1,17 @@
+.DS_Store
+.env
+node_modules/
+
+# Local server state
+server/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Apple build output and user state
+DerivedData/
+.build/
+dist/
+*.xcuserstate
+xcuserdata/
+
