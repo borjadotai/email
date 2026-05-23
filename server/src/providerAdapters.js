@@ -102,21 +102,38 @@ export class ProviderService {
       this.secretStore.set(secretKey(account.id, "gmail.refresh_token"), tokens.refresh_token);
     }
 
-    const sync = await this.syncGmailAccount(account.id, {
-      limit: session.syncHistory ? this.initialSyncLimit() : 50
+    if (!this.secretStore.get(secretKey(account.id, "gmail.refresh_token"))) {
+      throw httpError(400, "Google did not return an offline token. Remove this app from your Google Account access list and try signing in again.");
+    }
+
+    this.store.claimUserIdentity({
+      provider: "gmail",
+      email,
+      displayName: session.displayName || email,
+      accountId: account.id
     });
-    return { account: this.store.getAccount(account.id), sync };
+
+    return {
+      account: this.store.getAccount(account.id),
+      sync: {
+        provider: "gmail",
+        imported: 0,
+        status: "queued"
+      },
+      syncLimit: session.syncHistory ? this.initialSyncLimit() : 50
+    };
   }
 
   async connectICloud(input) {
     const email = requiredString(input.email, "email").toLowerCase();
     const password = requiredString(input.appPassword, "appPassword");
+    const username = optionalString(input.username)?.toLowerCase();
     const syncHistory = input.syncHistory !== false;
     const displayName = input.displayName?.trim() || email;
     console.log(`${new Date().toISOString()} iCloud verifying IMAP email=${redactEmail(email)}`);
-    const imapAuth = await verifyICloudIMAP(email, password);
+    const imapAuth = await verifyICloudIMAP(email, password, username);
     console.log(`${new Date().toISOString()} iCloud verifying SMTP email=${redactEmail(email)}`);
-    await verifyICloudSMTP(email, password);
+    await verifyICloudSMTP(imapAuth.user, password);
 
     const account = this.store.createOrUpdateAccount({
       provider: "icloud",
@@ -131,10 +148,11 @@ export class ProviderService {
         imapUsername: imapAuth.user,
         smtpHost: "smtp.mail.me.com",
         smtpPort: 587,
-        smtpUsername: email
+        smtpUsername: imapAuth.user
       }
     });
     this.secretStore.set(secretKey(account.id, "icloud.app_password"), password);
+    this.store.linkAccountToLocalUser(account.id, "icloud", email);
 
     console.log(`${new Date().toISOString()} iCloud syncing INBOX email=${redactEmail(email)}`);
     const sync = await this.syncICloudAccount(account.id, {
@@ -242,13 +260,7 @@ export class ProviderService {
     if (!password) throw httpError(400, "iCloud app-specific password is missing. Reconnect the account.");
 
     const user = account.providerMetadata.imapUsername ?? account.email;
-    const client = new ImapFlow({
-      host: "imap.mail.me.com",
-      port: 993,
-      secure: true,
-      auth: { user, pass: password },
-      logger: false
-    });
+    const client = createICloudIMAPClient(user, password);
 
     let imported = 0;
     await client.connect();
@@ -283,7 +295,7 @@ export class ProviderService {
         lock.release();
       }
     } finally {
-      await client.logout();
+      await safeLogout(client, user);
     }
 
     this.store.markAccountSynced(account.id);
@@ -318,7 +330,7 @@ export class ProviderService {
       port: 587,
       secure: false,
       requireTLS: true,
-      auth: { user: account.email, pass: password }
+      auth: { user: account.providerMetadata.smtpUsername ?? account.email, pass: password }
     });
     const sent = await transporter.sendMail({
       from: account.email,
@@ -373,44 +385,60 @@ export class ProviderService {
   }
 }
 
-async function verifyICloudIMAP(email, password) {
-  const candidates = [email];
+async function verifyICloudIMAP(email, password, username = null) {
+  const candidates = [username, email].filter(Boolean);
   if (email.endsWith("@icloud.com") || email.endsWith("@me.com") || email.endsWith("@mac.com")) {
     candidates.push(email.split("@")[0]);
   }
 
   let lastError;
   for (const user of [...new Set(candidates)]) {
-    const client = new ImapFlow({
-      host: "imap.mail.me.com",
-      port: 993,
-      secure: true,
-      auth: { user, pass: password },
-      logger: false
-    });
+    const client = createICloudIMAPClient(user, password);
     try {
       await client.connect();
-      await client.logout();
+      await safeLogout(client, user);
       return { user };
     } catch (error) {
       lastError = error;
     }
   }
-  throw httpError(401, `iCloud IMAP login failed: ${lastError?.message ?? "Invalid credentials."}`);
+  throw httpError(401, `iCloud IMAP login failed. Check the app-specific password and, for custom domains, use your Apple ID or primary iCloud email as the username. ${lastError?.message ?? "Invalid credentials."}`);
 }
 
-async function verifyICloudSMTP(email, password) {
+async function verifyICloudSMTP(username, password) {
   const transporter = nodemailer.createTransport({
     host: "smtp.mail.me.com",
     port: 587,
     secure: false,
     requireTLS: true,
-    auth: { user: email, pass: password }
+    auth: { user: username, pass: password }
   });
   try {
     await transporter.verify();
   } catch (error) {
     throw httpError(401, `iCloud SMTP login failed: ${error.message}`);
+  }
+}
+
+function createICloudIMAPClient(user, password) {
+  const client = new ImapFlow({
+    host: "imap.mail.me.com",
+    port: 993,
+    secure: true,
+    auth: { user, pass: password },
+    logger: false
+  });
+  client.on("error", error => {
+    console.warn(`${new Date().toISOString()} iCloud IMAP socket error user=${redactIMAPUser(user)}: ${error.message}`);
+  });
+  return client;
+}
+
+async function safeLogout(client, user) {
+  try {
+    await client.logout();
+  } catch (error) {
+    console.warn(`${new Date().toISOString()} iCloud IMAP logout failed user=${redactIMAPUser(user)}: ${error.message}`);
   }
 }
 
@@ -550,9 +578,19 @@ function redactEmail(value) {
   return `${local.slice(0, 2)}***@${domain}`;
 }
 
+function redactIMAPUser(value) {
+  if (typeof value !== "string" || !value.trim()) return "unknown";
+  if (value.includes("@")) return redactEmail(value);
+  return `${value.trim().slice(0, 2)}***`;
+}
+
 function requiredString(value, name) {
   if (typeof value !== "string" || !value.trim()) {
     throw httpError(400, `${name} is required.`);
   }
   return value.trim();
+}
+
+function optionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

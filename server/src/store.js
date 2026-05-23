@@ -56,6 +56,23 @@ export class MailStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS app_users (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        primary_email TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS account_user_links (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        provider_email TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        UNIQUE(user_id, provider, provider_email)
+      );
+
       CREATE TABLE IF NOT EXISTS mailboxes (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -147,6 +164,9 @@ export class MailStore {
         WHERE provider_uid IS NOT NULL;
     `);
     this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureLocalUser();
+    this.linkUnownedAccountsToLocalUser();
+    this.hydrateLocalUserFromAccounts();
   }
 
   ensureColumn(table, column, definition) {
@@ -192,6 +212,7 @@ export class MailStore {
         now
       );
       this.ensureDefaultsForAccount(id);
+      this.linkAccountToLocalUser(id, provider, email);
     });
 
     return this.getAccount(id);
@@ -222,6 +243,7 @@ export class MailStore {
         existing.id
       );
       this.ensureDefaultsForAccount(existing.id);
+      this.linkAccountToLocalUser(existing.id, provider, email);
       return this.getAccount(existing.id);
     }
 
@@ -247,6 +269,34 @@ export class MailStore {
     }));
   }
 
+  getProfile() {
+    const user = this.ensureLocalUser();
+    return {
+      ...user,
+      accounts: this.listAccounts()
+    };
+  }
+
+  claimUserIdentity(input) {
+    const provider = normalizeProvider(input.provider);
+    const email = requiredString(input.email, "email").toLowerCase();
+    const displayName = input.displayName?.trim() || email;
+    const user = this.ensureLocalUser();
+    const primaryEmail = user.primaryEmail || email;
+
+    this.db.prepare(`
+      UPDATE app_users
+      SET display_name = ?, primary_email = ?, updated_at = ?
+      WHERE id = ?
+    `).run(displayName, primaryEmail, new Date().toISOString(), user.id);
+
+    if (input.accountId) {
+      this.linkAccountToLocalUser(input.accountId, provider, email);
+    }
+
+    return this.getProfile();
+  }
+
   getAccount(id) {
     const row = this.db.prepare(`
       SELECT id, provider, email, display_name AS displayName, avatar_url AS avatarURL,
@@ -258,6 +308,73 @@ export class MailStore {
     `).get(id);
     if (!row) return null;
     return { ...row, syncHistory: Boolean(row.syncHistory), providerMetadata: parseJSON(row.providerMetadataJSON, {}) };
+  }
+
+  ensureLocalUser() {
+    const existing = this.db.prepare(`
+      SELECT id, display_name AS displayName, primary_email AS primaryEmail,
+             created_at AS createdAt, updated_at AS updatedAt
+      FROM app_users
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).get();
+    if (existing) return existing;
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO app_users (id, display_name, primary_email, created_at, updated_at)
+      VALUES (?, 'Local Profile', NULL, ?, ?)
+    `).run(id, now, now);
+    return this.ensureLocalUser();
+  }
+
+  linkUnownedAccountsToLocalUser() {
+    const user = this.ensureLocalUser();
+    const accounts = this.db.prepare(`
+      SELECT a.id, a.provider, a.email
+      FROM accounts a
+      LEFT JOIN account_user_links l ON l.account_id = a.id
+      WHERE l.account_id IS NULL
+    `).all();
+    for (const account of accounts) {
+      this.linkAccountToUser(user.id, account.id, account.provider, account.email);
+    }
+  }
+
+  hydrateLocalUserFromAccounts() {
+    const user = this.ensureLocalUser();
+    if (user.primaryEmail) return;
+
+    const account = this.db.prepare(`
+      SELECT email, display_name AS displayName
+      FROM accounts
+      ORDER BY CASE provider WHEN 'gmail' THEN 0 ELSE 1 END, created_at ASC
+      LIMIT 1
+    `).get();
+    if (!account) return;
+
+    this.db.prepare(`
+      UPDATE app_users
+      SET display_name = ?, primary_email = ?, updated_at = ?
+      WHERE id = ?
+    `).run(account.displayName || account.email, account.email, new Date().toISOString(), user.id);
+  }
+
+  linkAccountToLocalUser(accountId, provider, email) {
+    const user = this.ensureLocalUser();
+    this.linkAccountToUser(user.id, accountId, provider, email);
+  }
+
+  linkAccountToUser(userId, accountId, provider, email) {
+    this.db.prepare(`
+      INSERT INTO account_user_links (account_id, user_id, provider, provider_email, linked_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        provider = excluded.provider,
+        provider_email = excluded.provider_email
+    `).run(accountId, userId, provider, email, new Date().toISOString());
   }
 
   updateAccountStatus(id, status, metadata = null) {

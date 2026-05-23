@@ -58,6 +58,11 @@ async function route({ req, res, store, providers, events, baseURL }) {
     return;
   }
 
+  if (req.method === "GET" && path === "/api/profile") {
+    sendJSON(res, 200, { profile: store.getProfile() });
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/auth/settings") {
     requireProviders(providers);
     sendJSON(res, 200, { settings: providers.getAuthSettings() });
@@ -75,7 +80,7 @@ async function route({ req, res, store, providers, events, baseURL }) {
     requireProviders(providers);
     const result = await providers.completeGmailAuth(Object.fromEntries(url.searchParams.entries()));
     events.emit("accounts.changed", { accountId: result.account.id });
-    events.emit("emails.changed", { accountId: result.account.id });
+    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -238,6 +243,9 @@ function requireProviders(providers) {
 function authSuccessPage(result) {
   const account = result.account;
   const imported = result.sync?.imported ?? 0;
+  const syncText = result.sync?.status === "queued"
+    ? "Message sync is running in the background."
+    : `Imported ${imported} messages into the local search index.`;
   return `<!doctype html>
 <html>
   <head>
@@ -254,11 +262,25 @@ function authSuccessPage(result) {
   <body>
     <main>
       <h1>Gmail connected</h1>
-      <p>${escapeHTML(account.email)} is connected. Imported ${imported} messages into the local search index.</p>
+      <p>${escapeHTML(account.email)} is connected. ${escapeHTML(syncText)}</p>
       <p>You can close this window and return to Email.</p>
     </main>
   </body>
 </html>`;
+}
+
+function syncAccountInBackground({ providers, events, accountId, limit }) {
+  setTimeout(async () => {
+    try {
+      console.log(`${new Date().toISOString()} background sync started account=${accountId}`);
+      const sync = await providers.syncGmailAccount(accountId, { limit });
+      console.log(`${new Date().toISOString()} background sync completed account=${accountId} imported=${sync.imported}`);
+      events.emit("emails.changed", { accountId });
+      events.emit("accounts.changed", { accountId });
+    } catch (error) {
+      console.error(`${new Date().toISOString()} background sync failed account=${accountId}: ${error.message}`);
+    }
+  }, 0);
 }
 
 function escapeHTML(value) {

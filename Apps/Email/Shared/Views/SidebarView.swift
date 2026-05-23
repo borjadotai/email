@@ -3,6 +3,7 @@ import SwiftUI
 struct SidebarView: View {
   @Environment(AppModel.self) private var model
   var onAddAccount: () -> Void
+  var onShowMessages: () -> Void
 
   var body: some View {
     List {
@@ -14,7 +15,10 @@ struct SidebarView: View {
           count: model.globalUnreadCount,
           isSelected: model.selectedAccountID == nil && model.selectedMailboxID == nil && model.selectedLabelID == nil
         ) {
-          Task { await model.selectGlobalInbox() }
+          onShowMessages()
+          Task {
+            await model.selectGlobalInbox()
+          }
         }
       }
 
@@ -28,7 +32,10 @@ struct SidebarView: View {
               count: unreadCount(for: account),
               isSelected: model.selectedAccountID == account.id && model.selectedMailboxID == nil && model.selectedLabelID == nil
             ) {
-              Task { await model.selectAccount(account) }
+              onShowMessages()
+              Task {
+                await model.selectAccount(account)
+              }
             }
           }
         }
@@ -44,7 +51,10 @@ struct SidebarView: View {
               count: mailbox.unreadCount,
               isSelected: model.selectedMailboxID == mailbox.id
             ) {
-              Task { await model.selectMailbox(mailbox) }
+              onShowMessages()
+              Task {
+                await model.selectMailbox(mailbox)
+              }
             }
           }
         }
@@ -60,7 +70,10 @@ struct SidebarView: View {
               tint: label.swiftUIColor,
               isSelected: model.selectedLabelID == label.id
             ) {
-              Task { await model.selectLabel(label) }
+              onShowMessages()
+              Task {
+                await model.selectLabel(label)
+              }
             }
           }
         }
@@ -138,4 +151,3 @@ private struct SidebarButton: View {
     .listRowBackground(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
   }
 }
-

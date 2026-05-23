@@ -6,6 +6,7 @@ import SwiftUI
 @Observable
 final class AppModel {
   var accounts: [MailAccount] = []
+  var profile: UserProfile?
   var mailboxes: [Mailbox] = []
   var labels: [MailLabel] = []
   var emails: [EmailSummary] = []
@@ -39,7 +40,14 @@ final class AppModel {
   private var hasBootstrapped = false
 
   init() {
-    serverURLString = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? "http://127.0.0.1:7331"
+    var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
+    #if os(iOS)
+    if Defaults.isLoopbackURL(initialServerURL), !Defaults.isLoopbackURL(Defaults.defaultServerURL) {
+      initialServerURL = Defaults.defaultServerURL
+      UserDefaults.standard.set(initialServerURL, forKey: Defaults.serverURL)
+    }
+    #endif
+    serverURLString = initialServerURL
     let rawTheme = UserDefaults.standard.string(forKey: Defaults.theme) ?? ThemePreference.system.rawValue
     themePreference = ThemePreference(rawValue: rawTheme) ?? .system
   }
@@ -68,7 +76,7 @@ final class AppModel {
   }
 
   var apiClient: MailAPIClient {
-    let fallback = URL(string: "http://127.0.0.1:7331")!
+    let fallback = URL(string: Defaults.defaultServerURL) ?? URL(string: "http://127.0.0.1:7331")!
     return MailAPIClient(baseURL: URL(string: serverURLString) ?? fallback)
   }
 
@@ -85,6 +93,7 @@ final class AppModel {
     do {
       health = try await apiClient.health()
       authSettings = try? await apiClient.authSettings()
+      profile = try? await apiClient.profile()
       accounts = try await apiClient.accounts()
       mailboxes = try await apiClient.mailboxes()
       labels = try await apiClient.labels()
@@ -186,6 +195,7 @@ final class AppModel {
   func startGmailAuth(displayName: String, syncHistory: Bool) async -> URL? {
     isConnectingAccount = true
     statusMessage = "Starting Google sign-in"
+    errorMessage = nil
     defer { isConnectingAccount = false }
 
     do {
@@ -198,18 +208,22 @@ final class AppModel {
       return URL(string: response.authorizationURL)
     } catch {
       errorMessage = error.localizedDescription
+      statusMessage = nil
       return nil
     }
   }
 
-  func connectICloud(email: String, displayName: String, appPassword: String, syncHistory: Bool) async -> Bool {
+  func connectICloud(email: String, username: String, displayName: String, appPassword: String, syncHistory: Bool) async -> Bool {
     isConnectingAccount = true
     statusMessage = "Connecting iCloud Mail"
+    errorMessage = nil
     defer { isConnectingAccount = false }
 
     do {
+      let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
       let result = try await apiClient.connectICloud(ICloudConnectRequest(
         email: email,
+        username: trimmedUsername.isEmpty ? nil : trimmedUsername,
         displayName: displayName,
         appPassword: appPassword,
         syncHistory: syncHistory
@@ -300,4 +314,13 @@ final class AppModel {
 private enum Defaults {
   static let serverURL = "email.serverURL"
   static let theme = "email.theme"
+
+  static var defaultServerURL: String {
+    Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "http://127.0.0.1:7331"
+  }
+
+  static func isLoopbackURL(_ value: String) -> Bool {
+    guard let host = URLComponents(string: value)?.host?.lowercased() else { return false }
+    return host == "127.0.0.1" || host == "localhost" || host == "::1"
+  }
 }

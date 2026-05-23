@@ -4,6 +4,7 @@ struct EmailListView: View {
   @Environment(AppModel.self) private var model
   var onCompose: () -> Void
   var onSettings: () -> Void
+  var onShowDetail: () -> Void
 
   var body: some View {
     Group {
@@ -19,7 +20,7 @@ struct EmailListView: View {
               .tag(email.id)
               .contentShape(Rectangle())
               .onTapGesture {
-                Task { await model.selectEmail(email) }
+                select(email)
               }
           }
         }
@@ -61,9 +62,16 @@ struct EmailListView: View {
           let newValue,
           let email = model.emails.first(where: { $0.id == newValue })
         else { return }
-        Task { await model.selectEmail(email) }
+        select(email)
       }
     )
+  }
+
+  private func select(_ email: EmailSummary) {
+    onShowDetail()
+    Task {
+      await model.selectEmail(email)
+    }
   }
 }
 
@@ -132,4 +140,3 @@ private struct EmailRow: View {
     .padding(.vertical, 7)
   }
 }
-

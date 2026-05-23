@@ -35,6 +35,15 @@ struct MailAccount: Codable, Identifiable, Hashable {
   var createdAt: String
 }
 
+struct UserProfile: Codable, Identifiable, Hashable {
+  var id: String
+  var displayName: String
+  var primaryEmail: String?
+  var createdAt: String
+  var updatedAt: String
+  var accounts: [MailAccount]
+}
+
 struct Mailbox: Codable, Identifiable, Hashable {
   var id: String
   var accountId: String
@@ -136,6 +145,7 @@ struct GmailAuthStartResponse: Decodable {
 
 struct ICloudConnectRequest: Encodable {
   var email: String
+  var username: String?
   var displayName: String
   var appPassword: String
   var syncHistory: Bool

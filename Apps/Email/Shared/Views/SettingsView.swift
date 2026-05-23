@@ -38,6 +38,16 @@ struct SettingsView: View {
         }
       }
 
+      if let profile = model.profile {
+        Section("Profile") {
+          LabeledContent("Name", value: profile.displayName)
+          if let primaryEmail = profile.primaryEmail {
+            LabeledContent("Primary", value: primaryEmail)
+          }
+          LabeledContent("Accounts", value: "\(profile.accounts.count)")
+        }
+      }
+
       Section("Connections") {
         ProviderStatusRow(
           title: "Google",

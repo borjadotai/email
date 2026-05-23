@@ -24,6 +24,10 @@ struct AccountResponse: Decodable {
   var account: MailAccount
 }
 
+struct ProfileResponse: Decodable {
+  var profile: UserProfile
+}
+
 struct SendResponse: Decodable {
   var email: EmailDetail
   var trackingPixelURL: String?
@@ -76,6 +80,11 @@ struct MailAPIClient {
   func accounts() async throws -> [MailAccount] {
     let response: AccountsResponse = try await request("api/accounts")
     return response.accounts
+  }
+
+  func profile() async throws -> UserProfile {
+    let response: ProfileResponse = try await request("api/profile")
+    return response.profile
   }
 
   func addAccount(_ input: AddAccountRequest) async throws -> MailAccount {

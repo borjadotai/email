@@ -18,16 +18,21 @@ struct RootView: View {
   @Environment(AppModel.self) private var model
   @State private var sheet: AppSheet?
   @State private var searchTask: Task<Void, Never>?
+  @State private var preferredCompactColumn: NavigationSplitViewColumn = .content
 
   var body: some View {
     @Bindable var model = model
 
-    NavigationSplitView {
-      SidebarView(onAddAccount: { sheet = .addAccount })
+    NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+      SidebarView(
+        onAddAccount: { sheet = .addAccount },
+        onShowMessages: { preferredCompactColumn = .content }
+      )
     } content: {
       EmailListView(
         onCompose: { sheet = .compose },
-        onSettings: { sheet = .settings }
+        onSettings: { sheet = .settings },
+        onShowDetail: { preferredCompactColumn = .detail }
       )
       .navigationTitle(model.navigationTitle)
       .searchable(text: $model.searchText, prompt: "Search")
@@ -72,7 +77,12 @@ struct RootView: View {
 
   private var errorBinding: Binding<Bool> {
     Binding(
-      get: { model.errorMessage != nil },
+      get: {
+        if case .addAccount? = sheet {
+          return false
+        }
+        return model.errorMessage != nil
+      },
       set: { isPresented in
         if !isPresented {
           model.errorMessage = nil
@@ -81,4 +91,3 @@ struct RootView: View {
     )
   }
 }
-

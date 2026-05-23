@@ -7,5 +7,9 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Email connects to your local development mail server.</string>
+  <key>EmailDefaultServerURL</key>
+  <string>$(EMAIL_DEFAULT_SERVER_URL)</string>
 </dict>
 </plist>

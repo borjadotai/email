@@ -6,6 +6,7 @@ struct AddAccountView: View {
   @Environment(AppModel.self) private var model
   @State private var provider: MailProvider = .gmail
   @State private var email = ""
+  @State private var username = ""
   @State private var displayName = ""
   @State private var appPassword = ""
   @State private var syncHistory = true
@@ -30,6 +31,11 @@ struct AddAccountView: View {
               .textInputAutocapitalization(.never)
               .keyboardType(.emailAddress)
               #endif
+            TextField("Apple ID / iCloud username", text: $username)
+              #if os(iOS)
+              .textInputAutocapitalization(.never)
+              .keyboardType(.emailAddress)
+              #endif
             SecureField("App password", text: $appPassword)
           }
 
@@ -39,6 +45,18 @@ struct AddAccountView: View {
         if model.isConnectingAccount {
           Section {
             ProgressView(model.statusMessage ?? "Connecting")
+          }
+        }
+
+        if let errorMessage = model.errorMessage, !errorMessage.isEmpty {
+          Section {
+            Label {
+              Text(errorMessage)
+            } icon: {
+              Image(systemName: "exclamationmark.triangle")
+            }
+            .font(.callout)
+            .foregroundStyle(.red)
           }
         }
 
@@ -69,6 +87,7 @@ struct AddAccountView: View {
               case .icloud:
                 let connected = await model.connectICloud(
                   email: email,
+                  username: username,
                   displayName: displayName,
                   appPassword: appPassword,
                   syncHistory: syncHistory
@@ -82,9 +101,15 @@ struct AddAccountView: View {
           .disabled(isDisabled)
         }
       }
+      .onAppear {
+        model.errorMessage = nil
+      }
+      .onChange(of: provider) { _, _ in
+        model.errorMessage = nil
+      }
     }
     #if os(macOS)
-    .frame(width: 420)
+    .frame(width: 460)
     #endif
   }
 
