@@ -185,6 +185,7 @@ final class AppModel {
 
   func startGmailAuth(displayName: String, syncHistory: Bool) async -> URL? {
     isConnectingAccount = true
+    statusMessage = "Starting Google sign-in"
     defer { isConnectingAccount = false }
 
     do {
@@ -193,6 +194,7 @@ final class AppModel {
         syncHistory: syncHistory
       ))
       errorMessage = nil
+      statusMessage = nil
       return URL(string: response.authorizationURL)
     } catch {
       errorMessage = error.localizedDescription
@@ -202,6 +204,7 @@ final class AppModel {
 
   func connectICloud(email: String, displayName: String, appPassword: String, syncHistory: Bool) async -> Bool {
     isConnectingAccount = true
+    statusMessage = "Connecting iCloud Mail"
     defer { isConnectingAccount = false }
 
     do {
@@ -217,6 +220,7 @@ final class AppModel {
       return true
     } catch {
       errorMessage = error.localizedDescription
+      statusMessage = nil
       return false
     }
   }

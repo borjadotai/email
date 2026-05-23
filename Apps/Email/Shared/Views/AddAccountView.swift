@@ -36,6 +36,12 @@ struct AddAccountView: View {
           Toggle("Full history", isOn: $syncHistory)
         }
 
+        if model.isConnectingAccount {
+          Section {
+            ProgressView(model.statusMessage ?? "Connecting")
+          }
+        }
+
         if provider == .gmail, model.authSettings?.gmailConfigured != true {
           Section {
             Text("Google sign-in is unavailable in this build.")

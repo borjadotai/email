@@ -200,7 +200,7 @@ struct MailAPIClient {
 
     var request = URLRequest(url: url)
     request.httpMethod = method
-    request.timeoutInterval = 20
+    request.timeoutInterval = timeout(for: path)
     if let bodyData {
       request.httpBody = bodyData
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -221,6 +221,13 @@ struct MailAPIClient {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .useDefaultKeys
     return try decoder.decode(T.self, from: data)
+  }
+
+  private func timeout(for path: String) -> TimeInterval {
+    if path == "api/auth/icloud/connect" || path.hasSuffix("/sync") {
+      return 180
+    }
+    return 30
   }
 }
 

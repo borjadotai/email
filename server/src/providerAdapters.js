@@ -113,7 +113,9 @@ export class ProviderService {
     const password = requiredString(input.appPassword, "appPassword");
     const syncHistory = input.syncHistory !== false;
     const displayName = input.displayName?.trim() || email;
+    console.log(`${new Date().toISOString()} iCloud verifying IMAP email=${redactEmail(email)}`);
     const imapAuth = await verifyICloudIMAP(email, password);
+    console.log(`${new Date().toISOString()} iCloud verifying SMTP email=${redactEmail(email)}`);
     await verifyICloudSMTP(email, password);
 
     const account = this.store.createOrUpdateAccount({
@@ -134,6 +136,7 @@ export class ProviderService {
     });
     this.secretStore.set(secretKey(account.id, "icloud.app_password"), password);
 
+    console.log(`${new Date().toISOString()} iCloud syncing INBOX email=${redactEmail(email)}`);
     const sync = await this.syncICloudAccount(account.id, {
       limit: syncHistory ? Math.min(this.initialSyncLimit(), 200) : 50
     });
@@ -539,6 +542,12 @@ function escapeHTML(value) {
 
 function secretKey(accountId, name) {
   return `account:${accountId}:${name}`;
+}
+
+function redactEmail(value) {
+  if (typeof value !== "string" || !value.includes("@")) return "unknown";
+  const [local, domain] = value.split("@");
+  return `${local.slice(0, 2)}***@${domain}`;
 }
 
 function requiredString(value, name) {

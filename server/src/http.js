@@ -12,6 +12,7 @@ export function createServer({ store, providers, host = "127.0.0.1", port = 7331
       await route({ req, res, store, providers, events, baseURL });
     } catch (error) {
       const status = error.status ?? 500;
+      console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
       sendJSON(res, status, {
         error: {
           message: status === 500 ? "Internal server error." : error.message,
@@ -65,6 +66,7 @@ async function route({ req, res, store, providers, events, baseURL }) {
 
   if (req.method === "POST" && path === "/api/auth/gmail/start") {
     requireProviders(providers);
+    console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);
     sendJSON(res, 200, await providers.startGmailAuth(await readJSON(req)));
     return;
   }
@@ -80,7 +82,10 @@ async function route({ req, res, store, providers, events, baseURL }) {
 
   if (req.method === "POST" && path === "/api/auth/icloud/connect") {
     requireProviders(providers);
-    const result = await providers.connectICloud(await readJSON(req));
+    const body = await readJSON(req);
+    console.log(`${new Date().toISOString()} POST /api/auth/icloud/connect email=${redactEmail(body.email)}`);
+    const result = await providers.connectICloud(body);
+    console.log(`${new Date().toISOString()} iCloud connected email=${redactEmail(result.account.email)} imported=${result.sync.imported}`);
     events.emit("accounts.changed", { accountId: result.account.id });
     events.emit("emails.changed", { accountId: result.account.id });
     sendJSON(res, 200, result);
@@ -261,6 +266,12 @@ function escapeHTML(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function redactEmail(value) {
+  if (typeof value !== "string" || !value.includes("@")) return "unknown";
+  const [local, domain] = value.split("@");
+  return `${local.slice(0, 2)}***@${domain}`;
 }
 
 async function readJSON(req) {
