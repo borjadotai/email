@@ -23,9 +23,16 @@ This repository is intended to be public-safe.
 
 ## Runtime Layout
 
-The macOS/iOS apps talk to the configured server endpoint. Provider credentials stay on the machine running the server, such as a private Mac mini on a tailnet or another trusted network.
+The macOS/iOS apps talk to the configured server endpoint. Debug builds default
+to a local server, while Release builds can default to the shared hosted API.
+Provider credentials stay on the machine or service running the server, such as
+a private Mac mini, a tailnet host, or the Fly.io runtime.
 
-The server reads provider configuration from its runtime environment and stores per-account secrets in the macOS Keychain. Release packaging must not copy `.env` or other secret files into the app bundle.
+The server reads provider configuration from its runtime environment and stores
+per-account secrets in the configured server-side secret store: macOS Keychain
+for local self-hosting, or encrypted Postgres rows for the hosted runtime.
+Release packaging must not copy `.env` or other secret files into the app
+bundle.
 
 ## Public Release Checklist
 

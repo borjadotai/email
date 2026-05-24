@@ -150,8 +150,10 @@ Download the latest `Email-mac.dmg` from:
 https://github.com/borjadotai/email/releases/latest
 ```
 
-Drag `Email.app` to Applications, open it, then set the Server URL in Settings.
-Use the same URL you entered during server setup, for example:
+Drag `Email.app` to Applications and open it. Release builds default to the
+hosted backend URL baked into the app. For personal self-hosting or Debug builds,
+set the Server URL in Settings to the URL you entered during server setup, for
+example:
 
 ```text
 http://your-server:7331
@@ -175,7 +177,9 @@ Xcode:
 4. Set your signing team if Xcode asks.
 5. Press Run.
 
-Open the app on the phone and set the same Server URL as the macOS app.
+Release builds default to the hosted backend URL baked into the app. For
+personal self-hosting or Debug builds, open the app on the phone and set the
+same Server URL as the macOS app.
 
 ## Keep It Updated
 
@@ -282,10 +286,12 @@ dist/Email-mac.dmg
 
 The packaged app bundles the local Node server under `Email.app/Contents/Resources/Server` for local/internal runs. If its configured server URL is loopback, it starts that bundled server automatically on `127.0.0.1:7331` when a dev server is not already running.
 
-Provider secrets should not be bundled into the app. For builds that should use a shared backend, bake only the backend URL into the app:
+Provider secrets should not be bundled into the app. Release builds default to
+the hosted backend. For builds that should use a different shared backend, bake
+only that backend URL into the app:
 
 ```sh
-EMAIL_RELEASE_SERVER_URL=http://your-server:7331 npm run package:mac
+EMAIL_RELEASE_SERVER_URL=https://your-backend.example.com npm run package:mac
 ```
 
 Run the backend separately with the provider secrets in its server environment. Public direct-download distribution requires Developer ID signing and notarization:

@@ -84,6 +84,12 @@ The macOS and iOS apps need only public runtime config:
 - Supabase URL
 - Supabase publishable key
 
+Release builds default `EmailDefaultServerURL` to
+`https://dearly-email.fly.dev`. Debug builds stay on `http://127.0.0.1:7331` so
+local development continues to use the bundled/local server. Override
+`EMAIL_RELEASE_SERVER_URL` when packaging a release against a different hosted
+API.
+
 They must never contain `SUPABASE_SERVICE_ROLE_KEY`, `EMAIL_POSTGRES_URL`,
 Google client secrets, APNs private keys, or `EMAIL_SECRET_ENCRYPTION_KEY`.
 
