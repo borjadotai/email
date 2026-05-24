@@ -5,6 +5,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
 import { base64url, formatAddress, makeTextMessage } from "./mime.js";
+import { errorContext, isTokenRefreshFailure, operationalInfo, operationalWarn } from "./operationalLog.js";
 import { httpError } from "./store.js";
 
 const GMAIL_SCOPES = [
@@ -263,140 +264,144 @@ export class ProviderService {
   async syncGmailAccount(accountId, { limit = 100 } = {}) {
     const account = await this.store.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
-    const client = await this.authorizedGmailClient(account);
-    const gmail = google.gmail({ version: "v1", auth: client });
+    return await this.withSyncLogging(account, { limit }, async () => {
+      const client = await this.authorizedGmailClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
 
-    const labels = await gmail.users.labels.list({ userId: "me" });
-    const userLabels = new Map();
-    for (const label of labels.data.labels ?? []) {
-      if (label.type === "user" && label.name && label.id) {
-        const localLabel = await this.store.findOrCreateLabel({
-          accountId: account.id,
-          name: label.name,
-          color: "blue"
-        });
-        userLabels.set(label.id, localLabel.id);
+      const labels = await gmail.users.labels.list({ userId: "me" });
+      const userLabels = new Map();
+      for (const label of labels.data.labels ?? []) {
+        if (label.type === "user" && label.name && label.id) {
+          const localLabel = await this.store.findOrCreateLabel({
+            accountId: account.id,
+            name: label.name,
+            color: "blue"
+          });
+          userLabels.set(label.id, localLabel.id);
+        }
       }
-    }
 
-    let imported = 0;
-    const newEmails = [];
-    let pageToken = undefined;
-    do {
-      const pageSize = Math.min(500, Math.max(1, limit - imported));
-      const list = await gmail.users.messages.list({
-        userId: "me",
-        maxResults: pageSize,
-        pageToken,
-        includeSpamTrash: false
-      });
-      const messages = list.data.messages ?? [];
-      for (const item of messages) {
-        if (!item.id) continue;
-        const message = await gmail.users.messages.get({
+      let imported = 0;
+      const newEmails = [];
+      let pageToken = undefined;
+      do {
+        const pageSize = Math.min(500, Math.max(1, limit - imported));
+        const list = await gmail.users.messages.list({
           userId: "me",
-          id: item.id,
-          format: "full"
+          maxResults: pageSize,
+          pageToken,
+          includeSpamTrash: false
         });
-        const mailbox = await this.gmailMailboxFor(account.id, message.data);
-        const saved = await this.store.upsertProviderEmail(gmailMessageToEmail({
-          account,
-          message: message.data,
-          mailboxId: mailbox.id,
-          store: this.store,
-          attachments: await gmailAttachmentsForMessage(gmail, message.data)
-        }));
-        if (saved.wasNew) {
-          newEmails.push(saved);
-        }
-        for (const labelId of message.data.labelIds ?? []) {
-          const localLabelId = userLabels.get(labelId);
-          if (localLabelId) {
-            await this.store.setEmailLabel(saved.id, localLabelId, "add");
+        const messages = list.data.messages ?? [];
+        for (const item of messages) {
+          if (!item.id) continue;
+          const message = await gmail.users.messages.get({
+            userId: "me",
+            id: item.id,
+            format: "full"
+          });
+          const mailbox = await this.gmailMailboxFor(account.id, message.data);
+          const saved = await this.store.upsertProviderEmail(gmailMessageToEmail({
+            account,
+            message: message.data,
+            mailboxId: mailbox.id,
+            store: this.store,
+            attachments: await gmailAttachmentsForMessage(gmail, message.data)
+          }));
+          if (saved.wasNew) {
+            newEmails.push(saved);
           }
+          for (const labelId of message.data.labelIds ?? []) {
+            const localLabelId = userLabels.get(labelId);
+            if (localLabelId) {
+              await this.store.setEmailLabel(saved.id, localLabelId, "add");
+            }
+          }
+          imported += 1;
+          if (imported >= limit) break;
         }
-        imported += 1;
-        if (imported >= limit) break;
-      }
-      pageToken = list.data.nextPageToken;
-    } while (pageToken && imported < limit);
+        pageToken = list.data.nextPageToken;
+      } while (pageToken && imported < limit);
 
-    const profile = await gmail.users.getProfile({ userId: "me" });
-    await this.store.markAccountSynced(account.id, {
-      gmailHistoryId: profile.data.historyId ?? account.providerMetadata.gmailHistoryId ?? null,
-      gmailMessagesTotal: profile.data.messagesTotal ?? null,
-      gmailThreadsTotal: profile.data.threadsTotal ?? null
+      const profile = await gmail.users.getProfile({ userId: "me" });
+      await this.store.markAccountSynced(account.id, {
+        gmailHistoryId: profile.data.historyId ?? account.providerMetadata.gmailHistoryId ?? null,
+        gmailMessagesTotal: profile.data.messagesTotal ?? null,
+        gmailThreadsTotal: profile.data.threadsTotal ?? null
+      });
+
+      return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
     });
-
-    return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
   }
 
   async syncICloudAccount(accountId, { limit = 100 } = {}) {
     const account = await this.store.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
-    const password = await this.secretStore.get(secretKey(account.id, "icloud.app_password"));
-    if (!password) throw httpError(400, "iCloud app-specific password is missing. Reconnect the account.");
+    return await this.withSyncLogging(account, { limit }, async () => {
+      const password = await this.secretStore.get(secretKey(account.id, "icloud.app_password"));
+      if (!password) throw httpError(400, "iCloud app-specific password is missing. Reconnect the account.");
 
-    const user = account.providerMetadata.imapUsername ?? account.email;
-    const client = createICloudIMAPClient(user, password);
+      const user = account.providerMetadata.imapUsername ?? account.email;
+      const client = createICloudIMAPClient(user, password);
 
-    let imported = 0;
-    const newEmails = [];
-    let syncMetadata = null;
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock("INBOX");
+      let imported = 0;
+      const newEmails = [];
+      let syncMetadata = null;
+      await client.connect();
       try {
-        const exists = client.mailbox?.exists ?? 0;
-        const syncWindow = iCloudSyncWindow(account, client.mailbox, exists, limit);
-        syncMetadata = syncWindow.metadata;
+        const lock = await client.getMailboxLock("INBOX");
+        try {
+          const exists = client.mailbox?.exists ?? 0;
+          const syncWindow = iCloudSyncWindow(account, client.mailbox, exists, limit);
+          syncMetadata = syncWindow.metadata;
 
-        if (exists === 0) {
-          await this.store.markAccountSynced(account.id, syncMetadata);
-          return { provider: "icloud", imported: 0 };
-        }
-
-        if (!syncWindow.range) {
-          await this.store.markAccountSynced(account.id, syncWindow.metadata);
-          return { provider: "icloud", imported: 0 };
-        }
-
-        let maxUID = syncWindow.lastUID;
-        for await (const message of client.fetch(syncWindow.range, {
-          uid: true,
-          flags: true,
-          internalDate: true,
-          source: true
-        }, syncWindow.fetchOptions)) {
-          const parsed = await simpleParser(message.source);
-          const mailbox = await this.iCloudMailboxFor(account.id, parsed);
-          const saved = await this.store.upsertProviderEmail(iCloudMessageToEmail({
-            account,
-            parsed,
-            message,
-            mailboxId: mailbox.id,
-            store: this.store,
-            attachments: iCloudAttachmentsFromParsed(parsed)
-          }));
-          if (saved.wasNew) {
-            newEmails.push(saved);
+          if (exists === 0) {
+            await this.store.markAccountSynced(account.id, syncMetadata);
+            return { provider: "icloud", imported: 0 };
           }
-          if (Number.isInteger(message.uid) && message.uid > maxUID) {
-            maxUID = message.uid;
+
+          if (!syncWindow.range) {
+            await this.store.markAccountSynced(account.id, syncWindow.metadata);
+            return { provider: "icloud", imported: 0 };
           }
-          imported += 1;
+
+          let maxUID = syncWindow.lastUID;
+          for await (const message of client.fetch(syncWindow.range, {
+            uid: true,
+            flags: true,
+            internalDate: true,
+            source: true
+          }, syncWindow.fetchOptions)) {
+            const parsed = await simpleParser(message.source);
+            const mailbox = await this.iCloudMailboxFor(account.id, parsed);
+            const saved = await this.store.upsertProviderEmail(iCloudMessageToEmail({
+              account,
+              parsed,
+              message,
+              mailboxId: mailbox.id,
+              store: this.store,
+              attachments: iCloudAttachmentsFromParsed(parsed)
+            }));
+            if (saved.wasNew) {
+              newEmails.push(saved);
+            }
+            if (Number.isInteger(message.uid) && message.uid > maxUID) {
+              maxUID = message.uid;
+            }
+            imported += 1;
+          }
+          syncWindow.metadata.icloudInboxLastUid = maxUID;
+          syncMetadata = syncWindow.metadata;
+        } finally {
+          lock.release();
         }
-        syncWindow.metadata.icloudInboxLastUid = maxUID;
-        syncMetadata = syncWindow.metadata;
       } finally {
-        lock.release();
+        await safeLogout(client, user);
       }
-    } finally {
-      await safeLogout(client, user);
-    }
 
-    await this.store.markAccountSynced(account.id, syncMetadata);
-    return { provider: "icloud", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+      await this.store.markAccountSynced(account.id, syncMetadata);
+      return { provider: "icloud", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+    });
   }
 
   async sendGmailMessage(account, email, input) {
@@ -461,7 +466,7 @@ export class ProviderService {
       return { status: "local_only", provider: "gmail" };
     }
 
-    const client = this.authorizedGmailClient(account);
+    const client = await this.authorizedGmailClient(account);
     const gmail = google.gmail({ version: "v1", auth: client });
     await gmail.users.messages.trash({
       userId: "me",
@@ -556,15 +561,34 @@ export class ProviderService {
     const account = await this.store.getAccount(email.accountId);
     if (!account) throw httpError(404, "Account not found.");
 
-    let attachments = [];
-    if (account.provider === "gmail") {
-      attachments = await this.gmailAttachmentsForEmail(account, email);
-    } else if (account.provider === "icloud") {
-      attachments = await this.iCloudAttachmentsForEmail(account, email);
-    }
+    const startedAt = Date.now();
+    try {
+      let attachments = [];
+      if (account.provider === "gmail") {
+        attachments = await this.gmailAttachmentsForEmail(account, email);
+      } else if (account.provider === "icloud") {
+        attachments = await this.iCloudAttachmentsForEmail(account, email);
+      }
 
-    await this.store.replaceEmailAttachments(email.id, attachments);
-    return await this.store.attachmentsForEmail(email.id);
+      await this.store.replaceEmailAttachments(email.id, attachments);
+      operationalInfo("attachments.fetch.completed", {
+        provider: account.provider,
+        accountId: account.id,
+        emailId: email.id,
+        attachmentCount: attachments.length,
+        durationMs: Date.now() - startedAt
+      });
+      return await this.store.attachmentsForEmail(email.id);
+    } catch (error) {
+      operationalWarn("attachments.fetch.failed", {
+        provider: account.provider,
+        accountId: account.id,
+        emailId: email.id,
+        durationMs: Date.now() - startedAt,
+        error: errorContext(error)
+      });
+      throw error;
+    }
   }
 
   async gmailAttachmentsForEmail(account, email) {
@@ -608,10 +632,78 @@ export class ProviderService {
 
   async authorizedGmailClient(account) {
     const refreshToken = await this.secretStore.get(secretKey(account.id, "gmail.refresh_token"));
-    if (!refreshToken) throw httpError(400, "Gmail refresh token is missing. Reconnect the account.");
+    if (!refreshToken) {
+      operationalWarn("provider.token.missing", {
+        provider: "gmail",
+        accountId: account.id
+      });
+      throw httpError(400, "Gmail refresh token is missing. Reconnect the account.");
+    }
     const client = this.gmailOAuthClient();
     client.setCredentials({ refresh_token: refreshToken });
+    client.on("tokens", tokens => {
+      this.handleGmailTokenRefresh(account, tokens).catch(error => {
+        operationalWarn("provider.token_refresh.failed", {
+          provider: "gmail",
+          accountId: account.id,
+          error: errorContext(error)
+        });
+      });
+    });
     return client;
+  }
+
+  async handleGmailTokenRefresh(account, tokens = {}) {
+    if (tokens.refresh_token) {
+      await this.secretStore.set(secretKey(account.id, "gmail.refresh_token"), tokens.refresh_token);
+    }
+    if (tokens.access_token || tokens.refresh_token) {
+      operationalInfo("provider.token_refresh.succeeded", {
+        provider: "gmail",
+        accountId: account.id,
+        refreshTokenRotated: Boolean(tokens.refresh_token)
+      });
+    }
+  }
+
+  async withSyncLogging(account, { limit }, fn) {
+    const startedAt = Date.now();
+    operationalInfo("provider.sync.started", {
+      provider: account.provider,
+      accountId: account.id,
+      userId: this.user?.id,
+      limit
+    });
+    try {
+      const result = await fn();
+      operationalInfo("provider.sync.completed", {
+        provider: result?.provider ?? account.provider,
+        accountId: account.id,
+        userId: this.user?.id,
+        imported: result?.imported ?? 0,
+        newEmailCount: result?.newEmails?.length ?? result?.newEmailIds?.length ?? 0,
+        durationMs: Date.now() - startedAt
+      });
+      return result;
+    } catch (error) {
+      const context = errorContext(error);
+      operationalWarn("provider.sync.failed", {
+        provider: account.provider,
+        accountId: account.id,
+        userId: this.user?.id,
+        durationMs: Date.now() - startedAt,
+        error: context
+      });
+      if (isTokenRefreshFailure(error)) {
+        operationalWarn("provider.token_refresh.failed", {
+          provider: account.provider,
+          accountId: account.id,
+          userId: this.user?.id,
+          error: context
+        });
+      }
+      throw error;
+    }
   }
 
   gmailOAuthClient() {

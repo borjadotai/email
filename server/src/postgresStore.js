@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import pg from "pg";
 import { createClient } from "@supabase/supabase-js";
 import { senderLogoURLForEmail } from "./logoResolver.js";
+import { errorContext, operationalWarn } from "./operationalLog.js";
 import { httpError } from "./store.js";
 
 const { Pool } = pg;
@@ -1077,6 +1078,13 @@ export class PostgresMailStore {
       upsert: true
     });
     if (error) {
+      operationalWarn("storage.attachment.upload_failed", {
+        bucket: this.attachmentBucket,
+        storagePath: path,
+        mimeType,
+        size: Buffer.byteLength(data),
+        error: errorContext(error)
+      });
       throw new Error(`Failed to upload attachment object: ${error.message ?? error}`);
     }
   }
@@ -1084,7 +1092,16 @@ export class PostgresMailStore {
   async downloadAttachmentObject(path) {
     if (!this.attachmentStorage) return null;
     const { data, error } = await this.attachmentStorage.download(path);
-    if (error || !data) return null;
+    if (error || !data) {
+      if (error) {
+        operationalWarn("storage.attachment.download_failed", {
+          bucket: this.attachmentBucket,
+          storagePath: path,
+          error: errorContext(error)
+        });
+      }
+      return null;
+    }
     return Buffer.from(await data.arrayBuffer());
   }
 

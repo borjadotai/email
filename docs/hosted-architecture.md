@@ -115,3 +115,9 @@ Rate limits are persisted in `email_private.api_rate_limits` so they apply
 across Fly machines. Defaults cover Gmail OAuth start/callback, iCloud connect,
 manual sync, sending, and attachment downloads; the `EMAIL_RATE_LIMIT_*` env vars
 in [.env.example](../.env.example) override the default limits and windows.
+
+Operational events are written to stdout with the `email_operational` prefix and
+a JSON payload. They cover background sync summaries, provider sync
+duration/import counts, provider failures, Gmail token refresh outcomes, push
+notifications, and attachment fetch/storage failures without logging provider
+tokens or app-specific passwords.

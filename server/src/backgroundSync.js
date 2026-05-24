@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import { errorContext, operationalInfo, operationalWarn } from "./operationalLog.js";
 
 export class BackgroundSyncService {
   constructor({
@@ -30,10 +31,21 @@ export class BackgroundSyncService {
     if (!this.intervalMs || this.timer) return;
     this.timer = setInterval(() => {
       this.runOnce().catch(error => {
+        operationalWarn("background_sync.failed", {
+          worker: this.leaseOwner,
+          error: errorContext(error)
+        });
         console.error(`${new Date().toISOString()} background account sync failed: ${error.message}`);
       });
     }, this.intervalMs);
     this.timer.unref?.();
+    operationalInfo("background_sync.enabled", {
+      intervalMs: this.intervalMs,
+      limit: this.limit,
+      batchSize: this.batchSize,
+      leaseTtlMs: this.leaseTtlMs,
+      worker: this.leaseOwner
+    });
     console.log(`${new Date().toISOString()} background account sync enabled intervalMs=${this.intervalMs}`);
   }
 
@@ -48,6 +60,7 @@ export class BackgroundSyncService {
       return { scanned: 0, synced: 0, failed: 0, skipped: 0 };
     }
     this.running = true;
+    const startedAt = Date.now();
     try {
       const staleBefore = this.intervalMs ? new Date(Date.now() - this.intervalMs) : null;
       const accounts = await this.store.listSyncableAccounts({
@@ -63,6 +76,12 @@ export class BackgroundSyncService {
           claimed = await this.claimAccount(account);
           if (!claimed) {
             skipped += 1;
+            operationalInfo("background_sync.account_skipped", {
+              accountId: account.id,
+              provider: account.provider,
+              reason: "lease_busy",
+              worker: this.leaseOwner
+            });
             continue;
           }
           const sync = await this.syncAccount(account);
@@ -70,6 +89,12 @@ export class BackgroundSyncService {
           await this.sendPushNotifications(account, sync?.newEmails);
         } catch (error) {
           failed += 1;
+          operationalWarn("background_sync.account_failed", {
+            accountId: account.id,
+            provider: account.provider,
+            worker: this.leaseOwner,
+            error: errorContext(error)
+          });
           console.warn(`${new Date().toISOString()} background sync failed account=${account.id}: ${error.message}`);
         } finally {
           if (claimed) {
@@ -77,7 +102,13 @@ export class BackgroundSyncService {
           }
         }
       }
-      return { scanned: accounts.length, synced, failed, skipped };
+      const result = { scanned: accounts.length, synced, failed, skipped };
+      operationalInfo("background_sync.completed", {
+        ...result,
+        durationMs: Date.now() - startedAt,
+        worker: this.leaseOwner
+      });
+      return result;
     } finally {
       this.running = false;
     }
@@ -98,6 +129,12 @@ export class BackgroundSyncService {
         owner: this.leaseOwner
       });
     } catch (error) {
+      operationalWarn("background_sync.lease_release_failed", {
+        accountId: account.id,
+        provider: account.provider,
+        worker: this.leaseOwner,
+        error: errorContext(error)
+      });
       console.warn(`${new Date().toISOString()} background sync lease release failed account=${account.id}: ${error.message}`);
     }
   }
@@ -128,9 +165,19 @@ export class BackgroundSyncService {
     try {
       const result = await scopedPush.sendNewEmailNotifications(newEmails);
       if (result?.sent > 0) {
+        operationalInfo("push.notifications.sent", {
+          accountId: account.id,
+          provider: account.provider,
+          sent: result.sent
+        });
         console.log(`${new Date().toISOString()} background push notifications sent=${result.sent}`);
       }
     } catch (error) {
+      operationalWarn("push.notifications.failed", {
+        accountId: account.id,
+        provider: account.provider,
+        error: errorContext(error)
+      });
       console.warn(`${new Date().toISOString()} background push notifications failed account=${account.id}: ${error.message}`);
     }
   }

@@ -1,5 +1,6 @@
 import { createServer as createHTTPServer } from "node:http";
 import { Buffer } from "node:buffer";
+import { errorContext, operationalInfo, operationalWarn } from "./operationalLog.js";
 import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
@@ -515,6 +516,11 @@ async function ensureStoredAttachments({ store, providers, email }) {
   try {
     await providers.ensureEmailAttachments(email);
   } catch (error) {
+    operationalWarn("attachments.ensure_failed", {
+      accountId: email.accountId,
+      emailId: email.id,
+      error: errorContext(error)
+    });
     console.warn(`${new Date().toISOString()} attachment fetch failed email=${email.id}: ${error.message}`);
   }
 }
@@ -625,9 +631,17 @@ async function sendPushNotifications(pushNotifications, newEmails = []) {
   try {
     const result = await pushNotifications.sendNewEmailNotifications(newEmails);
     if (result.sent > 0) {
+      operationalInfo("push.notifications.sent", {
+        sent: result.sent,
+        source: "http_request"
+      });
       console.log(`${new Date().toISOString()} push notifications sent=${result.sent}`);
     }
   } catch (error) {
+    operationalWarn("push.notifications.failed", {
+      source: "http_request",
+      error: errorContext(error)
+    });
     console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);
   }
 }
@@ -663,14 +677,36 @@ function authSuccessPage(result) {
 
 function syncAccountInBackground({ providers, events, accountId, limit, user }) {
   setTimeout(async () => {
+    const startedAt = Date.now();
     try {
+      operationalInfo("provider.sync.queued_started", {
+        accountId,
+        userId: user?.id,
+        provider: "gmail",
+        limit
+      });
       console.log(`${new Date().toISOString()} background sync started account=${accountId}`);
       const scopedProviders = !user?.isLocal && providers.forUser ? providers.forUser(user) : providers;
       const sync = await scopedProviders.syncGmailAccount(accountId, { limit });
+      operationalInfo("provider.sync.queued_completed", {
+        accountId,
+        userId: user?.id,
+        provider: sync.provider,
+        imported: sync.imported,
+        newEmailCount: sync.newEmails?.length ?? sync.newEmailIds?.length ?? 0,
+        durationMs: Date.now() - startedAt
+      });
       console.log(`${new Date().toISOString()} background sync completed account=${accountId} imported=${sync.imported}`);
       events.emit("emails.changed", { accountId }, user?.id);
       events.emit("accounts.changed", { accountId }, user?.id);
     } catch (error) {
+      operationalWarn("provider.sync.queued_failed", {
+        accountId,
+        userId: user?.id,
+        provider: "gmail",
+        durationMs: Date.now() - startedAt,
+        error: errorContext(error)
+      });
       console.error(`${new Date().toISOString()} background sync failed account=${accountId}: ${error.message}`);
     }
   }, 0);

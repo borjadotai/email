@@ -145,7 +145,7 @@ Current agent experience:
   Without leases, multiple workers could sync the same account concurrently.
 - [x] Add rate limits for auth-sensitive and provider-expensive endpoints:
   Gmail start, iCloud connect, manual sync, send, and attachment download.
-- [ ] Add operational logging for sync duration, imported count, provider errors,
+- [x] Add operational logging for sync duration, imported count, provider errors,
   token refresh failures, and attachment storage failures.
 - [ ] Re-run Supabase advisors before public testing and decide whether to move
   `citext` and `pg_trgm` extensions out of `public`.
