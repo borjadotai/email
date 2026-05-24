@@ -5,19 +5,42 @@ personal Mac mini server.
 
 ## 1. Supabase
 
-1. Create a dedicated Supabase project for Email.
-2. Apply `supabase/migrations/*`.
-3. Confirm the private `email-attachments` bucket exists.
-4. Enable the Supabase Auth providers you want public users to sign in with.
-5. Run the optional local integration test before touching production:
+Hosted project:
+
+- Organization: `Borja Labs`
+- Project: `dearly-email`
+- Ref: `gjfyisfuhkwqrzjuvfjd`
+- Region: `eu-west-2`
+- API URL: `https://gjfyisfuhkwqrzjuvfjd.supabase.co`
+- Publishable key: `sb_publishable_ceT0ggOi_XVq-wPaJLI6aQ_VgzhRweA`
+
+Setup checklist:
+
+1. Apply `supabase/migrations/*`.
+2. Confirm the private `email-attachments` bucket exists.
+3. Enable the Supabase Auth providers you want public users to sign in with.
+4. Run the optional local integration test before touching production:
    `npm run test:postgres` with `EMAIL_TEST_POSTGRES_URL`,
    `EMAIL_TEST_SUPABASE_URL`, `EMAIL_TEST_SUPABASE_PUBLISHABLE_KEY`, and
    `EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY`.
-6. Copy these values for the API runtime:
+5. Copy these values for the API runtime:
    - project URL
    - publishable key
    - service-role key
    - direct Postgres connection string
+
+Already applied migrations on `dearly-email`:
+
+- `hosted_multitenant_schema`
+- `persist_provider_auth_sessions`
+- `add_advisor_indexes_and_private_session_policy`
+
+Remaining Supabase advisor notes:
+
+- `citext` and `pg_trgm` are installed in `public` because the baseline schema
+  currently declares `public.citext` columns and public trigram indexes.
+- Unused-index notices are expected until production traffic exercises the
+  schema.
 
 Do not point the native apps directly at the mail tables. They authenticate with
 Supabase Auth, then call the Email API with the Supabase bearer token. The API is

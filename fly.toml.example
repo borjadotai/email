@@ -15,8 +15,8 @@ primary_region = "lhr"
   EMAIL_BACKGROUND_SYNC_LIMIT = "50"
   EMAIL_ATTACHMENT_BUCKET = "email-attachments"
   EMAIL_PUBLIC_BASE_URL = "https://dearly-email.fly.dev"
-  SUPABASE_URL = "https://PROJECT_REF.supabase.co"
-  SUPABASE_PUBLISHABLE_KEY = "sb_publishable_REPLACE_ME"
+  SUPABASE_URL = "https://gjfyisfuhkwqrzjuvfjd.supabase.co"
+  SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ceT0ggOi_XVq-wPaJLI6aQ_VgzhRweA"
 
 [http_service]
   internal_port = 8080
