@@ -141,3 +141,9 @@ extension MailLabel {
     }
   }
 }
+
+extension Color {
+  static var mailSelectionBackground: Color {
+    Color.primary.opacity(0.10)
+  }
+}

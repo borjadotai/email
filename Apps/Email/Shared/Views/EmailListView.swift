@@ -139,13 +139,14 @@ struct EmailListView: View {
         ContentUnavailableView("No Messages", systemImage: "tray")
       } else {
         ScrollViewReader { proxy in
-          List(selection: selection) {
+          List {
             ForEach(model.emails) { email in
               EmailRow(email: email)
-                .tag(email.id)
                 .id(email.id)
                 .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 14))
+                .listRowBackground(model.selectedEmailID == email.id ? Color.mailSelectionBackground : Color.clear)
                 .contentShape(Rectangle())
+                .accessibilityAddTraits(model.selectedEmailID == email.id ? .isSelected : [])
                 .transition(.asymmetric(
                   insertion: .opacity,
                   removal: .move(edge: .trailing).combined(with: .opacity)
@@ -180,19 +181,6 @@ struct EmailListView: View {
     }
   }
   #endif
-
-  private var selection: Binding<String?> {
-    Binding(
-      get: { model.selectedEmailID },
-      set: { newValue in
-        guard
-          let newValue,
-          let email = model.emails.first(where: { $0.id == newValue })
-        else { return }
-        select(email)
-      }
-    )
-  }
 
   private func select(_ email: EmailSummary) {
     guard model.selectedEmailID != email.id else {
@@ -392,7 +380,7 @@ private struct EmailRow: View {
         }
       }
     }
-    .padding(.vertical, 7)
+    .padding(.vertical, 10)
   }
 }
 

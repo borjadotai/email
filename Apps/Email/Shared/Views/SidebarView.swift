@@ -394,6 +394,6 @@ private struct SidebarButton: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .listRowBackground(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+    .listRowBackground(isSelected ? Color.mailSelectionBackground : Color.clear)
   }
 }
