@@ -141,7 +141,7 @@ Current agent experience:
   not just `/api/health`.
 - [ ] Invite one test user and run the two-user isolation checklist in
   [hosted-deployment.md](hosted-deployment.md).
-- [ ] Add per-account sync leases before scaling Fly above one running machine.
+- [x] Add per-account sync leases before scaling Fly above one running machine.
   Without leases, multiple workers could sync the same account concurrently.
 - [ ] Add rate limits for auth-sensitive and provider-expensive endpoints:
   Gmail start, iCloud connect, manual sync, send, and attachment download.

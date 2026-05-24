@@ -161,6 +161,47 @@ test("updates account settings through the API", async () => {
   }
 });
 
+test("manual account sync uses the shared account lease", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  const providers = new FakeSyncProviders();
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    server = createServer({ store, providers }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    assert.equal(store.claimSyncLease(account.id, { owner: "other-worker", ttlMs: 300_000 }), true);
+    const leased = await fetch(`${baseURL}/api/accounts/${account.id}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    assert.equal(leased.status, 409);
+    assert.equal(providers.synced.length, 0);
+    assert.equal(store.releaseSyncLease(account.id, { owner: "other-worker" }), true);
+
+    const synced = await requestJSON(`${baseURL}/api/accounts/${account.id}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 12 })
+    });
+    assert.equal(synced.sync.imported, 1);
+    assert.deepEqual(providers.synced, [{ accountId: account.id, userId: "local", limit: 12 }]);
+    assert.equal(store.claimSyncLease(account.id, { owner: "other-worker", ttlMs: 300_000 }), true);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("authenticated API requests are scoped to the bearer user", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
@@ -256,6 +297,19 @@ class HeaderAuthenticator {
       id: token,
       email: `${token}@example.com`,
       displayName: token
+    };
+  }
+}
+
+class FakeSyncProviders {
+  synced = [];
+
+  forStore(store, user) {
+    return {
+      syncAccount: async (accountId, options = {}) => {
+        this.synced.push({ accountId, userId: user.id, limit: options.limit });
+        return { provider: "gmail", imported: 1, newEmails: [] };
+      }
     };
   }
 }

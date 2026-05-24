@@ -69,7 +69,29 @@ test("Postgres store lists connected accounts eligible for hosted background syn
   assert.ok(query);
   assert.match(query.sql, /a\.status = 'connected'/u);
   assert.match(query.sql, /a\.last_sync_at IS NULL OR a\.last_sync_at <= \$2/u);
-  assert.deepEqual(query.params, [20, "2026-05-24T09:00:00.000Z"]);
+  assert.match(query.sql, /a\.sync_lease_until IS NULL OR a\.sync_lease_until <= \$3/u);
+  assert.equal(query.params[0], 20);
+  assert.equal(query.params[1], "2026-05-24T09:00:00.000Z");
+  assert.ok(Date.parse(query.params[2]));
+});
+
+test("Postgres store claims and releases account sync leases atomically", async () => {
+  const pool = new FakePool();
+  const store = new PostgresMailStore({ pool });
+
+  assert.equal(await store.claimSyncLease("account-1", { owner: "worker-a", ttlMs: 60_000 }), true);
+  assert.equal(await store.releaseSyncLease("account-1", { owner: "worker-a" }), true);
+
+  const claim = pool.queries.find(query => /SET sync_lease_owner = \$1/u.test(query.sql));
+  assert.ok(claim);
+  assert.match(claim.sql, /sync_lease_until IS NULL/u);
+  assert.match(claim.sql, /sync_lease_owner = \$1/u);
+  assert.deepEqual(claim.params, ["worker-a", 60_000, "account-1"]);
+
+  const release = pool.queries.find(query => /SET sync_lease_owner = NULL/u.test(query.sql));
+  assert.ok(release);
+  assert.match(release.sql, /WHERE id = \$1 AND sync_lease_owner = \$2/u);
+  assert.deepEqual(release.params, ["account-1", "worker-a"]);
 });
 
 test("Postgres store records opens without authenticated context", async () => {

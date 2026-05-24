@@ -937,6 +937,13 @@ test("lists connected accounts eligible for hosted background sync", () => {
       displayName: "Alice",
       isLocal: false
     });
+
+    assert.equal(store.claimSyncLease(aliceAccount.id, { owner: "worker-a", ttlMs: 300_000 }), true);
+    assert.deepEqual(store.listSyncableAccounts().map(account => account.id), []);
+    assert.equal(store.claimSyncLease(aliceAccount.id, { owner: "worker-b", ttlMs: 300_000 }), false);
+    assert.equal(store.releaseSyncLease(aliceAccount.id, { owner: "worker-b" }), false);
+    assert.equal(store.releaseSyncLease(aliceAccount.id, { owner: "worker-a" }), true);
+    assert.deepEqual(store.listSyncableAccounts().map(account => account.id), [aliceAccount.id]);
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

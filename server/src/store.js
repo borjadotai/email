@@ -81,6 +81,8 @@ export class MailStore {
         status TEXT NOT NULL DEFAULT 'needs_auth',
         sync_history INTEGER NOT NULL DEFAULT 1,
         last_sync_at TEXT,
+        sync_lease_owner TEXT,
+        sync_lease_until TEXT,
         provider_metadata_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
       );
@@ -263,6 +265,8 @@ export class MailStore {
         WHERE provider_uid IS NOT NULL;
     `);
     this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("accounts", "sync_lease_owner", "TEXT");
+    this.ensureColumn("accounts", "sync_lease_until", "TEXT");
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
     this.ensureColumn("emails", "references_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -477,6 +481,7 @@ export class MailStore {
       staleSQL = "AND (a.last_sync_at IS NULL OR a.last_sync_at <= ?)";
       args.push(dateString(staleBefore));
     }
+    args.push(new Date().toISOString());
     args.push(clampInt(limit, 1, 500, 100));
     return this.db.prepare(`
       SELECT a.id, a.provider, a.email, a.display_name AS displayName,
@@ -490,6 +495,7 @@ export class MailStore {
       JOIN app_users u ON u.id = l.user_id
       WHERE a.status = 'connected'
         ${staleSQL}
+        AND (a.sync_lease_until IS NULL OR a.sync_lease_until <= ?)
       ORDER BY COALESCE(a.last_sync_at, '1970-01-01T00:00:00.000Z') ASC, a.created_at ASC
       LIMIT ?
     `).all(...args).map(row => ({
@@ -503,6 +509,30 @@ export class MailStore {
         isLocal: row.userId === "local"
       }
     }));
+  }
+
+  claimSyncLease(id, { owner = "local", ttlMs = 300_000 } = {}) {
+    const leaseOwner = optionalString(owner) ?? "local";
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + clampInt(ttlMs, 1_000, 60 * 60 * 1000, 300_000));
+    const result = this.db.prepare(`
+      UPDATE accounts
+      SET sync_lease_owner = ?, sync_lease_until = ?
+      WHERE id = ?
+        AND status = 'connected'
+        AND (sync_lease_until IS NULL OR sync_lease_until <= ? OR sync_lease_owner = ?)
+    `).run(leaseOwner, expiresAt.toISOString(), id, now.toISOString(), leaseOwner);
+    return result.changes === 1;
+  }
+
+  releaseSyncLease(id, { owner = "local" } = {}) {
+    const leaseOwner = optionalString(owner) ?? "local";
+    const result = this.db.prepare(`
+      UPDATE accounts
+      SET sync_lease_owner = NULL, sync_lease_until = NULL
+      WHERE id = ? AND sync_lease_owner = ?
+    `).run(id, leaseOwner);
+    return result.changes === 1;
   }
 
   getProfile() {

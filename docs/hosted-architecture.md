@@ -32,6 +32,8 @@ backend that can serve multiple users and multiple client devices.
   for a durable process than short serverless invocations.
 - Hosted background sync is controlled by `EMAIL_BACKGROUND_SYNC_INTERVAL_MS`
   and syncs connected accounts under their owning Supabase user context.
+  `EMAIL_SYNC_LEASE_TTL_MS` controls the per-account lease used to avoid
+  duplicate syncs when more than one server process is running.
 
 ## Device Storage Strategy
 

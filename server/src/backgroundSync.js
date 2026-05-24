@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
+
 export class BackgroundSyncService {
   constructor({
     store,
@@ -6,7 +9,9 @@ export class BackgroundSyncService {
     events = null,
     intervalMs = 0,
     limit = 50,
-    batchSize = 100
+    batchSize = 100,
+    leaseOwner = null,
+    leaseTtlMs = 300_000
   } = {}) {
     this.store = store;
     this.providers = providers;
@@ -15,6 +20,8 @@ export class BackgroundSyncService {
     this.intervalMs = Math.max(0, Number(intervalMs) || 0);
     this.limit = Math.max(1, Number(limit) || 50);
     this.batchSize = Math.max(1, Number(batchSize) || 100);
+    this.leaseOwner = leaseOwner || `${hostname()}:${process.pid}:${randomUUID()}`;
+    this.leaseTtlMs = Math.max(1_000, Number(leaseTtlMs) || 300_000);
     this.timer = null;
     this.running = false;
   }
@@ -38,7 +45,7 @@ export class BackgroundSyncService {
 
   async runOnce() {
     if (this.running || !this.providers || !this.store?.listSyncableAccounts) {
-      return { scanned: 0, synced: 0, failed: 0 };
+      return { scanned: 0, synced: 0, failed: 0, skipped: 0 };
     }
     this.running = true;
     try {
@@ -49,19 +56,49 @@ export class BackgroundSyncService {
       });
       let synced = 0;
       let failed = 0;
+      let skipped = 0;
       for (const account of accounts) {
+        let claimed = false;
         try {
+          claimed = await this.claimAccount(account);
+          if (!claimed) {
+            skipped += 1;
+            continue;
+          }
           const sync = await this.syncAccount(account);
           synced += 1;
           await this.sendPushNotifications(account, sync?.newEmails);
         } catch (error) {
           failed += 1;
           console.warn(`${new Date().toISOString()} background sync failed account=${account.id}: ${error.message}`);
+        } finally {
+          if (claimed) {
+            await this.releaseAccount(account);
+          }
         }
       }
-      return { scanned: accounts.length, synced, failed };
+      return { scanned: accounts.length, synced, failed, skipped };
     } finally {
       this.running = false;
+    }
+  }
+
+  async claimAccount(account) {
+    if (!this.store?.claimSyncLease) return true;
+    return await this.store.claimSyncLease(account.id, {
+      owner: this.leaseOwner,
+      ttlMs: this.leaseTtlMs
+    });
+  }
+
+  async releaseAccount(account) {
+    if (!this.store?.releaseSyncLease) return;
+    try {
+      await this.store.releaseSyncLease(account.id, {
+        owner: this.leaseOwner
+      });
+    } catch (error) {
+      console.warn(`${new Date().toISOString()} background sync lease release failed account=${account.id}: ${error.message}`);
     }
   }
 

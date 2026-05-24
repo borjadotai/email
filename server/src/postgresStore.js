@@ -182,6 +182,8 @@ export class PostgresMailStore {
       args.push(dateString(staleBefore));
       staleSQL = `AND (a.last_sync_at IS NULL OR a.last_sync_at <= $${args.length})`;
     }
+    args.push(new Date().toISOString());
+    const leaseSQL = `AND (a.sync_lease_until IS NULL OR a.sync_lease_until <= $${args.length})`;
     const result = await this.pool.query(`
       SELECT a.id, a.provider, a.provider_account_email AS email,
              a.display_name AS "displayName", a.avatar_url AS "avatarURL",
@@ -193,6 +195,7 @@ export class PostgresMailStore {
       JOIN public.app_users u ON u.id = a.user_id
       WHERE a.status = 'connected'
         ${staleSQL}
+        ${leaseSQL}
       ORDER BY COALESCE(a.last_sync_at, '1970-01-01'::timestamptz) ASC, a.created_at ASC
       LIMIT $1
     `, args);
@@ -204,6 +207,36 @@ export class PostgresMailStore {
         displayName: row.userDisplayName
       }
     }));
+  }
+
+  async claimSyncLease(id, { owner = "hosted-api", ttlMs = 300_000 } = {}) {
+    const leaseOwner = optionalString(owner) ?? "hosted-api";
+    const leaseTtlMs = clampInt(ttlMs, 1_000, 60 * 60 * 1000, 300_000);
+    const result = await this.pool.query(`
+      UPDATE public.accounts
+      SET sync_lease_owner = $1,
+          sync_lease_until = timezone('utc', now()) + ($2::int * interval '1 millisecond')
+      WHERE id = $3
+        AND status = 'connected'
+        AND (
+          sync_lease_until IS NULL
+          OR sync_lease_until <= timezone('utc', now())
+          OR sync_lease_owner = $1
+        )
+      RETURNING id
+    `, [leaseOwner, leaseTtlMs, id]);
+    return result.rowCount === 1;
+  }
+
+  async releaseSyncLease(id, { owner = "hosted-api" } = {}) {
+    const leaseOwner = optionalString(owner) ?? "hosted-api";
+    const result = await this.pool.query(`
+      UPDATE public.accounts
+      SET sync_lease_owner = NULL,
+          sync_lease_until = NULL
+      WHERE id = $1 AND sync_lease_owner = $2
+    `, [id, leaseOwner]);
+    return result.rowCount === 1;
   }
 
   async getAccount(id) {

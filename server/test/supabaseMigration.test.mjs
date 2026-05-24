@@ -65,6 +65,12 @@ test("hosted Supabase migration creates private object storage and full-text ind
   assert.match(migration, /create index emails_search_vector_idx on public\.emails using gin\(search_vector\)/u);
 });
 
+test("hosted Supabase migration adds account sync lease columns", () => {
+  assert.match(migration, /add column if not exists sync_lease_owner text/u);
+  assert.match(migration, /add column if not exists sync_lease_until timestamptz/u);
+  assert.match(migration, /create index if not exists accounts_sync_lease_idx/u);
+});
+
 test("hosted Supabase migration covers composite tenant foreign keys", () => {
   for (const index of [
     "provider_secrets_account_user_idx",

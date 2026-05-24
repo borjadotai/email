@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+const manualSyncLeaseTtlMs = 15 * 60 * 1000;
 
 export function createServer({ store, providers, pushNotifications, authenticator, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
@@ -160,13 +161,35 @@ async function route({ req, res, store, providers, pushNotifications, authentica
   const accountSyncMatch = path.match(/^\/api\/accounts\/([^/]+)\/sync$/);
   if (accountSyncMatch && req.method === "POST") {
     requireProviders(requestProviders);
+    const accountId = accountSyncMatch[1];
+    const account = await requestStore.getAccount(accountId);
+    if (!account) throw httpError(404, "Account not found.");
+    const leaseOwner = `manual:${user.id}`;
+    let claimed = false;
     const body = await readJSON(req);
-    const sync = await requestProviders.syncAccount(accountSyncMatch[1], {
-      limit: body.limit
-    });
-    events.emit("emails.changed", { accountId: accountSyncMatch[1] }, user.id);
-    await sendPushNotifications(requestPushNotifications, sync.newEmails);
-    sendJSON(res, 200, { sync: publicSyncResult(sync) });
+    try {
+      if (typeof requestStore.claimSyncLease === "function") {
+        claimed = await requestStore.claimSyncLease(accountId, {
+          owner: leaseOwner,
+          ttlMs: manualSyncLeaseTtlMs
+        });
+        if (!claimed) throw httpError(409, "Account sync is already running.");
+      }
+      const sync = await requestProviders.syncAccount(account.id, {
+        limit: body.limit
+      });
+      events.emit("emails.changed", { accountId: account.id }, user.id);
+      await sendPushNotifications(requestPushNotifications, sync.newEmails);
+      sendJSON(res, 200, { sync: publicSyncResult(sync) });
+    } finally {
+      if (claimed && typeof requestStore.releaseSyncLease === "function") {
+        try {
+          await requestStore.releaseSyncLease(accountId, { owner: leaseOwner });
+        } catch (error) {
+          console.warn(`${new Date().toISOString()} manual sync lease release failed account=${accountId}: ${error.message}`);
+        }
+      }
+    }
     return;
   }
 

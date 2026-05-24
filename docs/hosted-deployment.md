@@ -34,6 +34,7 @@ Already applied migrations on `dearly-email`:
 - `hosted_multitenant_schema`
 - `persist_provider_auth_sessions`
 - `add_advisor_indexes_and_private_session_policy`
+- `add_account_sync_leases`
 
 Remaining Supabase advisor notes:
 

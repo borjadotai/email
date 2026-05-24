@@ -37,7 +37,8 @@ const backgroundSync = new BackgroundSyncService({
   pushNotifications,
   events,
   intervalMs: config.backgroundSyncIntervalMs,
-  limit: config.backgroundSyncLimit
+  limit: config.backgroundSyncLimit,
+  leaseTtlMs: config.backgroundSyncLeaseTtlMs
 });
 
 server.listen(config.port, config.host, () => {
