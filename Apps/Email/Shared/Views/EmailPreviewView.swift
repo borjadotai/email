@@ -238,21 +238,24 @@ struct EmailPreviewView: View {
   }
 
   private func macOSSelectedPreview(_ email: EmailDetail) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 20) {
-        header(email)
+    GeometryReader { proxy in
+      VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 20) {
+          header(email)
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 28)
+        .padding(.bottom, 20)
+        .frame(maxWidth: 860, alignment: .leading)
+
+        Divider()
+
+        conversationContent(selected: email)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .layoutPriority(1)
+          .clipped()
       }
-      .padding(.horizontal, 28)
-      .padding(.top, 28)
-      .padding(.bottom, 20)
-      .frame(maxWidth: 860, alignment: .leading)
-
-      Divider()
-
-      conversationContent(selected: email)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .layoutPriority(1)
-        .clipped()
+      .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .clipped()
