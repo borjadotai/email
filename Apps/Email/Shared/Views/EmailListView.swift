@@ -151,7 +151,6 @@ struct EmailListView: View {
           }
         }
         .listStyle(.plain)
-        .mailToolbarContentMargin()
         .animation(.snappy(duration: 0.24), value: model.emails.map(\.id))
         .mailPullToRefresh(model)
       }
@@ -230,15 +229,6 @@ private extension View {
     refreshable {
       await model.refreshVisibleMail()
     }
-    #else
-    self
-    #endif
-  }
-
-  @ViewBuilder
-  func mailToolbarContentMargin() -> some View {
-    #if os(macOS)
-    contentMargins(.top, 10, for: .scrollContent)
     #else
     self
     #endif

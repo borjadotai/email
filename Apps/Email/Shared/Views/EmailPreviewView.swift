@@ -1627,7 +1627,6 @@ private enum HTMLMailDocument {
     :root {
       color-scheme: light dark;
       supported-color-schemes: light dark;
-      --mail-bg: #ffffff;
       --mail-fg: #1d1d1f;
       --mail-muted: #5f6368;
       --mail-link: #0b57d0;
@@ -1635,7 +1634,6 @@ private enum HTMLMailDocument {
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --mail-bg: #1f1f1f;
         --mail-fg: #f5f5f7;
         --mail-muted: rgba(245, 245, 247, 0.72);
         --mail-link: #8ab4f8;
@@ -1643,7 +1641,7 @@ private enum HTMLMailDocument {
       }
     }
     html {
-      background: var(--mail-bg);
+      background: transparent !important;
       color: var(--mail-fg);
     }
     html, body {
@@ -1657,7 +1655,7 @@ private enum HTMLMailDocument {
       -webkit-text-size-adjust: 100%;
     }
     body {
-      background: transparent;
+      background: transparent !important;
       color: var(--mail-fg);
       box-sizing: border-box;
       line-height: 1.48;
@@ -1932,6 +1930,9 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
   #if os(iOS)
   webView.isOpaque = false
   webView.backgroundColor = .clear
+  if #available(iOS 15.0, *) {
+    webView.underPageBackgroundColor = .clear
+  }
   webView.scrollView.backgroundColor = .clear
   webView.scrollView.contentInset = .zero
   webView.scrollView.scrollIndicatorInsets = .zero
@@ -1939,6 +1940,9 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
   webView.scrollView.isScrollEnabled = true
   webView.scrollView.bounces = true
   #elseif os(macOS)
+  if #available(macOS 12.0, *) {
+    webView.underPageBackgroundColor = .clear
+  }
   webView.setValue(false, forKey: "drawsBackground")
   #endif
 

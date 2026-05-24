@@ -27,6 +27,7 @@ struct RootView: View {
   @State private var searchTask: Task<Void, Never>?
   @State private var mailPollingTask: Task<Void, Never>?
   @State private var mailPollingShouldNotify = false
+  @State private var macWindowTopInset: CGFloat = 0
   @State private var preferredCompactColumn: NavigationSplitViewColumn = .content
 
   var body: some View {
@@ -48,7 +49,7 @@ struct RootView: View {
     } detail: {
       EmailPreviewView(onCompose: { sheet = .compose })
     }
-    .mailWindowToolbarLayout()
+    .mailWindowTopContentGuard($macWindowTopInset)
     .task {
       if let prepareForBootstrap {
         await prepareForBootstrap()
@@ -223,9 +224,15 @@ private struct ArchiveUndoBanner: View {
 
 private extension View {
   @ViewBuilder
-  func mailWindowToolbarLayout() -> some View {
+  func mailWindowTopContentGuard(_ topInset: Binding<CGFloat>) -> some View {
     #if os(macOS)
-    background(MacWindowToolbarLayoutConfigurator())
+    safeAreaInset(edge: .top, spacing: 0) {
+      Color.clear
+        .frame(height: max(0, topInset.wrappedValue))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+    .background(MacWindowTopInsetReader(topInset: topInset))
     #else
     self
     #endif
@@ -254,25 +261,66 @@ private extension View {
 }
 
 #if os(macOS)
-private struct MacWindowToolbarLayoutConfigurator: NSViewRepresentable {
+private struct MacWindowTopInsetReader: NSViewRepresentable {
+  @Binding var topInset: CGFloat
+
   func makeNSView(context: Context) -> NSView {
-    let view = NSView(frame: .zero)
-    configureWhenAttached(view)
+    let view = WindowTopInsetProbeView(frame: .zero)
+    view.onInsetChange = updateTopInset
     return view
   }
 
   func updateNSView(_ view: NSView, context: Context) {
-    configureWhenAttached(view)
+    guard let view = view as? WindowTopInsetProbeView else { return }
+    view.onInsetChange = updateTopInset
+    view.publishInset()
   }
 
-  private func configureWhenAttached(_ view: NSView) {
+  private func updateTopInset(_ newValue: CGFloat) {
     DispatchQueue.main.async {
-      guard let window = view.window else { return }
-      window.styleMask.remove(.fullSizeContentView)
-      window.titlebarAppearsTransparent = false
-      window.titleVisibility = .hidden
-      window.toolbarStyle = .unified
+      let normalized = max(0, newValue)
+      guard abs(topInset - normalized) > 0.5 else { return }
+      topInset = normalized
     }
+  }
+}
+
+private final class WindowTopInsetProbeView: NSView {
+  var onInsetChange: ((CGFloat) -> Void)?
+  private var contentLayoutObservation: NSKeyValueObservation?
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    contentLayoutObservation = window?.observe(\.contentLayoutRect, options: [.initial, .new]) { [weak self] _, _ in
+      DispatchQueue.main.async {
+        self?.publishInset()
+      }
+    }
+    publishInset()
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    publishInset()
+  }
+
+  func publishInset() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      onInsetChange?(measuredTopInset)
+    }
+  }
+
+  private var measuredTopInset: CGFloat {
+    let safeAreaTop = safeAreaInsets.top
+
+    guard let window, let contentView = window.contentView else {
+      return safeAreaTop
+    }
+
+    let layoutRect = contentView.convert(window.contentLayoutRect, from: nil)
+    let layoutTopInset = contentView.bounds.maxY - layoutRect.maxY
+    return max(safeAreaTop, layoutTopInset, 0)
   }
 }
 #endif
