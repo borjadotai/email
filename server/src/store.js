@@ -199,6 +199,17 @@ export class MailStore {
         UNIQUE(token, bundle_id, environment)
       );
 
+      CREATE TABLE IF NOT EXISTS provider_auth_sessions (
+        state TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL CHECK (provider IN ('gmail')),
+        code_verifier TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
+        sync_history INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+
       CREATE VIRTUAL TABLE IF NOT EXISTS email_fts USING fts5(
         email_id UNINDEXED,
         account_id UNINDEXED,
@@ -221,6 +232,10 @@ export class MailStore {
         WHERE disabled_at IS NULL;
       CREATE INDEX IF NOT EXISTS idx_push_tokens_user_active ON push_tokens(user_id, platform, bundle_id, environment)
         WHERE disabled_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_provider_auth_sessions_user
+        ON provider_auth_sessions(user_id, provider, created_at);
+      CREATE INDEX IF NOT EXISTS idx_provider_auth_sessions_expires
+        ON provider_auth_sessions(expires_at);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
         ON emails(account_id, provider_uid)
         WHERE provider_uid IS NOT NULL;
@@ -259,6 +274,87 @@ export class MailStore {
       VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `).run(key, String(value), new Date().toISOString());
+  }
+
+  saveProviderAuthSession(input) {
+    const provider = normalizeProvider(input.provider);
+    if (provider !== "gmail") throw httpError(400, "Provider auth sessions only support gmail.");
+    const state = requiredString(input.state, "state");
+    const codeVerifier = requiredString(input.codeVerifier, "codeVerifier");
+    const rawUser = input.user ?? this.currentUser;
+    let user = normalizeAppUser(rawUser);
+    if (rawUser?.isLocal === true) {
+      const localUser = this.ensureCurrentUser();
+      user = {
+        id: localUser.id,
+        email: localUser.primaryEmail ?? null,
+        displayName: localUser.displayName,
+        isLocal: true
+      };
+    } else {
+      const scoped = this.currentUser ? this : this.forUser(user);
+      scoped.ensureCurrentUser();
+    }
+    const now = new Date().toISOString();
+    const expiresAt = normalizeFutureDate(input.expiresAt, 10 * 60 * 1000).toISOString();
+    this.db.prepare("DELETE FROM provider_auth_sessions WHERE expires_at <= ?").run(now);
+    this.db.prepare(`
+      INSERT INTO provider_auth_sessions (
+        state, user_id, provider, code_verifier, display_name, sync_history, created_at, expires_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(state) DO UPDATE SET
+        user_id = excluded.user_id,
+        provider = excluded.provider,
+        code_verifier = excluded.code_verifier,
+        display_name = excluded.display_name,
+        sync_history = excluded.sync_history,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+    `).run(
+      state,
+      user.id,
+      provider,
+      codeVerifier,
+      optionalString(input.displayName) ?? "",
+      input.syncHistory === false ? 0 : 1,
+      now,
+      expiresAt
+    );
+  }
+
+  consumeProviderAuthSession(input) {
+    const state = requiredString(input.state, "state");
+    const provider = normalizeProvider(input.provider);
+    const now = new Date().toISOString();
+    this.db.prepare("DELETE FROM provider_auth_sessions WHERE expires_at <= ?").run(now);
+    const row = this.db.prepare(`
+      SELECT s.state, s.provider, s.code_verifier AS codeVerifier,
+             s.display_name AS displayName, s.sync_history AS syncHistory,
+             s.created_at AS createdAt, s.expires_at AS expiresAt,
+             u.id AS userId, u.primary_email AS userEmail, u.display_name AS userDisplayName
+      FROM provider_auth_sessions s
+      JOIN app_users u ON u.id = s.user_id
+      WHERE s.state = ? AND s.provider = ?
+      LIMIT 1
+    `).get(state, provider);
+    this.db.prepare("DELETE FROM provider_auth_sessions WHERE state = ?").run(state);
+    if (!row) return null;
+    return {
+      state: row.state,
+      provider: row.provider,
+      codeVerifier: row.codeVerifier,
+      displayName: row.displayName,
+      syncHistory: Boolean(row.syncHistory),
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      user: {
+        id: row.userId,
+        email: row.userEmail,
+        displayName: row.userDisplayName,
+        isLocal: row.userId === "local"
+      }
+    };
   }
 
   createAccount(input) {
@@ -1942,6 +2038,14 @@ function clampInt(value, min, max, fallback) {
   const number = Number.parseInt(value ?? fallback, 10);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizeFutureDate(value, fallbackMs) {
+  const date = value instanceof Date ? value : new Date(value ?? Date.now() + fallbackMs);
+  if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) {
+    return new Date(Date.now() + fallbackMs);
+  }
+  return date;
 }
 
 function parseJSON(value, fallback) {

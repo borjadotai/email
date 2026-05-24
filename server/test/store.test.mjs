@@ -864,6 +864,42 @@ test("scopes accounts, search results, and push tokens to the current app user",
   }
 });
 
+test("persists provider auth sessions for OAuth callbacks", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const aliceStore = store.forUser({
+      id: "user-alice",
+      email: "alice@example.com",
+      displayName: "Alice"
+    });
+    aliceStore.saveProviderAuthSession({
+      provider: "gmail",
+      state: "state-1",
+      codeVerifier: "verifier-1",
+      displayName: "Alice Gmail",
+      syncHistory: false,
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    });
+
+    const session = store.consumeProviderAuthSession({ provider: "gmail", state: "state-1" });
+    assert.equal(session.codeVerifier, "verifier-1");
+    assert.equal(session.displayName, "Alice Gmail");
+    assert.equal(session.syncHistory, false);
+    assert.deepEqual(session.user, {
+      id: "user-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      isLocal: false
+    });
+    assert.equal(store.consumeProviderAuthSession({ provider: "gmail", state: "state-1" }), null);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function testProviderEmail(overrides = {}) {
   return {
     id: overrides.id,

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
-const migration = readFileSync(
-  resolve("supabase/migrations/20260524165936_hosted_multitenant_schema.sql"),
-  "utf8"
-);
+const migrationsDir = resolve("supabase/migrations");
+const migration = readdirSync(migrationsDir)
+  .filter(file => file.endsWith(".sql"))
+  .sort()
+  .map(file => readFileSync(join(migrationsDir, file), "utf8"))
+  .join("\n");
 
 const publicTenantTables = [
   "app_users",
@@ -40,11 +42,18 @@ test("hosted Supabase migration enables RLS on every exposed tenant table", () =
 test("hosted Supabase migration keeps provider secrets out of exposed schemas", () => {
   assert.match(migration, /create schema if not exists "email_private"/u);
   assert.match(migration, /create table email_private\.provider_secrets/u);
+  assert.match(migration, /create table email_private\.provider_auth_sessions/u);
+  assert.match(migration, /alter table email_private\.provider_auth_sessions enable row level security/u);
   assert.match(migration, /revoke all on schema "email_private" from anon, authenticated/u);
   assert.match(migration, /revoke all on email_private\.provider_secrets from anon, authenticated/u);
+  assert.match(migration, /revoke all on email_private\.provider_auth_sessions from anon, authenticated/u);
   assert.doesNotMatch(
     migration,
     /grant select, insert, update, delete on email_private\.provider_secrets to authenticated/u
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant .* on email_private\.provider_auth_sessions to authenticated/u
   );
 });
 

@@ -102,6 +102,41 @@ test("Postgres store stores attachment bytes in private object storage", async (
   assert.equal(Buffer.from(attachment.data).toString("utf8"), "hello");
 });
 
+test("Postgres store persists provider auth sessions in the private schema", async () => {
+  const pool = new FakePool();
+  const store = new PostgresMailStore({ pool }).forUser(user);
+
+  await store.saveProviderAuthSession({
+    provider: "gmail",
+    state: "state-1",
+    codeVerifier: "verifier-1",
+    displayName: "Alice Gmail",
+    syncHistory: false,
+    expiresAt: new Date(Date.now() + 60_000).toISOString()
+  });
+  const saved = pool.queries.find(query => /INSERT INTO email_private\.provider_auth_sessions/u.test(query.sql));
+  assert.ok(saved);
+  assert.deepEqual(saved.params.slice(0, 6), [
+    "state-1",
+    user.id,
+    "gmail",
+    "verifier-1",
+    "Alice Gmail",
+    false
+  ]);
+
+  const session = await store.consumeProviderAuthSession({ provider: "gmail", state: "state-1" });
+  assert.equal(session.codeVerifier, "verifier-1");
+  assert.equal(session.displayName, "Alice Gmail");
+  assert.equal(session.syncHistory, false);
+  assert.deepEqual(session.user, {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName
+  });
+  assert.ok(pool.queries.some(query => /DELETE FROM email_private\.provider_auth_sessions/u.test(query.sql)));
+});
+
 class FakePool {
   queries = [];
 
@@ -133,6 +168,23 @@ class FakePool {
 
     if (/INSERT INTO public\.accounts/u.test(sql)) {
       return { rows: [{ id: "10000000-0000-4000-8000-000000000001" }], rowCount: 1 };
+    }
+
+    if (/WITH deleted AS \(/u.test(sql)) {
+      return {
+        rows: [{
+          state: params[0],
+          provider: params[1],
+          codeVerifier: "verifier-1",
+          displayName: "Alice Gmail",
+          syncHistory: false,
+          createdAt: new Date("2026-05-24T10:00:00Z"),
+          expiresAt: new Date("2026-05-24T10:10:00Z"),
+          userId: user.id,
+          userEmail: user.email,
+          userDisplayName: user.displayName
+        }]
+      };
     }
 
     if (/SELECT id, user_id AS "userId", opened_at AS "openedAt"/u.test(sql)) {

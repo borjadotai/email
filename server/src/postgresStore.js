@@ -201,6 +201,78 @@ export class PostgresMailStore {
     return (await this.ensureCurrentUser()).id;
   }
 
+  async saveProviderAuthSession(input) {
+    const provider = normalizeProvider(input.provider);
+    if (provider !== "gmail") throw httpError(400, "Provider auth sessions only support gmail.");
+    const state = requiredString(input.state, "state");
+    const codeVerifier = requiredString(input.codeVerifier, "codeVerifier");
+    const rawUser = input.user ?? this.currentUser;
+    const user = normalizeAppUser(rawUser);
+    if (rawUser?.isLocal === true) {
+      throw httpError(400, "Postgres provider auth sessions require an authenticated Supabase user.");
+    }
+    const scoped = this.currentUser ? this : this.forUser(user);
+    await scoped.ensureCurrentUser();
+    await this.pool.query("DELETE FROM email_private.provider_auth_sessions WHERE expires_at <= timezone('utc', now())");
+    await this.pool.query(`
+      INSERT INTO email_private.provider_auth_sessions (
+        state, user_id, provider, code_verifier, display_name, sync_history, expires_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT(state) DO UPDATE SET
+        user_id = excluded.user_id,
+        provider = excluded.provider,
+        code_verifier = excluded.code_verifier,
+        display_name = excluded.display_name,
+        sync_history = excluded.sync_history,
+        created_at = timezone('utc', now()),
+        expires_at = excluded.expires_at
+    `, [
+      state,
+      user.id,
+      provider,
+      codeVerifier,
+      optionalString(input.displayName) ?? "",
+      input.syncHistory !== false,
+      normalizeFutureDate(input.expiresAt, 10 * 60 * 1000).toISOString()
+    ]);
+  }
+
+  async consumeProviderAuthSession(input) {
+    const state = requiredString(input.state, "state");
+    const provider = normalizeProvider(input.provider);
+    await this.pool.query("DELETE FROM email_private.provider_auth_sessions WHERE expires_at <= timezone('utc', now())");
+    const result = await this.pool.query(`
+      WITH deleted AS (
+        DELETE FROM email_private.provider_auth_sessions
+        WHERE state = $1 AND provider = $2
+        RETURNING state, provider, code_verifier, display_name, sync_history, created_at, expires_at, user_id
+      )
+      SELECT deleted.state, deleted.provider, deleted.code_verifier AS "codeVerifier",
+             deleted.display_name AS "displayName", deleted.sync_history AS "syncHistory",
+             deleted.created_at AS "createdAt", deleted.expires_at AS "expiresAt",
+             u.id AS "userId", u.primary_email AS "userEmail", u.display_name AS "userDisplayName"
+      FROM deleted
+      JOIN public.app_users u ON u.id = deleted.user_id
+    `, [state, provider]);
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      state: row.state,
+      provider: row.provider,
+      codeVerifier: row.codeVerifier,
+      displayName: row.displayName,
+      syncHistory: Boolean(row.syncHistory),
+      createdAt: iso(row.createdAt),
+      expiresAt: iso(row.expiresAt),
+      user: {
+        id: row.userId,
+        email: row.userEmail ? String(row.userEmail) : null,
+        displayName: row.userDisplayName
+      }
+    };
+  }
+
   async isLocalUserEmail(email) {
     const normalized = normalizeEmailForComparison(email);
     if (!normalized) return false;
@@ -1311,6 +1383,14 @@ function clampInt(value, min, max, fallback) {
   const number = Number.parseInt(value ?? fallback, 10);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizeFutureDate(value, fallbackMs) {
+  const date = value instanceof Date ? value : new Date(value ?? Date.now() + fallbackMs);
+  if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) {
+    return new Date(Date.now() + fallbackMs);
+  }
+  return date;
 }
 
 function makeRFCMessageID(email) {

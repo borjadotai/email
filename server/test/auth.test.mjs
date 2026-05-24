@@ -44,6 +44,13 @@ test("provider availability is server-owned and Gmail auth starts when configure
     assert.equal(authorizationURL.searchParams.get("code_challenge_method"), "S256");
     assert.ok(authorizationURL.searchParams.get("code_challenge"));
     assert.equal(auth.redirectURI, "http://127.0.0.1:7331/api/auth/gmail/callback");
+
+    const session = store.consumeProviderAuthSession({ provider: "gmail", state: auth.state });
+    assert.equal(session.provider, "gmail");
+    assert.equal(session.displayName, "Test Gmail");
+    assert.equal(session.syncHistory, false);
+    assert.ok(session.codeVerifier);
+    assert.equal(store.consumeProviderAuthSession({ provider: "gmail", state: auth.state }), null);
   } finally {
     await close(server);
     store.close();

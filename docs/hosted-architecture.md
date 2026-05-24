@@ -23,6 +23,8 @@ backend that can serve multiple users and multiple client devices.
 - Provider credentials stay server-side and are encrypted before storage.
 - Supabase Postgres is the shared source of truth for users, accounts, message
   metadata, search text, labels, push tokens, and sync state.
+- Provider OAuth PKCE sessions are persisted server-side so callbacks survive
+  deploys and process restarts.
 - Supabase Storage stores raw MIME and attachment blobs under paths prefixed by
   the user's Supabase Auth id.
 - Fly.io runs the long-lived Node API and sync worker process because IMAP,
@@ -66,6 +68,8 @@ The hosted runtime target is:
 - Supabase Postgres is selected with `EMAIL_STORAGE=postgres`.
 - Provider tokens are encrypted with `EMAIL_SECRET_ENCRYPTION_KEY` and stored in
   `email_private.provider_secrets` with `EMAIL_SECRET_STORE=postgres`.
+- In-progress provider OAuth sessions are stored in
+  `email_private.provider_auth_sessions`, not process memory.
 - Attachments are uploaded to the private `email-attachments` Supabase Storage
   bucket; Postgres stores only metadata and object paths.
 

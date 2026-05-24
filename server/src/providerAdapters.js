@@ -19,7 +19,6 @@ export class ProviderService {
     this.secretStore = secretStore;
     this.config = config;
     this.baseURL = baseURL;
-    this.pendingGmailStates = new Map();
   }
 
   forStore(store, user = null) {
@@ -29,7 +28,6 @@ export class ProviderService {
       config: this.config,
       baseURL: this.baseURL
     });
-    service.pendingGmailStates = this.pendingGmailStates;
     service.user = user;
     return service;
   }
@@ -63,12 +61,14 @@ export class ProviderService {
     const client = this.gmailOAuthClient();
     const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
     const state = randomUUID();
-    this.pendingGmailStates.set(state, {
+    await this.store.saveProviderAuthSession({
+      provider: "gmail",
+      state,
       displayName: input.displayName?.trim() ?? "",
       syncHistory: input.syncHistory !== false,
       codeVerifier,
       user,
-      createdAt: Date.now()
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
     });
 
     const authorizationURL = client.generateAuthUrl({
@@ -92,11 +92,10 @@ export class ProviderService {
   async completeGmailAuth(query) {
     const state = requiredString(query.state, "state");
     const code = requiredString(query.code, "code");
-    const session = this.pendingGmailStates.get(state);
+    const session = await this.store.consumeProviderAuthSession({ provider: "gmail", state });
     if (!session) {
       throw httpError(400, "Gmail auth session expired. Start the connection again.");
     }
-    this.pendingGmailStates.delete(state);
 
     const client = this.gmailOAuthClient();
     const { tokens } = await client.getToken({ code, codeVerifier: session.codeVerifier });

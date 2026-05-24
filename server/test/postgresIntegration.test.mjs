@@ -71,6 +71,15 @@ test("real Supabase Postgres store isolates tenants across search, records, push
 
     await aliceStore.registerPushToken(pushToken("a"));
     await bobStore.registerPushToken(pushToken("b"));
+    const oauthState = `state-${suffix}`;
+    await aliceStore.saveProviderAuthSession({
+      provider: "gmail",
+      state: oauthState,
+      codeVerifier: "verifier-alice",
+      displayName: "Alice Gmail",
+      syncHistory: false,
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    });
 
     assert.deepEqual((await aliceStore.listEmails({ q: "tenant needle" })).map(email => email.id), [aliceEmailId]);
     assert.deepEqual((await bobStore.listEmails({ q: "tenant needle" })).map(email => email.id), [bobEmailId]);
@@ -82,6 +91,13 @@ test("real Supabase Postgres store isolates tenants across search, records, push
     const attachment = await aliceStore.getAttachment(aliceEmailId, aliceAttachmentId);
     assert.equal(Buffer.from(attachment.data).toString("utf8"), "alice attachment bytes");
     assert.equal(await bobStore.getAttachment(aliceEmailId, aliceAttachmentId), null);
+
+    const oauthSession = await store.consumeProviderAuthSession({ provider: "gmail", state: oauthState });
+    assert.equal(oauthSession.codeVerifier, "verifier-alice");
+    assert.equal(oauthSession.displayName, "Alice Gmail");
+    assert.equal(oauthSession.syncHistory, false);
+    assert.equal(oauthSession.user.id, alice.id);
+    assert.equal(await store.consumeProviderAuthSession({ provider: "gmail", state: oauthState }), null);
   } finally {
     await cleanupStorage(store, uploadedPaths);
     await pool.query("DELETE FROM auth.users WHERE id = ANY($1::uuid[])", [[alice.id, bob.id]]);
