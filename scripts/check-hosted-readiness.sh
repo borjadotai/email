@@ -77,6 +77,11 @@ load_env_file() {
   done < "$path"
 }
 
+app_list_contains() {
+  local app_name="$1"
+  awk '{$1=$1}; NF > 0 { print }' | grep -Fxq "$app_name"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)
@@ -160,7 +165,7 @@ else
   if "${fly_cmd[@]}" auth whoami >/dev/null 2>&1; then
     pass "Fly auth is configured"
     if apps_output="$("${fly_cmd[@]}" apps list --quiet 2>&1)"; then
-      if printf '%s\n' "$apps_output" | grep -Fxq "$APP_NAME"; then
+      if printf '%s\n' "$apps_output" | app_list_contains "$APP_NAME"; then
         pass "Fly app '$APP_NAME' exists"
       else
         warn "Fly app '$APP_NAME' is not created yet; deploy will create it after the Fly account is unlocked"

@@ -71,6 +71,11 @@ load_env_file() {
   done < "$path"
 }
 
+app_list_contains() {
+  local app_name="$1"
+  awk '{$1=$1}; NF > 0 { print }' | grep -Fxq "$app_name"
+}
+
 APP_NAME="${FLY_APP_NAME:-dearly-email}"
 CONFIG="${FLY_CONFIG:-fly.toml}"
 ENV_FILES=()
@@ -165,7 +170,7 @@ if [[ "$CREATE_APP" -eq 1 ]]; then
   fi
 
   apps_output="$("${fly_cmd[@]}" "${list_args[@]}")"
-  if printf '%s\n' "$apps_output" | grep -Fxq "$APP_NAME"; then
+  if printf '%s\n' "$apps_output" | app_list_contains "$APP_NAME"; then
     echo "Fly app '$APP_NAME' already exists."
   else
     create_args=(apps create "$APP_NAME" --yes)
