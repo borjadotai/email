@@ -145,17 +145,39 @@ if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
   CODESIGN_ARGS=(--force --timestamp --options runtime --sign "$SIGN_IDENTITY")
 else
   SIGNING_DESCRIPTION="ad-hoc local signature"
-  CODESIGN_ARGS=(--force --timestamp=none --options runtime --sign -)
+  CODESIGN_ARGS=(--force --timestamp=none --sign -)
 fi
 
 echo "Signing final bundle with $SIGNING_DESCRIPTION"
-while IFS= read -r candidate; do
-  if /usr/bin/file "$candidate" | /usr/bin/grep -q 'Mach-O'; then
-    /usr/bin/codesign "${CODESIGN_ARGS[@]}" "$candidate"
+sign_macho_files() {
+  local root="$1"
+  if [[ ! -d "$root" ]]; then
+    return
   fi
-done < <(/usr/bin/find "$SERVER_BUNDLE" -type f -print)
 
-/usr/bin/codesign "${CODESIGN_ARGS[@]}" --deep "$APP_BUNDLE"
+  while IFS= read -r candidate; do
+    if /usr/bin/file "$candidate" | /usr/bin/grep -q 'Mach-O'; then
+      /usr/bin/codesign "${CODESIGN_ARGS[@]}" "$candidate"
+    fi
+  done < <(/usr/bin/find "$root" -type f -print)
+}
+
+sign_nested_bundles() {
+  local root="$1"
+  if [[ ! -d "$root" ]]; then
+    return
+  fi
+
+  while IFS= read -r candidate; do
+    /usr/bin/codesign "${CODESIGN_ARGS[@]}" "$candidate"
+  done < <(/usr/bin/find "$root" -depth -type d \( -name '*.xpc' -o -name '*.app' -o -name '*.framework' \) -print)
+}
+
+sign_macho_files "$SERVER_BUNDLE"
+sign_macho_files "$APP_BUNDLE/Contents/Frameworks"
+sign_nested_bundles "$APP_BUNDLE/Contents/Frameworks"
+
+/usr/bin/codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE"
 /usr/bin/codesign --verify --strict --deep --verbose=2 "$APP_BUNDLE"
 
 if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
