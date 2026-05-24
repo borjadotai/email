@@ -59,7 +59,7 @@ Install `flyctl`, authenticate, then deploy:
 npm run --silent generate:secret-key
 
 cat > .env.fly <<'EOF'
-EMAIL_POSTGRES_URL='postgresql://...'
+EMAIL_POSTGRES_URL='postgresql://postgres:YOUR_DATABASE_PASSWORD@db.gjfyisfuhkwqrzjuvfjd.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=/app/server/certs/supabase-prod-ca-2021.crt'
 EMAIL_SECRET_ENCRYPTION_KEY='paste-the-generated-key-here'
 GOOGLE_OAUTH_CLIENT_ID='...'
 GOOGLE_OAUTH_CLIENT_SECRET='...'
@@ -80,6 +80,11 @@ printing them, deploys the Docker image, and checks `/api/ready`. On later
 deploys you can pass `-- --skip-create`; use `-- --stage-only` to stage secrets
 without deploying. If you prefer token auth instead of `fly auth login`, export
 `FLY_API_TOKEN` before running the command.
+
+The Docker image includes Supabase's public `prod-ca-2021` root certificate at
+`/app/server/certs/supabase-prod-ca-2021.crt`. Keep `sslmode=verify-full` and
+`sslrootcert` in `EMAIL_POSTGRES_URL` so Postgres TLS verifies the Supabase
+database certificate instead of only encrypting the connection.
 
 Set `EMAIL_PUBLIC_BASE_URL` to the final Fly HTTPS URL before configuring Google
 OAuth callbacks. Set `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000` for a five-minute

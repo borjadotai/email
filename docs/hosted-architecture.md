@@ -89,6 +89,11 @@ Required hosted secrets:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - APNs secrets if remote push notifications are enabled
 
+Use `sslmode=verify-full` in `EMAIL_POSTGRES_URL` with
+`sslrootcert=/app/server/certs/supabase-prod-ca-2021.crt`. The certificate is
+public and baked into the Docker image so the API can verify Supabase Postgres
+TLS from Fly.
+
 Required non-secret hosted config:
 
 - `EMAIL_PUBLIC_BASE_URL`
