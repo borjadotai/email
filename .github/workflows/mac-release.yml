@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     name: Build macOS DMG
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
 
     env:
@@ -30,6 +30,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for candidate in \
+            /Applications/Xcode_26.5.app \
+            /Applications/Xcode_26.4.1.app \
+            /Applications/Xcode_26.4.app \
+            /Applications/Xcode.app; do
+            if [[ -d "$candidate" ]]; then
+              sudo xcode-select -s "$candidate/Contents/Developer"
+              break
+            fi
+          done
+
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
 
       - name: Set up Node
         uses: actions/setup-node@v4
