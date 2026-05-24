@@ -188,14 +188,20 @@ Core endpoints live under `/api`:
 http://127.0.0.1:7331/api/auth/gmail/callback
 ```
 
-4. Configure the app/server with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
+4. Configure only the server environment with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. Do not put Google OAuth secrets in the iOS or macOS app bundle.
 5. Use Add Account -> Gmail. The app opens the system browser for Google OAuth and receives the callback at:
 
 ```text
 http://127.0.0.1:7331/api/auth/gmail/callback
 ```
 
-Users do not enter Google OAuth client credentials. Those credentials belong to the app build or server environment. Per-account refresh tokens are stored in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
+Users do not enter Google OAuth client credentials. Those credentials belong to the server environment. Per-account refresh tokens are stored in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
+
+For a shared backend, also set `EMAIL_PUBLIC_BASE_URL` on that server to the reachable backend origin, and add its callback URL in Google Cloud Console. For example, a backend at `http://space:7331` needs:
+
+```text
+http://space:7331/api/auth/gmail/callback
+```
 
 After creating the OAuth client, download its JSON file and import it locally:
 
