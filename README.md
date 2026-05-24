@@ -1,34 +1,192 @@
 # Email
 
-A native email app foundation with:
+Self-hosted native email clients for macOS and iOS.
 
-- A local always-on server for account sync, message storage, outbound mail, open tracking, and search.
-- SQLite + FTS5 storage for fast full-history search.
-- Native SwiftUI macOS and iOS app targets sharing one UI/client layer.
-- Multi-account inbox views, folders, labels, compose/send flow, settings, and system/light/dark theming.
+The important idea is simple: the private part runs on a machine you control, and
+the apps are just clients. The macOS and iOS apps should not contain Google
+secrets, account passwords, refresh tokens, or a private `.env` file. They talk
+to your server over HTTP, and your server stores mail, syncs accounts, sends
+messages, and keeps provider credentials private.
 
-## Run the Server
+## Start Here
+
+The easiest personal setup is:
+
+1. Pick one always-on machine as the email server. A Mac mini, desktop Mac, or a
+   MacBook that usually stays on works well.
+2. Run the guided server setup on that machine.
+3. Install the macOS app, and optionally the iOS app.
+4. Point each app at your server URL, then add Gmail or iCloud accounts from the
+   app.
+
+For access away from home, put all of your devices on the same private network
+with something like Tailscale, then use the server's Tailscale or `.local`
+address as the app's Server URL.
+
+## What Runs Where
+
+- Server machine: stores SQLite mail data, talks to Gmail/iCloud, sends mail,
+  keeps OAuth secrets and account tokens in the server environment and macOS
+  Keychain.
+- macOS app: native email client, no provider secrets, updates from GitHub
+  Releases with Sparkle.
+- iOS app: native email client, no provider secrets, currently installed through
+  Xcode while public iOS distribution is not set up.
+- GitHub repo/releases: safe to be public. Release artifacts can contain public
+  configuration like a default server URL, but not private provider secrets.
+
+## Server Setup
+
+On the always-on server Mac, install Node.js 24 or newer from
+`https://nodejs.org/`, then run:
+
+```sh
+git clone https://github.com/borjadotai/email.git
+cd email
+npm run setup:server
+```
+
+The setup command is the beginner path. It checks Node, installs dependencies,
+creates `.env` from `.env.example`, asks for the server URL your apps will use,
+configures the server to listen on `0.0.0.0:7331`, and can install the macOS
+LaunchAgent so the server keeps running after restarts.
+
+After setup, check that the server answers:
+
+```sh
+curl http://127.0.0.1:7331/api/health
+```
+
+Server data is stored on the server Mac at:
+
+```text
+~/Library/Application Support/EmailApp/mail.sqlite
+```
+
+Server logs are written to:
+
+```text
+~/Library/Logs/EmailApp/server.out.log
+~/Library/Logs/EmailApp/server.error.log
+```
+
+## Add Accounts
+
+### Gmail
+
+Gmail needs a Google OAuth client. You only do this on the server machine:
+
+1. In Google Cloud Console, enable the Gmail API for your project.
+2. Create an OAuth client for a web application.
+3. Add this authorized redirect URI, using your real server URL:
+
+```text
+http://your-server:7331/api/auth/gmail/callback
+```
+
+4. Download the OAuth JSON file and import it into the server `.env`:
+
+```sh
+node scripts/import-google-oauth.mjs ~/Downloads/client_secret_*.json
+launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
+```
+
+The apps never need the Google OAuth client secret. They ask the server to start
+the Gmail sign-in flow, and Google redirects back to your server.
+
+Broad public Gmail distribution requires Google OAuth consent screen
+configuration and, because this app requests Gmail mail access scopes, Google
+verification before broad external use.
+
+### iCloud
+
+iCloud does not use Sign in with Apple for mail access. Generate an app-specific
+password at `https://account.apple.com`, then add the account from the app with
+your iCloud Mail address and that app-specific password. The server verifies
+IMAP/SMTP and stores the password in the server Mac's Keychain.
+
+## Install the Clients
+
+### macOS
+
+Download the latest `Email-mac.dmg` from:
+
+```text
+https://github.com/borjadotai/email/releases/latest
+```
+
+Drag `Email.app` to Applications, open it, then set the Server URL in Settings.
+Use the same URL you entered during server setup, for example:
+
+```text
+http://your-server:7331
+```
+
+The app includes Sparkle updates. It checks automatically, and you can also use
+Email -> Check for Updates... or Settings -> General -> Updates.
+
+Current public test builds are not Developer ID notarized yet. For smooth
+one-click public distribution, the release workflow still needs Apple Developer
+ID signing and notarization configured.
+
+### iOS
+
+Until TestFlight or App Store distribution exists, install the iOS app from
+Xcode:
+
+1. Open `Apps/Email.xcodeproj`.
+2. Select the `EmailiOS` scheme.
+3. Select your iPhone.
+4. Set your signing team if Xcode asks.
+5. Press Run.
+
+Open the app on the phone and set the same Server URL as the macOS app.
+
+## Keep It Updated
+
+To update the server on the always-on Mac:
+
+```sh
+cd email
+git pull
+npm install
+launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
+```
+
+To update the macOS app, use Sparkle's automatic updates or Email -> Check for
+Updates.... The app update does not need provider secrets because it only talks
+to your server.
+
+To update iOS for now, pull the latest repo in Xcode and run the app again on
+the device.
+
+## Troubleshooting
+
+- If the app cannot connect, open `http://your-server:7331/api/health` from the
+  same device or network.
+- If that works locally but not from another device, confirm the server URL,
+  firewall settings, and that `EMAIL_SERVER_HOST=0.0.0.0` is present in `.env`.
+- If Gmail setup fails, confirm the Google redirect URI exactly matches
+  `EMAIL_PUBLIC_BASE_URL` plus `/api/auth/gmail/callback`.
+- If the server does not start, check
+  `~/Library/Logs/EmailApp/server.error.log`.
+
+## Developer Commands
+
+Run the server manually:
 
 ```sh
 npm install
 npm run server:dev
 ```
 
-The server listens on `http://127.0.0.1:7331` by default and stores data in:
-
-```text
-~/Library/Application Support/EmailApp/mail.sqlite
-```
-
-For an always-running local daemon:
+Install or refresh the always-on LaunchAgent manually:
 
 ```sh
 ./scripts/install-launch-agent.sh
 ```
 
-Copy `.env.example` to `.env` only on the machine that runs the server. The launch agent reads `.env` through `scripts/start-server.sh`. Provider credentials and account tokens belong to the server runtime, not to the macOS/iOS app bundle.
-
-## Build the Apps
+Build the apps:
 
 ```sh
 npm run build:mac
@@ -175,49 +333,6 @@ Core endpoints live under `/api`:
 - `POST /api/messages/send`
 - `GET /api/events`
 - `GET /api/track/open/:trackingId.gif`
-
-## Real Account Setup
-
-### Gmail
-
-1. In Google Cloud Console, enable the Gmail API for the project.
-2. Create an OAuth client for a web application.
-3. Add this authorized redirect URI:
-
-```text
-http://127.0.0.1:7331/api/auth/gmail/callback
-```
-
-4. Configure only the server environment with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. Do not put Google OAuth secrets in the iOS or macOS app bundle.
-5. Use Add Account -> Gmail. The app opens the system browser for Google OAuth and receives the callback at:
-
-```text
-http://127.0.0.1:7331/api/auth/gmail/callback
-```
-
-Users do not enter Google OAuth client credentials. Those credentials belong to the server environment. Per-account refresh tokens are stored in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
-
-For a shared backend, also set `EMAIL_PUBLIC_BASE_URL` on that server to the reachable backend origin, and add its callback URL in Google Cloud Console. For example, a backend at `http://your-server:7331` needs:
-
-```text
-http://your-server:7331/api/auth/gmail/callback
-```
-
-After creating the OAuth client, download its JSON file and import it locally:
-
-```sh
-node scripts/import-google-oauth.mjs ~/Downloads/client_secret_*.json
-launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
-```
-
-### iCloud
-
-1. Generate an app-specific password at `https://account.apple.com`.
-2. Use Add Account -> iCloud with your iCloud Mail address and the generated password.
-
-Sign in with Apple identifies a user to an app, but it does not provide iCloud Mail IMAP/SMTP access. The server verifies IMAP and SMTP before saving the account. It stores the app-specific password in the macOS Keychain, imports INBOX messages over IMAP, and sends via iCloud SMTP.
-
-Public Gmail distribution will require Google OAuth consent screen configuration and, because this app requests Gmail mail access scopes, Google verification before broad external use.
 
 ## Runtime Notes
 
