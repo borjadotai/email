@@ -55,20 +55,24 @@ and points at the hosted Supabase project. Keep private values as Fly secrets.
 Install `flyctl`, authenticate, then deploy:
 
 ```sh
-export FLY_API_TOKEN='FlyV1 ...'
-export EMAIL_POSTGRES_URL='postgresql://...'
-export EMAIL_SECRET_ENCRYPTION_KEY='...'
-export GOOGLE_OAUTH_CLIENT_ID='...'
-export GOOGLE_OAUTH_CLIENT_SECRET='...'
-export SUPABASE_SERVICE_ROLE_KEY='...'
+npm run --silent generate:secret-key
 
-npm run deploy:fly
+cat > .env.fly <<'EOF'
+EMAIL_POSTGRES_URL='postgresql://...'
+EMAIL_SECRET_ENCRYPTION_KEY='paste-the-generated-key-here'
+GOOGLE_OAUTH_CLIENT_ID='...'
+GOOGLE_OAUTH_CLIENT_SECRET='...'
+SUPABASE_SERVICE_ROLE_KEY='...'
+EOF
+
+npm run deploy:fly -- --env-file .env.fly
 ```
 
 `npm run deploy:fly` creates the Fly app when needed, stages secrets without
 printing them, deploys the Docker image, and checks `/api/health`. On later
 deploys you can pass `-- --skip-create`; use `-- --stage-only` to stage secrets
-without deploying.
+without deploying. If you prefer token auth instead of `fly auth login`, export
+`FLY_API_TOKEN` before running the command.
 
 Set `EMAIL_PUBLIC_BASE_URL` to the final Fly HTTPS URL before configuring Google
 OAuth callbacks. Set `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000` for a five-minute
@@ -114,3 +118,13 @@ Before inviting a friend:
 5. Download an attachment.
 6. Send a tracked test email and confirm the open pixel records without requiring
    a bearer token.
+
+Automate the public checks with:
+
+```sh
+npm run smoke:hosted -- --base-url https://YOUR_FLY_APP.fly.dev
+```
+
+To include an authenticated profile check, create a test user in Supabase Auth
+and run the same command with `EMAIL_SMOKE_EMAIL` and `EMAIL_SMOKE_PASSWORD` set
+in the shell.

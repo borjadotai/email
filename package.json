@@ -11,6 +11,8 @@
     "server:dev": "EMAIL_SEED_DEMO=1 node --no-warnings server/src/main.js",
     "setup:server": "./scripts/setup-server.sh",
     "deploy:fly": "./scripts/deploy-fly.sh",
+    "smoke:hosted": "./scripts/smoke-hosted.sh",
+    "generate:secret-key": "node scripts/generate-secret-encryption-key.mjs",
     "test": "node --no-warnings --test server/test/*.test.mjs",
     "test:postgres": "node --no-warnings --test server/test/postgresIntegration.test.mjs",
     "build:mac": "xcodebuild -project Apps/Email.xcodeproj -scheme EmailMac -configuration Debug -destination 'platform=macOS' build",

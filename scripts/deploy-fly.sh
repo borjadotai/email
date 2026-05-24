@@ -11,6 +11,7 @@ Usage:
 Options:
   --app NAME       Fly app name. Defaults to FLY_APP_NAME or dearly-email.
   --config PATH    Fly config path. Defaults to FLY_CONFIG or fly.toml.
+  --env-file PATH  Load secret environment variables from a dotenv-style file.
   --org ORG        Fly organization slug for first app creation.
   --skip-create    Do not create the Fly app before deploying.
   --skip-secrets   Do not stage runtime secrets.
@@ -42,8 +43,37 @@ die() {
   exit 1
 }
 
+load_env_file() {
+  local path="$1"
+  [[ -f "$path" ]] || die "env file not found: $path"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+    if [[ "$line" == export[[:space:]]* ]]; then
+      line="${line#export }"
+    fi
+    [[ "$line" == *=* ]] || die "invalid env line in $path: $line"
+
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid env key in $path: $key"
+
+    if [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]] || [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    if [[ -z "${!key:-}" ]]; then
+      export "$key=$value"
+    fi
+  done < "$path"
+}
+
 APP_NAME="${FLY_APP_NAME:-dearly-email}"
 CONFIG="${FLY_CONFIG:-fly.toml}"
+ENV_FILES=()
 CREATE_APP=1
 SET_SECRETS=1
 DEPLOY=1
@@ -59,6 +89,11 @@ while [[ $# -gt 0 ]]; do
     --config)
       [[ $# -ge 2 && -n "$2" ]] || die "--config requires a value"
       CONFIG="$2"
+      shift 2
+      ;;
+    --env-file)
+      [[ $# -ge 2 && -n "$2" ]] || die "--env-file requires a value"
+      ENV_FILES+=("$2")
       shift 2
       ;;
     --org)
@@ -92,6 +127,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${#ENV_FILES[@]}" -gt 0 ]]; then
+  for env_file in "${ENV_FILES[@]}"; do
+    load_env_file "$env_file"
+  done
+fi
 
 [[ -f "$CONFIG" ]] || die "Fly config not found: $CONFIG"
 
