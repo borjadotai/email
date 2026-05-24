@@ -74,6 +74,9 @@ The hosted runtime target is:
   `email_private.provider_auth_sessions`, not process memory.
 - Attachments are uploaded to the private `email-attachments` Supabase Storage
   bucket; Postgres stores only metadata and object paths.
+- Hosted clients do not run periodic provider sync from each device. The server
+  scheduler owns background provider polling; clients can still trigger explicit
+  user refreshes and otherwise poll cached API state.
 
 Required hosted secrets:
 

@@ -141,6 +141,10 @@ final class AppModel {
     authSettings?.requireUserAuth == true
   }
 
+  var usesHostedServerManagedSync: Bool {
+    requiresUserAuth && !shouldStartBundledServer
+  }
+
   var shouldShowAuthGate: Bool {
     requiresUserAuth && authSession == nil
   }
@@ -344,6 +348,11 @@ final class AppModel {
     guard !isRefreshingMail, !isAutoPollingMail else { return [] }
     isAutoPollingMail = true
     defer { isAutoPollingMail = false }
+
+    if usesHostedServerManagedSync {
+      await refreshAll(reportErrors: false)
+      return []
+    }
 
     if accounts.isEmpty {
       await refreshAll(reportErrors: false)
