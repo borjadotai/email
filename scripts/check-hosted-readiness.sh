@@ -82,6 +82,13 @@ app_list_contains() {
   awk '{$1=$1}; NF > 0 { print }' | grep -Fxq "$app_name"
 }
 
+is_placeholder_value() {
+  case "$1" in
+    *YOUR_*|*your-*|*paste-the-*|*run-npm-run-*|*example*|*'...'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)
@@ -188,13 +195,17 @@ required_secret_names=(
 
 for name in "${required_secret_names[@]}"; do
   if [[ -n "${!name:-}" ]]; then
-    pass "$name is set"
+    if is_placeholder_value "${!name}"; then
+      fail "$name still contains a placeholder value"
+    else
+      pass "$name is set"
+    fi
   else
     fail "$name is missing"
   fi
 done
 
-if [[ -n "${EMAIL_SECRET_ENCRYPTION_KEY:-}" ]]; then
+if [[ -n "${EMAIL_SECRET_ENCRYPTION_KEY:-}" ]] && ! is_placeholder_value "$EMAIL_SECRET_ENCRYPTION_KEY"; then
   if node --input-type=module <<'NODE' >/dev/null 2>&1
 import { SecretCipher } from "./server/src/encryption.js";
 new SecretCipher({ key: process.env.EMAIL_SECRET_ENCRYPTION_KEY });
@@ -203,6 +214,29 @@ NODE
     pass "EMAIL_SECRET_ENCRYPTION_KEY is valid"
   else
     fail "EMAIL_SECRET_ENCRYPTION_KEY is not a valid 32-byte key; run 'npm run --silent generate:secret-key'"
+  fi
+fi
+
+if [[ -n "${EMAIL_POSTGRES_URL:-}" ]] && ! is_placeholder_value "$EMAIL_POSTGRES_URL"; then
+  if node --input-type=module <<'NODE' >/dev/null 2>&1
+const value = process.env.EMAIL_POSTGRES_URL ?? "";
+const url = new URL(value);
+if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || !url.password) {
+  throw new Error("invalid postgres url");
+}
+NODE
+  then
+    pass "EMAIL_POSTGRES_URL is a valid postgres URL shape"
+  else
+    fail "EMAIL_POSTGRES_URL must be a full postgres URL with host, user, password, and database"
+  fi
+fi
+
+if [[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]] && ! is_placeholder_value "$SUPABASE_SERVICE_ROLE_KEY"; then
+  if [[ "$SUPABASE_SERVICE_ROLE_KEY" == sb_publishable_* ]]; then
+    fail "SUPABASE_SERVICE_ROLE_KEY is a publishable key, not a service-role key"
+  else
+    pass "SUPABASE_SERVICE_ROLE_KEY is not a publishable key"
   fi
 fi
 

@@ -76,6 +76,54 @@ app_list_contains() {
   awk '{$1=$1}; NF > 0 { print }' | grep -Fxq "$app_name"
 }
 
+is_placeholder_value() {
+  case "$1" in
+    *YOUR_*|*your-*|*paste-the-*|*run-npm-run-*|*example*|*'...'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_secret_values() {
+  local invalid_names=()
+  for name in "$@"; do
+    if is_placeholder_value "${!name:-}"; then
+      invalid_names+=("$name")
+    fi
+  done
+
+  if [[ "${#invalid_names[@]}" -gt 0 ]]; then
+    echo "These secret environment variables still contain placeholder values:" >&2
+    printf '  %s\n' "${invalid_names[@]}" >&2
+    exit 2
+  fi
+
+  if ! node --input-type=module <<'NODE' >/dev/null 2>&1
+import { SecretCipher } from "./server/src/encryption.js";
+new SecretCipher({ key: process.env.EMAIL_SECRET_ENCRYPTION_KEY });
+NODE
+  then
+    echo "EMAIL_SECRET_ENCRYPTION_KEY is invalid. Run 'npm run --silent generate:secret-key'." >&2
+    exit 2
+  fi
+
+  if ! node --input-type=module <<'NODE' >/dev/null 2>&1
+const value = process.env.EMAIL_POSTGRES_URL ?? "";
+const url = new URL(value);
+if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || !url.password) {
+  throw new Error("invalid postgres url");
+}
+NODE
+  then
+    echo "EMAIL_POSTGRES_URL must be a full postgres URL with host, user, password, and database." >&2
+    exit 2
+  fi
+
+  if [[ "${SUPABASE_SERVICE_ROLE_KEY:-}" == sb_publishable_* ]]; then
+    echo "SUPABASE_SERVICE_ROLE_KEY must not be a publishable key." >&2
+    exit 2
+  fi
+}
+
 APP_NAME="${FLY_APP_NAME:-dearly-email}"
 CONFIG="${FLY_CONFIG:-fly.toml}"
 ENV_FILES=()
@@ -218,6 +266,7 @@ if [[ "$SET_SECRETS" -eq 1 ]]; then
     echo "Set them in your shell, or rerun with --skip-secrets if they are already configured in Fly." >&2
     exit 2
   fi
+  validate_secret_values "${required_secret_names[@]}"
 
   for name in "${optional_secret_names[@]}"; do
     if [[ -n "${!name:-}" ]]; then
