@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 import pg from "pg";
+import { createClient } from "@supabase/supabase-js";
 import { senderLogoURLForEmail } from "./logoResolver.js";
 import { httpError } from "./store.js";
 
@@ -22,7 +24,14 @@ const SYSTEM_LABELS = [
 ];
 
 export class PostgresMailStore {
-  constructor({ connectionString, pool } = {}) {
+  constructor({
+    connectionString,
+    pool,
+    supabaseURL = "",
+    supabaseServiceRoleKey = "",
+    attachmentBucket = "email-attachments",
+    storageClient = null
+  } = {}) {
     if (!pool && !connectionString) {
       throw new Error("PostgresMailStore requires EMAIL_POSTGRES_URL or DATABASE_URL.");
     }
@@ -31,6 +40,12 @@ export class PostgresMailStore {
     this.currentUser = null;
     this.storageName = "postgres";
     this.databasePath = "postgres";
+    this.attachmentBucket = attachmentBucket;
+    this.attachmentStorage = storageClient ?? storageClientFor({
+      supabaseURL,
+      supabaseServiceRoleKey,
+      bucket: attachmentBucket
+    });
   }
 
   forUser(user) {
@@ -805,7 +820,10 @@ export class PostgresMailStore {
       WHERE email_id = $1 AND id = $2 AND user_id = $3
       LIMIT 1
     `, [emailId, attachmentId, await this.currentUserId()]);
-    return result.rows[0] ? { ...mapAttachmentRow(result.rows[0]), data: null } : null;
+    const row = result.rows[0];
+    if (!row) return null;
+    const data = row.storagePath ? await this.downloadAttachmentObject(row.storagePath) : null;
+    return { ...mapAttachmentRow(row), data };
   }
 
   async replaceEmailAttachments(emailId, attachments = [], client = null) {
@@ -813,24 +831,34 @@ export class PostgresMailStore {
       const userId = await this.currentUserId();
       await db.query("DELETE FROM public.email_attachments WHERE email_id = $1 AND user_id = $2", [emailId, userId]);
       for (const attachment of attachments) {
+        const id = attachment.id ?? randomUUID();
+        const filename = optionalString(attachment.filename) ?? "Attachment";
+        const mimeType = optionalString(attachment.mimeType) ?? "application/octet-stream";
+        const data = attachment.data ? Buffer.from(attachment.data) : null;
+        const storagePath = data ? attachmentObjectPath(userId, emailId, id, filename) : null;
+        if (data && storagePath) {
+          await this.uploadAttachmentObject(storagePath, data, mimeType);
+        }
         await db.query(`
           INSERT INTO public.email_attachments (
             id, user_id, email_id, provider_attachment_id, content_id, filename, mime_type,
-            size, disposition, is_inline, storage_status
+            size, disposition, is_inline, storage_status, storage_bucket, storage_path
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         `, [
-          attachment.id ?? randomUUID(),
+          id,
           userId,
           emailId,
           optionalString(attachment.providerAttachmentId),
           optionalString(attachment.contentId),
-          optionalString(attachment.filename) ?? "Attachment",
-          optionalString(attachment.mimeType) ?? "application/octet-stream",
-          Number.isFinite(attachment.size) ? attachment.size : attachment.data?.length ?? 0,
+          filename,
+          mimeType,
+          Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0,
           optionalString(attachment.disposition),
           attachment.isInline === true,
-          attachment.data ? "stored" : "remote_only"
+          data ? "stored" : "remote_only",
+          data ? this.attachmentBucket : null,
+          storagePath
         ]);
       }
       await db.query("UPDATE public.emails SET has_attachments = $1 WHERE id = $2 AND user_id = $3", [attachments.length > 0, emailId, userId]);
@@ -840,6 +868,26 @@ export class PostgresMailStore {
       return;
     }
     await this.transaction(writeAttachments);
+  }
+
+  async uploadAttachmentObject(path, data, mimeType) {
+    if (!this.attachmentStorage) {
+      throw new Error("SUPABASE_SERVICE_ROLE_KEY is required to store hosted attachment bytes.");
+    }
+    const { error } = await this.attachmentStorage.upload(path, data, {
+      contentType: mimeType,
+      upsert: true
+    });
+    if (error) {
+      throw new Error(`Failed to upload attachment object: ${error.message ?? error}`);
+    }
+  }
+
+  async downloadAttachmentObject(path) {
+    if (!this.attachmentStorage) return null;
+    const { data, error } = await this.attachmentStorage.download(path);
+    if (error || !data) return null;
+    return Buffer.from(await data.arrayBuffer());
   }
 
   async insertEmail(email, client = null) {
@@ -1113,6 +1161,26 @@ function mapPushTokenRow(row) {
     lastSeenAt: iso(row.lastSeenAt),
     disabledAt: isoOrNull(row.disabledAt)
   };
+}
+
+function storageClientFor({ supabaseURL, supabaseServiceRoleKey, bucket }) {
+  if (!supabaseURL || !supabaseServiceRoleKey) return null;
+  return createClient(supabaseURL, supabaseServiceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
+  }).storage.from(bucket);
+}
+
+function attachmentObjectPath(userId, emailId, attachmentId, filename) {
+  const safeName = String(filename)
+    .normalize("NFKD")
+    .replace(/[^\w. -]+/gu, "")
+    .replace(/\s+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 120) || "attachment";
+  return `${userId}/${emailId}/${attachmentId}/${safeName}`;
 }
 
 function emailInsertParams(email, userId) {

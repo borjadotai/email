@@ -75,6 +75,33 @@ test("Postgres store records opens without authenticated context", async () => {
   assert.deepEqual(labels.params, ["20000000-0000-4000-8000-000000000001", user.id]);
 });
 
+test("Postgres store stores attachment bytes in private object storage", async () => {
+  const pool = new FakePool();
+  const storage = new FakeStorage();
+  const store = new PostgresMailStore({ pool, storageClient: storage }).forUser(user);
+  const emailId = "20000000-0000-4000-8000-000000000001";
+  const attachmentId = "40000000-0000-4000-8000-000000000001";
+
+  await store.replaceEmailAttachments(emailId, [{
+    id: attachmentId,
+    filename: "Invoice Q1.pdf",
+    mimeType: "application/pdf",
+    data: Buffer.from("hello")
+  }]);
+
+  assert.equal(storage.uploads.length, 1);
+  assert.equal(storage.uploads[0].path, `${user.id}/${emailId}/${attachmentId}/Invoice-Q1.pdf`);
+  assert.equal(storage.uploads[0].contentType, "application/pdf");
+  const insert = pool.queries.find(query => /INSERT INTO public\.email_attachments/u.test(query.sql));
+  assert.ok(insert);
+  assert.equal(insert.params[10], "stored");
+  assert.equal(insert.params[11], "email-attachments");
+  assert.equal(insert.params[12], storage.uploads[0].path);
+
+  const attachment = await store.getAttachment(emailId, attachmentId);
+  assert.equal(Buffer.from(attachment.data).toString("utf8"), "hello");
+});
+
 class FakePool {
   queries = [];
 
@@ -202,10 +229,50 @@ class FakePool {
       };
     }
 
+    if (/storage_bucket AS "storageBucket"/u.test(sql)) {
+      return {
+        rows: [{
+          id: params[1],
+          emailId: params[0],
+          filename: "Invoice Q1.pdf",
+          mimeType: "application/pdf",
+          size: 5,
+          disposition: null,
+          isInline: false,
+          contentId: null,
+          storageBucket: "email-attachments",
+          storagePath: `${user.id}/${params[0]}/${params[1]}/Invoice-Q1.pdf`
+        }]
+      };
+    }
+
     if (/FROM public\.labels l\s+JOIN public\.email_labels/u.test(sql)) {
       return { rows: [] };
     }
 
     return { rows: [], rowCount: 1 };
+  }
+}
+
+class FakeStorage {
+  uploads = [];
+  objects = new Map();
+
+  async upload(path, data, options = {}) {
+    const buffer = Buffer.from(data);
+    this.uploads.push({ path, contentType: options.contentType, upsert: options.upsert, size: buffer.length });
+    this.objects.set(path, buffer);
+    return { data: { path }, error: null };
+  }
+
+  async download(path) {
+    const buffer = this.objects.get(path);
+    if (!buffer) return { data: null, error: new Error("missing object") };
+    return {
+      data: {
+        arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+      },
+      error: null
+    };
   }
 }

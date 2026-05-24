@@ -66,7 +66,12 @@ function secretStoreForRuntime(config) {
 
 function storeForRuntime(config) {
   if (config.storage === "postgres") {
-    return new PostgresMailStore({ connectionString: config.postgresURL });
+    return new PostgresMailStore({
+      connectionString: config.postgresURL,
+      supabaseURL: config.supabaseURL,
+      supabaseServiceRoleKey: config.supabaseServiceRoleKey,
+      attachmentBucket: config.attachmentBucket
+    });
   }
   if (config.storage === "sqlite") {
     return new MailStore({

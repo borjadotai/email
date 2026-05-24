@@ -12,7 +12,8 @@ messages, and keeps provider credentials private.
 The hosted architecture plan is in
 [docs/hosted-architecture.md](docs/hosted-architecture.md). That path uses
 Supabase Auth, tenant-scoped API requests, encrypted provider secrets, and a
-Fly.io-hosted server process.
+Fly.io-hosted server process backed by Supabase Postgres and private Supabase
+Storage.
 
 ## Start Here
 
@@ -218,6 +219,13 @@ Install or refresh the always-on LaunchAgent manually:
 
 ```sh
 ./scripts/install-launch-agent.sh
+```
+
+Validate hosted database migrations locally:
+
+```sh
+npx supabase start --exclude edge-runtime,imgproxy,realtime,studio,vector --ignore-health-check
+npx supabase db reset --local --no-seed --yes
 ```
 
 Build the apps:

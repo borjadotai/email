@@ -59,24 +59,33 @@ or attachments only when the user opens a message.
 
 ## Deployment Shape
 
-Phase 1 deploys the API to Fly.io with:
+The hosted runtime target is:
 
-- `Dockerfile`
-- `fly.toml.example`
-- persistent `/data` volume for SQLite and encrypted file-backed provider
-  secrets
-- Supabase Auth token verification
-- tenant-scoped server APIs
+- Fly.io runs the Node API as an always-on process.
+- Supabase Auth owns user signup and JWT issuance.
+- Supabase Postgres is selected with `EMAIL_STORAGE=postgres`.
+- Provider tokens are encrypted with `EMAIL_SECRET_ENCRYPTION_KEY` and stored in
+  `email_private.provider_secrets` with `EMAIL_SECRET_STORE=postgres`.
+- Attachments are uploaded to the private `email-attachments` Supabase Storage
+  bucket; Postgres stores only metadata and object paths.
 
-Phase 2 switches the runtime store from SQLite-on-volume to Supabase Postgres:
+Required hosted secrets:
 
-- apply `supabase/migrations/*`
-- add a Postgres-backed `MailStore` implementation
-- set `EMAIL_SECRET_STORE=postgres` so encrypted provider secrets are stored in
-  `email_private.provider_secrets`
-- store raw MIME and attachments in the private `email-attachments` bucket
-- run Supabase advisors before production rollout
+- `EMAIL_POSTGRES_URL`
+- `EMAIL_SECRET_ENCRYPTION_KEY`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- APNs secrets if remote push notifications are enabled
 
-The Phase 1 shape is enough to remove the Mac mini requirement for a small
-private test. The Phase 2 store migration is the real scalable shared-database
-architecture.
+Required non-secret hosted config:
+
+- `EMAIL_PUBLIC_BASE_URL`
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
+- `EMAIL_ATTACHMENT_BUCKET=email-attachments`
+
+`fly.toml.example` is configured for the hosted Postgres/Storage path and does
+not need a persistent Fly volume. The SQLite/file-secret path remains available
+for personal self-hosting. The rollout checklist is in
+[hosted-deployment.md](hosted-deployment.md).
