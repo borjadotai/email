@@ -2,6 +2,18 @@ import Foundation
 import Observation
 import SwiftUI
 
+struct PendingArchiveNotification: Identifiable, Hashable {
+  var id: String
+  var subject: String
+  var senderName: String
+  var secondsRemaining: Int
+  var durationSeconds: Int
+  var removedFromCurrentList: Bool
+  var previousEmails: [EmailSummary]
+  var previousSelectedEmailID: String?
+  var previousSelectedEmail: EmailDetail?
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -11,6 +23,7 @@ final class AppModel {
   var labels: [MailLabel] = []
   var emails: [EmailSummary] = []
   var selectedEmail: EmailDetail?
+  var conversationEmails: [EmailDetail] = []
   var selectedEmailID: String?
   var selectedAccountID: String?
   var selectedMailboxID: String?
@@ -24,6 +37,29 @@ final class AppModel {
   var statusMessage: String?
   var health: HealthResponse?
   var authSettings: AuthSettings?
+  var updatingAccountID: String?
+  var shortcutBindings: [MailShortcutBinding] = MailShortcutBinding.defaults {
+    didSet {
+      Defaults.saveShortcutBindings(shortcutBindings)
+    }
+  }
+  var composeRequestCount = 0
+  var composeDraft: ComposeDraft?
+  var settingsRequestCount = 0
+  var isSearchPresented = false
+  var isArchiving = false
+  var pendingArchive: PendingArchiveNotification?
+
+  var archiveUndoDurationSeconds: Int {
+    didSet {
+      let clamped = Defaults.clampedArchiveUndoDuration(archiveUndoDurationSeconds)
+      if clamped != archiveUndoDurationSeconds {
+        archiveUndoDurationSeconds = clamped
+        return
+      }
+      UserDefaults.standard.set(archiveUndoDurationSeconds, forKey: Defaults.archiveUndoDurationSeconds)
+    }
+  }
 
   var serverURLString: String {
     didSet {
@@ -38,6 +74,7 @@ final class AppModel {
   }
 
   private var hasBootstrapped = false
+  @ObservationIgnored private var pendingArchiveTask: Task<Void, Never>?
 
   init() {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
@@ -50,10 +87,16 @@ final class AppModel {
     serverURLString = initialServerURL
     let rawTheme = UserDefaults.standard.string(forKey: Defaults.theme) ?? ThemePreference.system.rawValue
     themePreference = ThemePreference(rawValue: rawTheme) ?? .system
+    archiveUndoDurationSeconds = Defaults.loadArchiveUndoDurationSeconds()
+    shortcutBindings = Defaults.loadShortcutBindings()
   }
 
   var colorScheme: ColorScheme? {
     themePreference.colorScheme
+  }
+
+  var archiveUndoDurationRange: ClosedRange<Int> {
+    Defaults.archiveUndoDurationRange
   }
 
   var navigationTitle: String {
@@ -107,15 +150,23 @@ final class AppModel {
     let query = EmailQuery(
       accountId: selectedAccountID,
       mailboxId: selectedMailboxID,
+      mailboxRole: defaultMailboxRole,
       labelId: selectedLabelID,
       q: searchText
     )
+    let pendingArchiveID = pendingArchive?.id
     emails = try await apiClient.emails(query: query)
+      .filter { $0.id != pendingArchiveID }
 
     if let selectedEmailID, emails.contains(where: { $0.id == selectedEmailID }) {
       selectedEmail = try? await apiClient.email(id: selectedEmailID)
-    } else if selectedEmailID == nil {
+      if let selectedEmail {
+        conversationEmails = (try? await apiClient.thread(emailId: selectedEmail.id)) ?? [selectedEmail]
+      }
+    } else {
+      selectedEmailID = nil
       selectedEmail = nil
+      conversationEmails = []
     }
   }
 
@@ -125,6 +176,33 @@ final class AppModel {
     } catch {
       errorMessage = error.localizedDescription
     }
+  }
+
+  func refreshVisibleMail() async {
+    let accountIds = visibleAccountIDsForRefresh()
+    if accountIds.isEmpty {
+      await refreshAll()
+      return
+    }
+
+    defer { syncingAccountID = nil }
+    var syncErrors: [String] = []
+    for accountId in accountIds {
+      syncingAccountID = accountId
+      do {
+        _ = try await apiClient.syncAccount(id: accountId, limit: 50)
+      } catch {
+        syncErrors.append(error.localizedDescription)
+      }
+    }
+
+    if let firstError = syncErrors.first {
+      errorMessage = firstError
+    } else {
+      errorMessage = nil
+      statusMessage = "Mail refreshed"
+    }
+    await refreshAll()
   }
 
   func checkHealth() async {
@@ -158,7 +236,7 @@ final class AppModel {
   }
 
   func selectLabel(_ label: MailLabel) async {
-    selectedAccountID = label.accountId
+    selectedAccountID = label.accountId ?? selectedAccountID
     selectedMailboxID = nil
     selectedLabelID = label.id
     await refreshEmails()
@@ -173,6 +251,7 @@ final class AppModel {
         await refreshAll()
       }
       selectedEmail = detail
+      conversationEmails = try await apiClient.thread(emailId: detail.id)
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -253,6 +332,41 @@ final class AppModel {
     }
   }
 
+  func updateAccountSettings(_ account: MailAccount, displayName: String, avatarURL: String, syncHistory: Bool) async -> Bool {
+    let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedDisplayName.isEmpty else {
+      errorMessage = "Display name cannot be empty."
+      return false
+    }
+    let trimmedAvatarURL = avatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    updatingAccountID = account.id
+    defer { updatingAccountID = nil }
+
+    do {
+      let updated = try await apiClient.updateAccount(
+        id: account.id,
+        UpdateAccountSettingsRequest(
+          displayName: trimmedDisplayName,
+          avatarURL: trimmedAvatarURL,
+          syncHistory: syncHistory
+        )
+      )
+      if let index = accounts.firstIndex(where: { $0.id == updated.id }) {
+        accounts[index] = updated
+      }
+      profile = try? await apiClient.profile()
+      mailboxes = try await apiClient.mailboxes()
+      statusMessage = "Updated \(updated.displayName)"
+      errorMessage = nil
+      try await loadEmails()
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
   func send(_ request: SendMessageRequest) async -> Bool {
     isSending = true
     defer { isSending = false }
@@ -261,11 +375,246 @@ final class AppModel {
       let response = try await apiClient.send(request)
       selectedEmailID = response.email.id
       selectedEmail = response.email
+      conversationEmails = try await apiClient.thread(emailId: response.email.id)
       await refreshAll()
       return true
     } catch {
       errorMessage = error.localizedDescription
       return false
+    }
+  }
+
+  func requestCompose() {
+    composeDraft = nil
+    composeRequestCount += 1
+  }
+
+  func requestReply(to email: EmailDetail? = nil) {
+    guard let email = email ?? selectedEmail else { return }
+    composeDraft = ComposeDraft.reply(to: email)
+    composeRequestCount += 1
+  }
+
+  func requestSettings() {
+    settingsRequestCount += 1
+  }
+
+  func shortcut(for action: MailShortcutAction) -> MailKeyboardShortcut {
+    shortcutBindings.first(where: { $0.action == action })?.shortcut ?? action.defaultShortcut
+  }
+
+  func updateShortcut(_ action: MailShortcutAction, key: String? = nil, modifierPreset: MailShortcutModifierPreset? = nil) {
+    let current = shortcut(for: action)
+    let updated = MailKeyboardShortcut(
+      key: key ?? current.key,
+      modifierPreset: modifierPreset ?? current.modifierPreset
+    )
+    let next = shortcutBindings.filter { $0.action != action } + [
+      MailShortcutBinding(action: action, shortcut: updated)
+    ]
+    shortcutBindings = sortedShortcutBindings(next)
+  }
+
+  func resetShortcuts() {
+    shortcutBindings = MailShortcutBinding.defaults
+  }
+
+  func shortcutConflict(for action: MailShortcutAction) -> MailShortcutAction? {
+    let shortcut = shortcut(for: action)
+    return MailShortcutAction.allCases.first { otherAction in
+      otherAction != action && self.shortcut(for: otherAction) == shortcut
+    }
+  }
+
+  func performShortcutAction(_ action: MailShortcutAction) async {
+    switch action {
+    case .compose:
+      requestCompose()
+    case .archive:
+      await archiveSelectedEmail()
+    case .refresh:
+      await refreshAll()
+    case .search:
+      isSearchPresented = true
+    case .toggleRead:
+      await toggleSelectedRead()
+    case .toggleStar:
+      await toggleSelectedStar()
+    case .markSpam:
+      await markSelectedSpam()
+    }
+  }
+
+  func archiveSelectedEmail() async {
+    guard !isArchiving, let selectedEmail else { return }
+    queueArchive(
+      id: selectedEmail.id,
+      subject: selectedEmail.subject,
+      senderName: selectedEmail.senderName
+    )
+  }
+
+  func archiveEmail(_ email: EmailSummary) async {
+    queueArchive(
+      id: email.id,
+      subject: email.subject,
+      senderName: email.senderName
+    )
+  }
+
+  func trashEmail(_ email: EmailSummary) async {
+    await trashEmail(id: email.id)
+  }
+
+  func markSpam(_ email: EmailSummary) async {
+    await markSpam(id: email.id)
+  }
+
+  func toggleRead(_ email: EmailSummary) async {
+    do {
+      let updated = try await apiClient.updateEmail(id: email.id, isRead: !email.isRead)
+      applyEmailUpdate(updated)
+      try await loadEmails()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func undoPendingArchive() {
+    guard let pendingArchive else { return }
+    pendingArchiveTask?.cancel()
+    pendingArchiveTask = nil
+
+    withAnimation(.snappy(duration: 0.24)) {
+      if pendingArchive.removedFromCurrentList {
+        emails = pendingArchive.previousEmails
+        selectedEmailID = pendingArchive.previousSelectedEmailID
+        selectedEmail = pendingArchive.previousSelectedEmail
+      }
+      self.pendingArchive = nil
+    }
+
+    statusMessage = "Archive undone"
+    errorMessage = nil
+  }
+
+  private func queueArchive(id: String, subject: String, senderName: String) {
+    guard pendingArchive?.id != id else { return }
+
+    if let previousPendingArchive = pendingArchive {
+      pendingArchiveTask?.cancel()
+      pendingArchiveTask = nil
+      withAnimation(.snappy(duration: 0.18)) {
+        pendingArchive = nil
+      }
+      Task {
+        await commitArchive(previousPendingArchive)
+      }
+    }
+
+    let previousEmails = emails
+    let previousSelectedEmailID = selectedEmailID
+    let previousSelectedEmail = selectedEmail
+    let shouldRemoveImmediately = shouldRemoveArchivedEmailFromCurrentList(emailId: id)
+
+    if shouldRemoveImmediately {
+      withAnimation(.snappy(duration: 0.24)) {
+        emails.removeAll { $0.id == id }
+        if selectedEmailID == id {
+          selectedEmailID = nil
+          selectedEmail = nil
+        }
+      }
+    }
+
+    let duration = Defaults.clampedArchiveUndoDuration(archiveUndoDurationSeconds)
+    let archive = PendingArchiveNotification(
+      id: id,
+      subject: subject,
+      senderName: senderName,
+      secondsRemaining: duration,
+      durationSeconds: duration,
+      removedFromCurrentList: shouldRemoveImmediately,
+      previousEmails: previousEmails,
+      previousSelectedEmailID: previousSelectedEmailID,
+      previousSelectedEmail: previousSelectedEmail
+    )
+
+    withAnimation(.snappy(duration: 0.24)) {
+      pendingArchive = archive
+    }
+    statusMessage = "Archiving in \(duration)s"
+    errorMessage = nil
+    schedulePendingArchiveCommit(id: id, duration: duration)
+  }
+
+  private func schedulePendingArchiveCommit(id: String, duration: Int) {
+    pendingArchiveTask?.cancel()
+    pendingArchiveTask = Task { @MainActor in
+      if duration > 1 {
+        for remaining in stride(from: duration - 1, through: 1, by: -1) {
+          try? await Task.sleep(for: .seconds(1))
+          guard !Task.isCancelled, pendingArchive?.id == id else { return }
+          pendingArchive?.secondsRemaining = remaining
+        }
+      }
+
+      try? await Task.sleep(for: .seconds(1))
+      guard !Task.isCancelled, let archive = pendingArchive, archive.id == id else { return }
+      pendingArchiveTask = nil
+      withAnimation(.easeOut(duration: 0.2)) {
+        pendingArchive = nil
+      }
+      await commitArchive(archive)
+    }
+  }
+
+  private func commitArchive(_ archive: PendingArchiveNotification) async {
+    isArchiving = true
+    defer { isArchiving = false }
+
+    do {
+      let updated = try await apiClient.archiveEmail(emailId: archive.id)
+      statusMessage = "Archived"
+      errorMessage = nil
+      if !archive.removedFromCurrentList {
+        applyEmailUpdate(updated)
+      }
+      mailboxes = try await apiClient.mailboxes()
+      try await loadEmails()
+    } catch {
+      if archive.removedFromCurrentList {
+        withAnimation(.snappy(duration: 0.24)) {
+          emails = archive.previousEmails
+          selectedEmailID = archive.previousSelectedEmailID
+          selectedEmail = archive.previousSelectedEmail
+        }
+      }
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func trashEmail(id: String) async {
+    do {
+      let updated = try await apiClient.trashEmail(emailId: id)
+      statusMessage = "Moved to Trash"
+      errorMessage = nil
+      applyEmailUpdate(updated)
+      try await loadEmails()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func markSpam(id: String) async {
+    do {
+      let updated = try await apiClient.markSpam(emailId: id)
+      statusMessage = "Moved to Spam"
+      errorMessage = nil
+      applyEmailUpdate(updated)
+      try await loadEmails()
+    } catch {
+      errorMessage = error.localizedDescription
     }
   }
 
@@ -300,6 +649,31 @@ final class AppModel {
     }
   }
 
+  func markSelectedSpam() async {
+    guard let selectedEmail else { return }
+    do {
+      self.selectedEmail = try await apiClient.markSpam(emailId: selectedEmail.id)
+      statusMessage = "Moved to Spam"
+      errorMessage = nil
+      await refreshAll()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func blockSelectedSender(scope: BlockSenderScope) async {
+    guard let selectedEmail else { return }
+    do {
+      let result = try await apiClient.blockSender(emailId: selectedEmail.id, scope: scope)
+      self.selectedEmail = result.email
+      statusMessage = blockStatusMessage(scope: result.rule.scope, value: result.rule.value, affectedCount: result.affectedCount)
+      errorMessage = nil
+      await refreshAll()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
   private func updateSelectedEmail(isRead: Bool?, isStarred: Bool?) async {
     guard let selectedEmail else { return }
     do {
@@ -309,11 +683,68 @@ final class AppModel {
       errorMessage = error.localizedDescription
     }
   }
+
+  private func blockStatusMessage(scope: BlockSenderScope, value: String, affectedCount: Int) -> String {
+    let target = scope == .domain ? value : value
+    let messageCount = affectedCount == 1 ? "1 message" : "\(affectedCount) messages"
+    return "Blocked \(target). Moved \(messageCount) to Spam."
+  }
+
+  private func applyEmailUpdate(_ email: EmailDetail) {
+    if selectedEmailID == email.id {
+      selectedEmail = email
+    }
+  }
+
+  private var defaultMailboxRole: String? {
+    selectedMailboxID == nil && selectedLabelID == nil ? "inbox" : nil
+  }
+
+  private func shouldRemoveArchivedEmailFromCurrentList(emailId: String) -> Bool {
+    guard emails.contains(where: { $0.id == emailId }) else {
+      return false
+    }
+
+    if let selectedMailboxID,
+       let mailbox = mailboxes.first(where: { $0.id == selectedMailboxID }) {
+      return mailbox.role == "inbox"
+    }
+
+    return defaultMailboxRole == "inbox"
+  }
+
+  private func sortedShortcutBindings(_ bindings: [MailShortcutBinding]) -> [MailShortcutBinding] {
+    MailShortcutAction.allCases.map { action in
+      bindings.first(where: { $0.action == action }) ?? MailShortcutBinding(action: action, shortcut: action.defaultShortcut)
+    }
+  }
+
+  private func visibleAccountIDsForRefresh() -> [String] {
+    if let selectedAccountID {
+      return [selectedAccountID]
+    }
+
+    if let selectedMailboxID,
+       let accountID = mailboxes.first(where: { $0.id == selectedMailboxID })?.accountId {
+      return [accountID]
+    }
+
+    if let selectedLabelID,
+       let accountID = labels.first(where: { $0.id == selectedLabelID })?.accountId {
+      return [accountID]
+    }
+
+    return accounts.map(\.id)
+  }
 }
 
 private enum Defaults {
   static let serverURL = "email.serverURL"
   static let theme = "email.theme"
+  static let shortcutBindings = "email.shortcutBindings.v1"
+  static let archiveUndoDurationSeconds = "email.archiveUndoDurationSeconds"
+  static let defaultArchiveUndoDurationSeconds = 4
+  static let archiveUndoDurationRange = 1...15
 
   static var defaultServerURL: String {
     Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "http://127.0.0.1:7331"
@@ -322,5 +753,33 @@ private enum Defaults {
   static func isLoopbackURL(_ value: String) -> Bool {
     guard let host = URLComponents(string: value)?.host?.lowercased() else { return false }
     return host == "127.0.0.1" || host == "localhost" || host == "::1"
+  }
+
+  static func loadShortcutBindings() -> [MailShortcutBinding] {
+    guard
+      let data = UserDefaults.standard.data(forKey: shortcutBindings),
+      let decoded = try? JSONDecoder().decode([MailShortcutBinding].self, from: data)
+    else {
+      return MailShortcutBinding.defaults
+    }
+
+    return MailShortcutAction.allCases.map { action in
+      decoded.first(where: { $0.action == action }) ?? MailShortcutBinding(action: action, shortcut: action.defaultShortcut)
+    }
+  }
+
+  static func saveShortcutBindings(_ bindings: [MailShortcutBinding]) {
+    guard let data = try? JSONEncoder().encode(bindings) else { return }
+    UserDefaults.standard.set(data, forKey: shortcutBindings)
+  }
+
+  static func loadArchiveUndoDurationSeconds() -> Int {
+    let value = UserDefaults.standard.integer(forKey: archiveUndoDurationSeconds)
+    guard value > 0 else { return defaultArchiveUndoDurationSeconds }
+    return clampedArchiveUndoDuration(value)
+  }
+
+  static func clampedArchiveUndoDuration(_ value: Int) -> Int {
+    min(max(value, archiveUndoDurationRange.lowerBound), archiveUndoDurationRange.upperBound)
   }
 }

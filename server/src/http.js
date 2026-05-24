@@ -1,4 +1,5 @@
 import { createServer as createHTTPServer } from "node:http";
+import { Buffer } from "node:buffer";
 import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
@@ -104,10 +105,23 @@ async function route({ req, res, store, providers, events, baseURL }) {
     return;
   }
 
+  const accountMatch = path.match(/^\/api\/accounts\/([^/]+)$/);
+  if (accountMatch && req.method === "PATCH") {
+    const account = store.updateAccountSettings(accountMatch[1], await readJSON(req));
+    if (!account) throw httpError(404, "Account not found.");
+    events.emit("accounts.changed", { accountId: account.id });
+    events.emit("emails.changed", { accountId: account.id });
+    sendJSON(res, 200, { account });
+    return;
+  }
+
   const accountSyncMatch = path.match(/^\/api\/accounts\/([^/]+)\/sync$/);
   if (accountSyncMatch && req.method === "POST") {
     requireProviders(providers);
-    const sync = await providers.syncAccount(accountSyncMatch[1]);
+    const body = await readJSON(req);
+    const sync = await providers.syncAccount(accountSyncMatch[1], {
+      limit: body.limit
+    });
     events.emit("emails.changed", { accountId: accountSyncMatch[1] });
     sendJSON(res, 200, { sync });
     return;
@@ -138,9 +152,37 @@ async function route({ req, res, store, providers, events, baseURL }) {
 
   const emailMatch = path.match(/^\/api\/emails\/([^/]+)$/);
   if (emailMatch && req.method === "GET") {
-    const email = store.getEmail(emailMatch[1]);
+    let email = store.getEmail(emailMatch[1]);
     if (!email) throw httpError(404, "Email not found.");
+    await ensureStoredAttachments({ store, providers, email });
+    email = store.getEmail(email.id);
     sendJSON(res, 200, { email });
+    return;
+  }
+
+  const threadMatch = path.match(/^\/api\/emails\/([^/]+)\/thread$/);
+  if (threadMatch && req.method === "GET") {
+    let emails = store.listThreadEmails(threadMatch[1]);
+    if (!emails) throw httpError(404, "Email not found.");
+    for (const email of emails) {
+      await ensureStoredAttachments({ store, providers, email });
+    }
+    emails = store.listThreadEmails(threadMatch[1]);
+    sendJSON(res, 200, { emails });
+    return;
+  }
+
+  const attachmentDownloadMatch = path.match(/^\/api\/emails\/([^/]+)\/attachments\/([^/]+)\/download$/);
+  if (attachmentDownloadMatch && req.method === "GET") {
+    const email = store.getEmail(attachmentDownloadMatch[1]);
+    if (!email) throw httpError(404, "Email not found.");
+    let attachment = store.getAttachment(email.id, attachmentDownloadMatch[2]);
+    if (!attachment?.data && providers) {
+      await providers.ensureEmailAttachments(email);
+      attachment = store.getAttachment(email.id, attachmentDownloadMatch[2]);
+    }
+    if (!attachment?.data) throw httpError(404, "Attachment not found.");
+    sendAttachment(res, attachment);
     return;
   }
 
@@ -149,6 +191,54 @@ async function route({ req, res, store, providers, events, baseURL }) {
     if (!email) throw httpError(404, "Email not found.");
     events.emit("emails.changed", { emailId: email.id });
     sendJSON(res, 200, { email });
+    return;
+  }
+
+  const spamMatch = path.match(/^\/api\/emails\/([^/]+)\/spam$/);
+  if (spamMatch && req.method === "POST") {
+    const current = store.getEmail(spamMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (providers) {
+      await providers.markEmailSpam(current);
+    }
+    const email = store.markEmailSpam(spamMatch[1]);
+    events.emit("emails.changed", { emailId: email.id });
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const archiveMatch = path.match(/^\/api\/emails\/([^/]+)\/archive$/);
+  if (archiveMatch && req.method === "POST") {
+    const current = store.getEmail(archiveMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (providers) {
+      await providers.archiveEmail(current);
+    }
+    const email = store.archiveEmail(archiveMatch[1]);
+    events.emit("emails.changed", { emailId: email.id });
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const trashMatch = path.match(/^\/api\/emails\/([^/]+)\/trash$/);
+  if (trashMatch && req.method === "POST") {
+    const current = store.getEmail(trashMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (providers) {
+      await providers.trashEmail(current);
+    }
+    const email = store.trashEmail(trashMatch[1]);
+    events.emit("emails.changed", { emailId: email.id });
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const blockMatch = path.match(/^\/api\/emails\/([^/]+)\/block$/);
+  if (blockMatch && req.method === "POST") {
+    const result = store.blockSenderForEmail(blockMatch[1], (await readJSON(req)).scope);
+    if (!result) throw httpError(404, "Email not found.");
+    events.emit("emails.changed", { emailId: result.email.id, affectedCount: result.affectedCount });
+    sendJSON(res, 200, result);
     return;
   }
 
@@ -228,6 +318,36 @@ function sendHTML(res, status, html) {
     "Content-Length": body.length
   });
   res.end(body);
+}
+
+function sendAttachment(res, attachment) {
+  const body = Buffer.from(attachment.data);
+  const filename = safeFilename(attachment.filename || "Attachment");
+  sendCORS(res);
+  res.writeHead(200, {
+    "Content-Type": attachment.mimeType || "application/octet-stream",
+    "Content-Length": body.length,
+    "Content-Disposition": `attachment; filename="${filename.replaceAll('"', '\\"')}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    "Cache-Control": "private, max-age=300"
+  });
+  res.end(body);
+}
+
+async function ensureStoredAttachments({ store, providers, email }) {
+  if (!providers || !email?.hasAttachments || email.attachments?.length > 0) return;
+  try {
+    await providers.ensureEmailAttachments(email);
+  } catch (error) {
+    console.warn(`${new Date().toISOString()} attachment fetch failed email=${email.id}: ${error.message}`);
+  }
+}
+
+function safeFilename(value) {
+  return String(value)
+    .replace(/[\r\n/\\:]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 180) || "Attachment";
 }
 
 function sendCORS(res) {

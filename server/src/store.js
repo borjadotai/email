@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { DatabaseSync } from "node:sqlite";
+import { senderLogoURLForEmail } from "./logoResolver.js";
 
 const SYSTEM_MAILBOXES = [
   ["Inbox", "inbox"],
   ["Sent", "sent"],
   ["Drafts", "drafts"],
   ["Archive", "archive"],
+  ["Spam", "spam"],
   ["Trash", "trash"]
 ];
 
@@ -15,6 +18,8 @@ const SYSTEM_LABELS = [
   ["Action", "blue"],
   ["Later", "purple"]
 ];
+
+const SEARCH_INDEX_VERSION = "2";
 
 export class MailStore {
   constructor({ databasePath = ":memory:", seedDemo = false } = {}) {
@@ -107,6 +112,9 @@ export class MailStore {
         snippet TEXT NOT NULL,
         body_text TEXT NOT NULL,
         body_html TEXT,
+        rfc_message_id TEXT,
+        in_reply_to TEXT,
+        references_json TEXT NOT NULL DEFAULT '[]',
         sent_at TEXT NOT NULL,
         received_at TEXT NOT NULL,
         is_read INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +130,20 @@ export class MailStore {
         email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
         label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
         PRIMARY KEY(email_id, label_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS email_attachments (
+        id TEXT PRIMARY KEY,
+        email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+        provider_attachment_id TEXT,
+        content_id TEXT,
+        filename TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        disposition TEXT,
+        is_inline INTEGER NOT NULL DEFAULT 0,
+        data BLOB,
+        created_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS outbound_messages (
@@ -143,6 +165,16 @@ export class MailStore {
         opened_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS blocked_senders (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        scope TEXT NOT NULL CHECK (scope IN ('email', 'domain')),
+        value TEXT NOT NULL,
+        source_email_id TEXT REFERENCES emails(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(account_id, scope, value)
+      );
+
       CREATE VIRTUAL TABLE IF NOT EXISTS email_fts USING fts5(
         email_id UNINDEXED,
         account_id UNINDEXED,
@@ -159,14 +191,24 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_emails_mailbox_received ON emails(mailbox_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_tracking ON emails(tracking_id);
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
+      CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
+      CREATE INDEX IF NOT EXISTS idx_blocked_senders_account ON blocked_senders(account_id, scope, value);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
         ON emails(account_id, provider_uid)
         WHERE provider_uid IS NOT NULL;
     `);
     this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("emails", "rfc_message_id", "TEXT");
+    this.ensureColumn("emails", "in_reply_to", "TEXT");
+    this.ensureColumn("emails", "references_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureDefaultsForExistingAccounts();
     this.ensureLocalUser();
     this.linkUnownedAccountsToLocalUser();
     this.hydrateLocalUserFromAccounts();
+    this.reclassifyLocalUserInboxMessages();
+    this.repairCrossAccountSentMisclassifications();
+    this.repairLocalUserSenderNames();
+    this.ensureSearchIndexVersion();
   }
 
   ensureColumn(table, column, definition) {
@@ -193,6 +235,7 @@ export class MailStore {
     const provider = normalizeProvider(input.provider);
     const email = requiredString(input.email, "email").toLowerCase();
     const displayName = input.displayName?.trim() || email;
+    const avatarURL = optionalString(input.avatarURL);
     const id = randomUUID();
     const now = new Date().toISOString();
 
@@ -205,7 +248,7 @@ export class MailStore {
         provider,
         email,
         displayName,
-        input.avatarURL ?? null,
+        avatarURL,
         input.authType ?? "not_configured",
         input.status ?? "connected",
         input.syncHistory === false ? 0 : 1,
@@ -215,26 +258,30 @@ export class MailStore {
       this.linkAccountToLocalUser(id, provider, email);
     });
 
+    this.reclassifyLocalUserInboxMessages();
+    this.repairCrossAccountSentMisclassifications();
+    this.repairLocalUserSenderNames();
     return this.getAccount(id);
   }
 
   createOrUpdateAccount(input) {
     const provider = normalizeProvider(input.provider);
     const email = requiredString(input.email, "email").toLowerCase();
+    const avatarURL = optionalString(input.avatarURL);
     const now = new Date().toISOString();
     const existing = this.db.prepare("SELECT id FROM accounts WHERE email = ?").get(email);
 
     if (existing) {
       this.db.prepare(`
         UPDATE accounts
-        SET provider = ?, display_name = ?, avatar_url = ?, auth_type = ?,
+        SET provider = ?, display_name = ?, avatar_url = COALESCE(?, avatar_url), auth_type = ?,
             status = ?, sync_history = ?, last_sync_at = COALESCE(?, last_sync_at),
             provider_metadata_json = ?
         WHERE id = ?
       `).run(
         provider,
         input.displayName?.trim() || email,
-        input.avatarURL ?? null,
+        avatarURL,
         input.authType ?? "not_configured",
         input.status ?? "connected",
         input.syncHistory === false ? 0 : 1,
@@ -244,6 +291,9 @@ export class MailStore {
       );
       this.ensureDefaultsForAccount(existing.id);
       this.linkAccountToLocalUser(existing.id, provider, email);
+      this.reclassifyLocalUserInboxMessages();
+      this.repairCrossAccountSentMisclassifications();
+      this.repairLocalUserSenderNames();
       return this.getAccount(existing.id);
     }
 
@@ -256,12 +306,13 @@ export class MailStore {
 
   listAccounts() {
     return this.db.prepare(`
-      SELECT id, provider, email, display_name AS displayName, avatar_url AS avatarURL,
-             auth_type AS authType, status, sync_history AS syncHistory,
-             last_sync_at AS lastSyncAt, provider_metadata_json AS providerMetadataJSON,
-             created_at AS createdAt
-      FROM accounts
-      ORDER BY created_at ASC
+      SELECT a.id, a.provider, a.email, a.display_name AS displayName,
+             ${accountAvatarSelect("a")},
+             a.auth_type AS authType, a.status, a.sync_history AS syncHistory,
+             a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
+             a.created_at AS createdAt
+      FROM accounts a
+      ORDER BY a.created_at ASC
     `).all().map(row => ({
       ...row,
       syncHistory: Boolean(row.syncHistory),
@@ -299,12 +350,13 @@ export class MailStore {
 
   getAccount(id) {
     const row = this.db.prepare(`
-      SELECT id, provider, email, display_name AS displayName, avatar_url AS avatarURL,
-             auth_type AS authType, status, sync_history AS syncHistory,
-             last_sync_at AS lastSyncAt, provider_metadata_json AS providerMetadataJSON,
-             created_at AS createdAt
-      FROM accounts
-      WHERE id = ?
+      SELECT a.id, a.provider, a.email, a.display_name AS displayName,
+             ${accountAvatarSelect("a")},
+             a.auth_type AS authType, a.status, a.sync_history AS syncHistory,
+             a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
+             a.created_at AS createdAt
+      FROM accounts a
+      WHERE a.id = ?
     `).get(id);
     if (!row) return null;
     return { ...row, syncHistory: Boolean(row.syncHistory), providerMetadata: parseJSON(row.providerMetadataJSON, {}) };
@@ -377,6 +429,170 @@ export class MailStore {
     `).run(accountId, userId, provider, email, new Date().toISOString());
   }
 
+  isLocalUserEmail(email) {
+    const normalized = normalizeEmailForComparison(email);
+    if (!normalized) return false;
+
+    return Boolean(this.db.prepare(`
+      SELECT 1
+      FROM (
+        SELECT email FROM accounts
+        UNION
+        SELECT provider_email AS email FROM account_user_links
+      ) identities
+      WHERE lower(email) = ?
+      LIMIT 1
+    `).get(normalized));
+  }
+
+  isAccountIdentityEmail(accountId, email) {
+    const normalized = normalizeEmailForComparison(email);
+    if (!normalized) return false;
+
+    return Boolean(this.db.prepare(`
+      SELECT 1
+      FROM (
+        SELECT email FROM accounts WHERE id = ?
+        UNION
+        SELECT provider_email AS email FROM account_user_links WHERE account_id = ?
+      ) identities
+      WHERE lower(email) = ?
+      LIMIT 1
+    `).get(accountId, accountId, normalized));
+  }
+
+  displayNameForLocalUserEmail(email) {
+    const normalized = normalizeEmailForComparison(email);
+    if (!normalized) return null;
+
+    const account = this.db.prepare(`
+      SELECT display_name AS displayName
+      FROM accounts
+      WHERE lower(email) = ?
+      LIMIT 1
+    `).get(normalized);
+    if (account?.displayName) {
+      return account.displayName;
+    }
+
+    return this.db.prepare(`
+      SELECT u.display_name AS displayName
+      FROM account_user_links l
+      JOIN app_users u ON u.id = l.user_id
+      WHERE lower(l.provider_email) = ?
+      LIMIT 1
+    `).get(normalized)?.displayName ?? null;
+  }
+
+  reclassifyLocalUserInboxMessages(accountId = null) {
+    const args = [];
+    const accountFilter = accountId ? "AND e.account_id = ?" : "";
+    if (accountId) {
+      args.push(accountId);
+    }
+
+    const affectedMailboxes = this.db.prepare(`
+      SELECT DISTINCT e.mailbox_id AS mailboxId, sent.id AS sentMailboxId
+      FROM emails e
+      JOIN mailboxes current ON current.id = e.mailbox_id
+      JOIN accounts a ON a.id = e.account_id
+      JOIN mailboxes sent ON sent.account_id = e.account_id AND sent.role = 'sent'
+      WHERE current.role = 'inbox'
+        ${accountFilter}
+        AND ${accountIdentityMatchSQL("e", "a")}
+    `).all(...args);
+
+    const result = this.db.prepare(`
+      UPDATE emails AS e
+      SET mailbox_id = (
+        SELECT sent.id
+        FROM mailboxes sent
+        WHERE sent.account_id = e.account_id AND sent.role = 'sent'
+      )
+      WHERE e.id IN (
+        SELECT e2.id
+        FROM emails e2
+        JOIN mailboxes current ON current.id = e2.mailbox_id
+        JOIN accounts a2 ON a2.id = e2.account_id
+        WHERE current.role = 'inbox'
+          ${accountFilter.replaceAll("e.", "e2.")}
+          AND ${accountIdentityMatchSQL("e2", "a2")}
+      )
+    `).run(...args);
+
+    for (const mailbox of affectedMailboxes) {
+      this.refreshMailboxUnread(mailbox.mailboxId);
+      this.refreshMailboxUnread(mailbox.sentMailboxId);
+    }
+
+    return result.changes ?? 0;
+  }
+
+  repairCrossAccountSentMisclassifications(accountId = null) {
+    const args = [];
+    const accountFilter = accountId ? "AND e.account_id = ?" : "";
+    if (accountId) {
+      args.push(accountId);
+    }
+
+    const candidates = this.db.prepare(`
+      SELECT e.id, e.mailbox_id AS mailboxId, inbox.id AS inboxMailboxId
+      FROM emails e
+      JOIN accounts a ON a.id = e.account_id
+      JOIN mailboxes current ON current.id = e.mailbox_id
+      JOIN mailboxes inbox ON inbox.account_id = e.account_id AND inbox.role = 'inbox'
+      WHERE current.role = 'sent'
+        ${accountFilter}
+        AND lower(e.sender_email) IN (
+          SELECT lower(email) FROM accounts
+          UNION
+          SELECT lower(provider_email) FROM account_user_links
+        )
+        AND NOT ${accountIdentityMatchSQL("e", "a")}
+    `).all(...args);
+
+    const update = this.db.prepare("UPDATE emails SET mailbox_id = ? WHERE id = ?");
+    const touchedMailboxIDs = new Set();
+    for (const candidate of candidates) {
+      update.run(candidate.inboxMailboxId, candidate.id);
+      touchedMailboxIDs.add(candidate.mailboxId);
+      touchedMailboxIDs.add(candidate.inboxMailboxId);
+    }
+
+    for (const mailboxId of touchedMailboxIDs) {
+      this.refreshMailboxUnread(mailboxId);
+    }
+
+    return candidates.length;
+  }
+
+  repairLocalUserSenderNames(accountId = null) {
+    const args = [];
+    const accountFilter = accountId ? "AND e.account_id = ?" : "";
+    if (accountId) {
+      args.push(accountId);
+    }
+
+    const result = this.db.prepare(`
+      UPDATE emails AS e
+      SET sender_name = (
+        SELECT a.display_name
+        FROM accounts a
+        WHERE lower(a.email) = lower(e.sender_email)
+        LIMIT 1
+      )
+      WHERE lower(e.sender_email) IN (SELECT lower(email) FROM accounts)
+        ${accountFilter}
+        AND lower(e.sender_name) = lower(e.sender_email)
+    `).run(...args);
+
+    if ((result.changes ?? 0) > 0) {
+      this.rebuildEmailFTS();
+    }
+
+    return result.changes ?? 0;
+  }
+
   updateAccountStatus(id, status, metadata = null) {
     const account = this.getAccount(id);
     if (!account) return null;
@@ -386,6 +602,52 @@ export class MailStore {
       SET status = ?, provider_metadata_json = ?
       WHERE id = ?
     `).run(status, JSON.stringify(nextMetadata), id);
+    return this.getAccount(id);
+  }
+
+  updateAccountSettings(id, input = {}) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+
+    const displayName = optionalString(input.displayName) ?? account.displayName;
+    const hasAvatarURL = Object.hasOwn(input, "avatarURL");
+    const avatarURL = hasAvatarURL ? optionalString(input.avatarURL) : null;
+    const syncHistory = typeof input.syncHistory === "boolean" ? input.syncHistory : account.syncHistory;
+
+    if (hasAvatarURL) {
+      this.db.prepare(`
+        UPDATE accounts
+        SET display_name = ?, avatar_url = ?, sync_history = ?
+        WHERE id = ?
+      `).run(displayName, avatarURL, syncHistory ? 1 : 0, id);
+    } else {
+      this.db.prepare(`
+        UPDATE accounts
+        SET display_name = ?, sync_history = ?
+        WHERE id = ?
+      `).run(displayName, syncHistory ? 1 : 0, id);
+    }
+
+    if (displayName !== account.displayName) {
+      this.db.prepare(`
+        UPDATE emails
+        SET sender_name = ?
+        WHERE lower(sender_email) = lower(?)
+      `).run(displayName, account.email);
+    }
+
+    if (hasAvatarURL) {
+      this.db.prepare(`
+        UPDATE emails
+        SET sender_avatar_url = ?
+        WHERE lower(sender_email) = lower(?)
+      `).run(avatarURL || senderLogoURLForEmail(account.email), account.email);
+    }
+
+    if (displayName !== account.displayName) {
+      this.rebuildEmailFTS();
+    }
+
     return this.getAccount(id);
   }
 
@@ -429,7 +691,8 @@ export class MailStore {
           WHEN 'sent' THEN 1
           WHEN 'drafts' THEN 2
           WHEN 'archive' THEN 3
-          WHEN 'trash' THEN 4
+          WHEN 'spam' THEN 4
+          WHEN 'trash' THEN 5
           ELSE 9
         END
     `).all(...args);
@@ -507,6 +770,11 @@ export class MailStore {
       args.push(filters.mailboxId);
     }
 
+    if (filters.mailboxRole) {
+      where.push("m.role = ?");
+      args.push(filters.mailboxRole);
+    }
+
     if (filters.labelId) {
       joins.push("JOIN email_labels filter_labels ON filter_labels.email_id = e.id");
       where.push("filter_labels.label_id = ?");
@@ -518,7 +786,7 @@ export class MailStore {
     }
 
     const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const orderSQL = query ? "ORDER BY bm25(email_fts), e.received_at DESC" : "ORDER BY e.received_at DESC";
+    const orderSQL = "ORDER BY e.received_at DESC";
 
     const rows = this.db.prepare(`
       SELECT e.id, e.account_id AS accountId, a.email AS accountEmail, a.provider,
@@ -538,6 +806,7 @@ export class MailStore {
 
     return rows.map(row => ({
       ...row,
+      senderAvatarURL: row.senderAvatarURL || senderLogoURLForEmail(row.senderEmail),
       isRead: Boolean(row.isRead),
       isStarred: Boolean(row.isStarred),
       hasAttachments: Boolean(row.hasAttachments),
@@ -549,10 +818,13 @@ export class MailStore {
     const row = this.db.prepare(`
       SELECT e.id, e.account_id AS accountId, a.email AS accountEmail, a.provider,
              e.mailbox_id AS mailboxId, m.name AS mailboxName, m.role AS mailboxRole,
+             e.provider_uid AS providerUID, e.thread_id AS threadId,
              e.sender_name AS senderName, e.sender_email AS senderEmail,
              e.sender_avatar_url AS senderAvatarURL, e.recipients_json AS recipientsJSON,
              e.cc_json AS ccJSON, e.bcc_json AS bccJSON, e.subject, e.snippet,
              e.body_text AS bodyText, e.body_html AS bodyHTML,
+             e.rfc_message_id AS rfcMessageID, e.in_reply_to AS inReplyTo,
+             e.references_json AS referencesJSON,
              e.received_at AS receivedAt, e.sent_at AS sentAt,
              e.is_read AS isRead, e.is_starred AS isStarred,
              e.importance, e.has_attachments AS hasAttachments,
@@ -567,14 +839,70 @@ export class MailStore {
 
     return {
       ...row,
+      senderAvatarURL: row.senderAvatarURL || senderLogoURLForEmail(row.senderEmail),
       recipients: parseJSON(row.recipientsJSON, []),
       cc: parseJSON(row.ccJSON, []),
       bcc: parseJSON(row.bccJSON, []),
+      references: parseJSON(row.referencesJSON, []),
       isRead: Boolean(row.isRead),
       isStarred: Boolean(row.isStarred),
       hasAttachments: Boolean(row.hasAttachments),
-      labels: this.labelsForEmail(row.id)
+      labels: this.labelsForEmail(row.id),
+      attachments: this.attachmentsForEmail(row.id)
     };
+  }
+
+  listThreadEmails(emailId) {
+    const anchor = this.getEmail(emailId);
+    if (!anchor) return null;
+
+    const threadRows = anchor.threadId ? this.db.prepare(`
+      SELECT id
+      FROM emails
+      WHERE account_id = ?
+        AND thread_id = ?
+    `).all(anchor.accountId, anchor.threadId) : [];
+
+    const messageKeys = uniqueStrings([
+      anchor.rfcMessageID,
+      anchor.inReplyTo,
+      ...anchor.references
+    ]);
+    const rfcRows = messageKeys.length ? this.db.prepare(`
+      WITH keys(value) AS (
+        SELECT value FROM json_each(?)
+      )
+      SELECT DISTINCT e.id
+      FROM emails e
+      WHERE e.rfc_message_id IN (SELECT value FROM keys)
+         OR e.in_reply_to IN (SELECT value FROM keys)
+         OR EXISTS (
+           SELECT 1
+           FROM json_each(e.references_json) refs
+           JOIN keys ON keys.value = refs.value
+         )
+    `).all(JSON.stringify(messageKeys)) : [];
+
+    const ids = uniqueStrings([...threadRows, ...rfcRows].map(row => row.id));
+    if (ids.length === 0) {
+      return [anchor];
+    }
+
+    const emails = ids
+      .map(id => this.getEmail(id))
+      .filter(Boolean);
+
+    if (!emails.some(email => email.id === anchor.id)) {
+      emails.push(anchor);
+    }
+
+    return emails
+      .sort((a, b) => {
+        const aTime = Date.parse(a.sentAt ?? a.receivedAt ?? a.createdAt ?? "");
+        const bTime = Date.parse(b.sentAt ?? b.receivedAt ?? b.createdAt ?? "");
+        if (aTime !== bTime) return aTime - bTime;
+        return a.id.localeCompare(b.id);
+      });
   }
 
   updateEmail(id, patch) {
@@ -604,6 +932,98 @@ export class MailStore {
     return this.getEmail(id);
   }
 
+  markEmailSpam(id) {
+    const existing = this.getEmail(id);
+    if (!existing) return null;
+
+    const spamMailbox = this.mailboxForRole(existing.accountId, "spam");
+    if (existing.mailboxId !== spamMailbox.id) {
+      this.db.prepare("UPDATE emails SET mailbox_id = ? WHERE id = ?").run(spamMailbox.id, id);
+      this.refreshMailboxUnread(existing.mailboxId);
+      this.refreshMailboxUnread(spamMailbox.id);
+    }
+
+    return this.getEmail(id);
+  }
+
+  archiveEmail(id) {
+    const existing = this.getEmail(id);
+    if (!existing) return null;
+
+    const archiveMailbox = this.mailboxForRole(existing.accountId, "archive");
+    if (existing.mailboxId !== archiveMailbox.id) {
+      this.db.prepare("UPDATE emails SET mailbox_id = ? WHERE id = ?").run(archiveMailbox.id, id);
+      this.refreshMailboxUnread(existing.mailboxId);
+      this.refreshMailboxUnread(archiveMailbox.id);
+    }
+
+    return this.getEmail(id);
+  }
+
+  trashEmail(id) {
+    const existing = this.getEmail(id);
+    if (!existing) return null;
+
+    const trashMailbox = this.mailboxForRole(existing.accountId, "trash");
+    if (existing.mailboxId !== trashMailbox.id) {
+      this.db.prepare("UPDATE emails SET mailbox_id = ? WHERE id = ?").run(trashMailbox.id, id);
+      this.refreshMailboxUnread(existing.mailboxId);
+      this.refreshMailboxUnread(trashMailbox.id);
+    }
+
+    return this.getEmail(id);
+  }
+
+  listBlockedSenders(accountId = null) {
+    const args = [];
+    let where = "";
+    if (accountId) {
+      where = "WHERE b.account_id = ?";
+      args.push(accountId);
+    }
+
+    return this.db.prepare(`
+      SELECT b.id, b.account_id AS accountId, a.email AS accountEmail,
+             b.scope, b.value, b.source_email_id AS sourceEmailId,
+             b.created_at AS createdAt
+      FROM blocked_senders b
+      JOIN accounts a ON a.id = b.account_id
+      ${where}
+      ORDER BY b.created_at DESC
+    `).all(...args);
+  }
+
+  blockSenderForEmail(emailId, scope) {
+    const email = this.getEmail(emailId);
+    if (!email) return null;
+
+    const normalizedScope = normalizeBlockScope(scope);
+    const value = normalizedScope === "email"
+      ? normalizeEmailAddress(email.senderEmail, "senderEmail")
+      : domainForEmail(email.senderEmail);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+
+    this.db.prepare(`
+      INSERT OR IGNORE INTO blocked_senders (id, account_id, scope, value, source_email_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, email.accountId, normalizedScope, value, email.id, now);
+
+    const rule = this.db.prepare(`
+      SELECT id, account_id AS accountId, scope, value,
+             source_email_id AS sourceEmailId, created_at AS createdAt
+      FROM blocked_senders
+      WHERE account_id = ? AND scope = ? AND value = ?
+    `).get(email.accountId, normalizedScope, value);
+    const affectedCount = this.moveBlockedMessagesToSpam(email.accountId, normalizedScope, value);
+
+    return {
+      rule,
+      affectedCount,
+      email: this.getEmail(email.id)
+    };
+  }
+
   setEmailLabel(emailId, labelId, action = "add") {
     const email = this.getEmail(emailId);
     if (!email) return null;
@@ -627,6 +1047,15 @@ export class MailStore {
     const account = this.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
 
+    const replyToEmailID = optionalString(input.replyToEmailID ?? input.replyToEmailId);
+    const replyToEmail = replyToEmailID ? this.getEmail(replyToEmailID) : null;
+    if (replyToEmailID && !replyToEmail) {
+      throw httpError(404, "Reply target not found.");
+    }
+    if (replyToEmail && replyToEmail.accountId !== accountId) {
+      throw httpError(400, "Replies must be sent from the account that owns the conversation.");
+    }
+
     const sentMailbox = this.mailboxForRole(accountId, "sent");
     const now = new Date().toISOString();
     const trackingId = input.trackOpens === false ? null : randomUUID();
@@ -638,6 +1067,8 @@ export class MailStore {
     const snippet = bodyText.replace(/\s+/g, " ").slice(0, 180);
     const emailId = randomUUID();
     const outboundId = randomUUID();
+    const rfcMessageID = makeRFCMessageID(account.email);
+    const references = replyReferences(replyToEmail);
 
     this.transaction(() => {
       this.insertEmail({
@@ -645,10 +1076,10 @@ export class MailStore {
         accountId,
         mailboxId: sentMailbox.id,
         providerUID: null,
-        threadId: input.threadId ?? randomUUID(),
+        threadId: replyToEmail?.threadId ?? input.threadId ?? randomUUID(),
         senderName: account.displayName,
         senderEmail: account.email,
-        senderAvatarURL: account.avatarURL,
+        senderAvatarURL: account.avatarURL || senderLogoURLForEmail(account.email),
         recipients,
         cc,
         bcc,
@@ -656,6 +1087,9 @@ export class MailStore {
         snippet,
         bodyText,
         bodyHTML: input.bodyHTML ?? null,
+        rfcMessageID,
+        inReplyTo: replyToEmail?.rfcMessageID ?? null,
+        references,
         sentAt: now,
         receivedAt: now,
         isRead: true,
@@ -841,10 +1275,21 @@ export class MailStore {
     }
   }
 
+  ensureDefaultsForExistingAccounts() {
+    const accounts = this.db.prepare("SELECT id FROM accounts").all();
+    for (const account of accounts) {
+      this.ensureDefaultsForAccount(account.id);
+    }
+  }
+
   mailboxForRole(accountId, role) {
     const mailbox = this.db.prepare("SELECT id, name, role FROM mailboxes WHERE account_id = ? AND role = ?").get(accountId, role);
     if (!mailbox) throw httpError(404, `Mailbox ${role} not found.`);
     return mailbox;
+  }
+
+  mailboxRole(mailboxId) {
+    return this.db.prepare("SELECT role FROM mailboxes WHERE id = ?").get(mailboxId)?.role ?? null;
   }
 
   labelsForEmail(emailId) {
@@ -857,14 +1302,79 @@ export class MailStore {
     `).all(emailId).map(row => ({ ...row, isSystem: Boolean(row.isSystem) }));
   }
 
+  attachmentsForEmail(emailId) {
+    return this.db.prepare(`
+      SELECT id, email_id AS emailId, filename, mime_type AS mimeType, size,
+             disposition, is_inline AS isInline, content_id AS contentId,
+             data IS NOT NULL AS isDownloaded
+      FROM email_attachments
+      WHERE email_id = ?
+      ORDER BY is_inline ASC, filename ASC
+    `).all(emailId).map(row => ({
+      ...row,
+      isInline: Boolean(row.isInline),
+      isDownloaded: Boolean(row.isDownloaded)
+    }));
+  }
+
+  getAttachment(emailId, attachmentId) {
+    const row = this.db.prepare(`
+      SELECT id, email_id AS emailId, filename, mime_type AS mimeType, size,
+             disposition, is_inline AS isInline, content_id AS contentId, data
+      FROM email_attachments
+      WHERE email_id = ? AND id = ?
+    `).get(emailId, attachmentId);
+    if (!row) return null;
+    return {
+      ...row,
+      isInline: Boolean(row.isInline)
+    };
+  }
+
+  replaceEmailAttachments(emailId, attachments = []) {
+    const now = new Date().toISOString();
+    this.db.prepare("DELETE FROM email_attachments WHERE email_id = ?").run(emailId);
+
+    const insert = this.db.prepare(`
+      INSERT INTO email_attachments (
+        id, email_id, provider_attachment_id, content_id, filename, mime_type,
+        size, disposition, is_inline, data, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const attachment of attachments) {
+      const data = Buffer.isBuffer(attachment.data)
+        ? attachment.data
+        : attachment.data
+          ? Buffer.from(attachment.data)
+          : null;
+      insert.run(
+        attachment.id ?? randomUUID(),
+        emailId,
+        optionalString(attachment.providerAttachmentId),
+        optionalString(attachment.contentId),
+        optionalString(attachment.filename) ?? "Attachment",
+        optionalString(attachment.mimeType) ?? "application/octet-stream",
+        Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0,
+        optionalString(attachment.disposition),
+        attachment.isInline ? 1 : 0,
+        data,
+        now
+      );
+    }
+
+    this.db.prepare("UPDATE emails SET has_attachments = ? WHERE id = ?").run(attachments.length > 0 ? 1 : 0, emailId);
+  }
+
   insertEmail(email) {
     this.db.prepare(`
       INSERT INTO emails (
         id, account_id, mailbox_id, provider_uid, thread_id, sender_name, sender_email,
         sender_avatar_url, recipients_json, cc_json, bcc_json, subject, snippet,
-        body_text, body_html, sent_at, received_at, is_read, is_starred, importance,
+        body_text, body_html, rfc_message_id, in_reply_to, references_json,
+        sent_at, received_at, is_read, is_starred, importance,
         has_attachments, tracking_id, opened_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       email.id,
       email.accountId,
@@ -881,6 +1391,9 @@ export class MailStore {
       email.snippet,
       email.bodyText,
       email.bodyHTML,
+      email.rfcMessageID ?? null,
+      email.inReplyTo ?? null,
+      JSON.stringify(email.references ?? []),
       email.sentAt,
       email.receivedAt,
       email.isRead ? 1 : 0,
@@ -892,54 +1405,78 @@ export class MailStore {
       email.createdAt
     );
 
+    if (Array.isArray(email.attachments)) {
+      this.replaceEmailAttachments(email.id, email.attachments);
+    }
+
     this.insertEmailFTS(email);
   }
 
   upsertProviderEmail(email) {
-    const existing = email.providerUID
-      ? this.db.prepare("SELECT id, mailbox_id AS mailboxId FROM emails WHERE account_id = ? AND provider_uid = ?").get(email.accountId, email.providerUID)
+    const localDisplayName = this.displayNameForLocalUserEmail(email.senderEmail);
+    let resolvedEmail = {
+      ...email,
+      senderName: localDisplayName || email.senderName,
+      senderAvatarURL: optionalString(email.senderAvatarURL) || senderLogoURLForEmail(email.senderEmail)
+    };
+    const blockedRule = this.blockedSenderForEmail(resolvedEmail.accountId, resolvedEmail.senderEmail);
+    if (blockedRule && this.canRouteBlockedEmailToSpam(resolvedEmail.mailboxId)) {
+      resolvedEmail = {
+        ...resolvedEmail,
+        mailboxId: this.mailboxForRole(resolvedEmail.accountId, "spam").id
+      };
+    }
+    const existing = resolvedEmail.providerUID
+      ? this.db.prepare("SELECT id, mailbox_id AS mailboxId FROM emails WHERE account_id = ? AND provider_uid = ?").get(resolvedEmail.accountId, resolvedEmail.providerUID)
       : null;
 
-    if (existing) {
-      this.db.prepare(`
+      if (existing) {
+        this.db.prepare(`
         UPDATE emails
         SET mailbox_id = ?, thread_id = ?, sender_name = ?, sender_email = ?,
             sender_avatar_url = ?, recipients_json = ?, cc_json = ?, bcc_json = ?,
             subject = ?, snippet = ?, body_text = ?, body_html = ?,
+            rfc_message_id = ?, in_reply_to = ?, references_json = ?,
             sent_at = ?, received_at = ?, is_read = ?, is_starred = ?,
             importance = ?, has_attachments = ?
         WHERE id = ?
       `).run(
-        email.mailboxId,
-        email.threadId,
-        email.senderName,
-        email.senderEmail,
-        email.senderAvatarURL,
-        JSON.stringify(email.recipients ?? []),
-        JSON.stringify(email.cc ?? []),
-        JSON.stringify(email.bcc ?? []),
-        email.subject,
-        email.snippet,
-        email.bodyText,
-        email.bodyHTML,
-        email.sentAt,
-        email.receivedAt,
-        email.isRead ? 1 : 0,
-        email.isStarred ? 1 : 0,
-        email.importance ?? "normal",
-        email.hasAttachments ? 1 : 0,
+        resolvedEmail.mailboxId,
+        resolvedEmail.threadId,
+        resolvedEmail.senderName,
+        resolvedEmail.senderEmail,
+        resolvedEmail.senderAvatarURL,
+        JSON.stringify(resolvedEmail.recipients ?? []),
+        JSON.stringify(resolvedEmail.cc ?? []),
+        JSON.stringify(resolvedEmail.bcc ?? []),
+        resolvedEmail.subject,
+        resolvedEmail.snippet,
+        resolvedEmail.bodyText,
+        resolvedEmail.bodyHTML,
+        resolvedEmail.rfcMessageID ?? null,
+        resolvedEmail.inReplyTo ?? null,
+        JSON.stringify(resolvedEmail.references ?? []),
+        resolvedEmail.sentAt,
+        resolvedEmail.receivedAt,
+        resolvedEmail.isRead ? 1 : 0,
+        resolvedEmail.isStarred ? 1 : 0,
+        resolvedEmail.importance ?? "normal",
+        resolvedEmail.hasAttachments ? 1 : 0,
         existing.id
       );
       this.db.prepare("DELETE FROM email_fts WHERE email_id = ?").run(existing.id);
-      this.insertEmailFTS({ ...email, id: existing.id });
+      this.insertEmailFTS({ ...resolvedEmail, id: existing.id });
+      if (Array.isArray(resolvedEmail.attachments)) {
+        this.replaceEmailAttachments(existing.id, resolvedEmail.attachments);
+      }
       this.refreshMailboxUnread(existing.mailboxId);
-      this.refreshMailboxUnread(email.mailboxId);
+      this.refreshMailboxUnread(resolvedEmail.mailboxId);
       return this.getEmail(existing.id);
     }
 
-    this.insertEmail(email);
-    this.refreshMailboxUnread(email.mailboxId);
-    return this.getEmail(email.id);
+    this.insertEmail(resolvedEmail);
+    this.refreshMailboxUnread(resolvedEmail.mailboxId);
+    return this.getEmail(resolvedEmail.id);
   }
 
   insertEmailFTS(email) {
@@ -954,13 +1491,86 @@ export class MailStore {
       email.senderEmail,
       normalizeAddressList(email.recipients).join(" "),
       email.snippet,
-      email.bodyText
+      searchableBodyText(email)
     );
+  }
+
+  ensureSearchIndexVersion() {
+    const version = this.getSetting("search.indexVersion", "0");
+    if (version === SEARCH_INDEX_VERSION) return;
+    this.rebuildEmailFTS();
+    this.setSetting("search.indexVersion", SEARCH_INDEX_VERSION);
+  }
+
+  rebuildEmailFTS() {
+    const rows = this.db.prepare(`
+      SELECT id, account_id AS accountId, subject, sender_name AS senderName,
+             sender_email AS senderEmail, recipients_json AS recipientsJSON,
+             snippet, body_text AS bodyText, body_html AS bodyHTML
+      FROM emails
+    `).all();
+
+    this.db.prepare("DELETE FROM email_fts").run();
+    for (const row of rows) {
+      this.insertEmailFTS({
+        ...row,
+        recipients: parseJSON(row.recipientsJSON, [])
+      });
+    }
   }
 
   refreshMailboxUnread(mailboxId) {
     const row = this.db.prepare("SELECT COUNT(*) AS count FROM emails WHERE mailbox_id = ? AND is_read = 0").get(mailboxId);
     this.db.prepare("UPDATE mailboxes SET unread_count = ? WHERE id = ?").run(row.count, mailboxId);
+  }
+
+  blockedSenderForEmail(accountId, senderEmail) {
+    const normalizedEmail = optionalString(senderEmail)?.toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes("@")) return null;
+    const senderDomain = domainForEmail(normalizedEmail);
+    return this.listBlockedSenders(accountId).find(rule => {
+      if (rule.scope === "email") {
+        return rule.value === normalizedEmail;
+      }
+      return senderDomain === rule.value || senderDomain.endsWith(`.${rule.value}`);
+    }) ?? null;
+  }
+
+  canRouteBlockedEmailToSpam(mailboxId) {
+    const role = this.mailboxRole(mailboxId);
+    return role !== "sent" && role !== "drafts" && role !== "trash" && role !== "spam";
+  }
+
+  moveBlockedMessagesToSpam(accountId, scope, value) {
+    const spamMailbox = this.mailboxForRole(accountId, "spam");
+    const matchSQL = blockedSenderMatchSQL(scope);
+    const matchArgs = blockedSenderMatchArgs(scope, value);
+    const touchedMailboxes = this.db.prepare(`
+      SELECT DISTINCT e.mailbox_id AS mailboxId
+      FROM emails e
+      JOIN mailboxes m ON m.id = e.mailbox_id
+      WHERE e.account_id = ?
+        AND m.role NOT IN ('sent', 'drafts', 'trash')
+        AND ${matchSQL}
+    `).all(accountId, ...matchArgs);
+    const result = this.db.prepare(`
+      UPDATE emails
+      SET mailbox_id = ?
+      WHERE id IN (
+        SELECT e.id
+        FROM emails e
+        JOIN mailboxes m ON m.id = e.mailbox_id
+        WHERE e.account_id = ?
+          AND m.role NOT IN ('sent', 'drafts', 'trash')
+          AND ${matchSQL}
+      )
+    `).run(spamMailbox.id, accountId, ...matchArgs);
+
+    for (const mailbox of touchedMailboxes) {
+      this.refreshMailboxUnread(mailbox.mailboxId);
+    }
+    this.refreshMailboxUnread(spamMailbox.id);
+    return result.changes ?? 0;
   }
 
   transaction(fn) {
@@ -996,6 +1606,104 @@ function requiredString(value, name) {
   return value.trim();
 }
 
+function optionalString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeBlockScope(value) {
+  if (value !== "email" && value !== "domain") {
+    throw httpError(400, "Block scope must be email or domain.");
+  }
+  return value;
+}
+
+function normalizeEmailAddress(value, name) {
+  const email = requiredString(value, name).toLowerCase();
+  if (!email.includes("@")) {
+    throw httpError(400, `${name} must be an email address.`);
+  }
+  return email;
+}
+
+function normalizeEmailForComparison(value) {
+  if (typeof value !== "string") return null;
+  const match = value.match(/<([^<>@\s]+@[^<>\s]+)>/);
+  const trimmed = (match?.[1] ?? value).trim().toLowerCase();
+  if (!trimmed.includes("@")) return null;
+  return trimmed.replace(/^mailto:/i, "");
+}
+
+function domainForEmail(value) {
+  const email = normalizeEmailAddress(value, "senderEmail");
+  const domain = email.split("@").at(-1)?.trim().toLowerCase() ?? "";
+  if (!domain || !domain.includes(".")) {
+    throw httpError(400, "Sender email must include a domain.");
+  }
+  return domain;
+}
+
+function blockedSenderMatchSQL(scope) {
+  if (scope === "email") {
+    return "lower(e.sender_email) = ?";
+  }
+  return "(lower(e.sender_email) LIKE ? OR lower(e.sender_email) LIKE ?)";
+}
+
+function blockedSenderMatchArgs(scope, value) {
+  if (scope === "email") {
+    return [value];
+  }
+  return [`%@${value}`, `%.${value}`];
+}
+
+function accountAvatarSelect(alias) {
+  return `
+    COALESCE(
+      NULLIF(${alias}.avatar_url, ''),
+      (
+        SELECT e.sender_avatar_url
+        FROM emails e
+        WHERE e.account_id = ${alias}.id
+          AND lower(e.sender_email) = lower(${alias}.email)
+          AND e.sender_avatar_url IS NOT NULL
+          AND e.sender_avatar_url <> ''
+        ORDER BY e.received_at DESC
+        LIMIT 1
+      )
+    ) AS avatarURL
+  `;
+}
+
+function accountIdentityMatchSQL(emailAlias, accountAlias) {
+  return `(
+    lower(${emailAlias}.sender_email) = lower(${accountAlias}.email)
+    OR lower(${emailAlias}.sender_email) IN (
+      SELECT lower(l.provider_email)
+      FROM account_user_links l
+      WHERE l.account_id = ${emailAlias}.account_id
+    )
+  )`;
+}
+
+function makeRFCMessageID(email) {
+  const domain = String(email).split("@").at(-1)?.trim().toLowerCase() || "dearly.local";
+  const safeDomain = /^[a-z0-9.-]+$/u.test(domain) ? domain : "dearly.local";
+  return `<${randomUUID()}@${safeDomain}>`;
+}
+
+function replyReferences(email) {
+  if (!email) return [];
+  const values = [...(email.references ?? [])];
+  if (email.rfcMessageID) {
+    values.push(email.rfcMessageID);
+  }
+  return [...new Set(values.map(item => String(item).trim()).filter(Boolean))];
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map(item => String(item ?? "").trim()).filter(Boolean))];
+}
+
 function clampInt(value, min, max, fallback) {
   const number = Number.parseInt(value ?? fallback, 10);
   if (!Number.isFinite(number)) return fallback;
@@ -1016,6 +1724,43 @@ function normalizeAddressList(value) {
     return value.map(item => String(item).trim()).filter(Boolean);
   }
   return String(value).split(",").map(item => item.trim()).filter(Boolean);
+}
+
+function searchableBodyText(email) {
+  return [
+    optionalString(email.bodyText),
+    htmlToSearchText(email.bodyHTML)
+  ].filter(Boolean).join("\n");
+}
+
+function htmlToSearchText(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  return decodeHTMLEntities(
+    value
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
+      .replace(/<[^>]+>/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim()
+  );
+}
+
+function decodeHTMLEntities(value) {
+  return value
+    .replace(/&#(\d+);/gu, (_, code) => safeCodePoint(code, 10))
+    .replace(/&#x([0-9a-f]+);/giu, (_, code) => safeCodePoint(code, 16))
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, "\"")
+    .replace(/&#39;/gu, "'");
+}
+
+function safeCodePoint(value, radix) {
+  const codePoint = Number.parseInt(value, radix);
+  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) return " ";
+  return String.fromCodePoint(codePoint);
 }
 
 function normalizeSearch(value) {

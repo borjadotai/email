@@ -51,6 +51,41 @@ test("provider availability is app-owned and Gmail auth starts when configured",
   }
 });
 
+test("updates account settings through the API", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    server = createServer({ store }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const response = await requestJSON(`${baseURL}/api/accounts/${account.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        displayName: "Person Updated",
+        avatarURL: "https://example.com/avatar.jpg",
+        syncHistory: false
+      }),
+      headers: { "Content-Type": "application/json" }
+    });
+
+    assert.equal(response.account.displayName, "Person Updated");
+    assert.equal(response.account.avatarURL, "https://example.com/avatar.jpg");
+    assert.equal(response.account.syncHistory, false);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 async function requestJSON(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) {

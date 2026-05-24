@@ -20,6 +20,10 @@ struct EmailResponse: Decodable {
   var email: EmailDetail
 }
 
+struct ThreadResponse: Decodable {
+  var emails: [EmailDetail]
+}
+
 struct AccountResponse: Decodable {
   var account: MailAccount
 }
@@ -31,6 +35,12 @@ struct ProfileResponse: Decodable {
 struct SendResponse: Decodable {
   var email: EmailDetail
   var trackingPixelURL: String?
+}
+
+struct BlockSenderResponse: Decodable {
+  var rule: BlockedSenderRule
+  var affectedCount: Int
+  var email: EmailDetail
 }
 
 struct HealthResponse: Decodable {
@@ -92,6 +102,11 @@ struct MailAPIClient {
     return response.account
   }
 
+  func updateAccount(id: String, _ input: UpdateAccountSettingsRequest) async throws -> MailAccount {
+    let response: AccountResponse = try await request("api/accounts/\(id)", method: "PATCH", body: input)
+    return response.account
+  }
+
   func authSettings() async throws -> AuthSettings {
     let response: AuthSettingsResponse = try await request("api/auth/settings")
     return response.settings
@@ -105,8 +120,11 @@ struct MailAPIClient {
     try await request("api/auth/icloud/connect", method: "POST", body: input)
   }
 
-  func syncAccount(id: String) async throws -> ProviderSyncResult {
-    let response: SyncResponse = try await request("api/accounts/\(id)/sync", method: "POST", body: EmptyBody())
+  func syncAccount(id: String, limit: Int? = nil) async throws -> ProviderSyncResult {
+    struct SyncRequest: Encodable {
+      var limit: Int?
+    }
+    let response: SyncResponse = try await request("api/accounts/\(id)/sync", method: "POST", body: SyncRequest(limit: limit))
     return response.sync
   }
 
@@ -128,6 +146,9 @@ struct MailAPIClient {
     if let mailboxId = query.mailboxId {
       items.append(URLQueryItem(name: "mailboxId", value: mailboxId))
     }
+    if let mailboxRole = query.mailboxRole {
+      items.append(URLQueryItem(name: "mailboxRole", value: mailboxRole))
+    }
     if let labelId = query.labelId {
       items.append(URLQueryItem(name: "labelId", value: labelId))
     }
@@ -142,6 +163,11 @@ struct MailAPIClient {
   func email(id: String) async throws -> EmailDetail {
     let response: EmailResponse = try await request("api/emails/\(id)")
     return response.email
+  }
+
+  func thread(emailId: String) async throws -> [EmailDetail] {
+    let response: ThreadResponse = try await request("api/emails/\(emailId)/thread")
+    return response.emails
   }
 
   func updateEmail(id: String, isRead: Bool? = nil, isStarred: Bool? = nil, mailboxId: String? = nil) async throws -> EmailDetail {
@@ -171,8 +197,69 @@ struct MailAPIClient {
     return response.email
   }
 
+  func markSpam(emailId: String) async throws -> EmailDetail {
+    let response: EmailResponse = try await request(
+      "api/emails/\(emailId)/spam",
+      method: "POST",
+      body: EmptyBody()
+    )
+    return response.email
+  }
+
+  func archiveEmail(emailId: String) async throws -> EmailDetail {
+    let response: EmailResponse = try await request(
+      "api/emails/\(emailId)/archive",
+      method: "POST",
+      body: EmptyBody()
+    )
+    return response.email
+  }
+
+  func trashEmail(emailId: String) async throws -> EmailDetail {
+    let response: EmailResponse = try await request(
+      "api/emails/\(emailId)/trash",
+      method: "POST",
+      body: EmptyBody()
+    )
+    return response.email
+  }
+
+  func blockSender(emailId: String, scope: BlockSenderScope) async throws -> BlockSenderResponse {
+    struct BlockRequest: Encodable {
+      var scope: BlockSenderScope
+    }
+    return try await request(
+      "api/emails/\(emailId)/block",
+      method: "POST",
+      body: BlockRequest(scope: scope)
+    )
+  }
+
   func send(_ message: SendMessageRequest) async throws -> SendResponse {
     try await request("api/messages/send", method: "POST", body: message)
+  }
+
+  func downloadAttachment(emailId: String, attachmentId: String) async throws -> Data {
+    let url = try attachmentDownloadURL(emailId: emailId, attachmentId: attachmentId)
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 120
+
+    let (data, response) = try await session.data(for: request)
+    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+    guard (200..<300).contains(status) else {
+      let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.message) ??
+        String(data: data, encoding: .utf8) ??
+        "Attachment download failed."
+      throw MailAPIError.server(status: status, message: message)
+    }
+    return data
+  }
+
+  func attachmentDownloadURL(emailId: String, attachmentId: String) throws -> URL {
+    guard let url = URL(string: "api/emails/\(emailId)/attachments/\(attachmentId)/download", relativeTo: baseURL)?.absoluteURL else {
+      throw MailAPIError.invalidURL
+    }
+    return url
   }
 
   private func request<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {

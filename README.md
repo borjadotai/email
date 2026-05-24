@@ -38,10 +38,106 @@ npm run build:ios
 The Codex run action uses:
 
 ```sh
-./script/build_and_run.sh
+./script/build_and_run.sh --install
 ```
 
-That script starts the server if needed, builds the macOS app, and launches it.
+That script starts the server if needed, builds the macOS app, copies the fresh build to:
+
+```text
+~/Applications/Email.app
+```
+
+and launches it. Re-run the command after app changes to update the installed local app. To install somewhere else, set `EMAIL_MAC_INSTALL_DIR`:
+
+```sh
+EMAIL_MAC_INSTALL_DIR=/Applications ./script/build_and_run.sh --install
+```
+
+## Package the macOS App
+
+For a shareable macOS build:
+
+```sh
+npm run package:mac
+```
+
+This creates:
+
+```text
+dist/Email.app
+dist/Email-mac.zip
+dist/Email-mac.dmg
+```
+
+The packaged app bundles the local Node server under `Email.app/Contents/Resources/Server` and starts it automatically on `127.0.0.1:7331` when a dev server is not already running. To include release-only provider config, pass an env file explicitly:
+
+```sh
+EMAIL_RELEASE_ENV_FILE=.env.production npm run package:mac
+```
+
+Do not copy local personal secrets into public builds. Public direct-download distribution requires Developer ID signing and notarization:
+
+```sh
+DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
+NOTARYTOOL_PROFILE=email-notary \
+npm run package:mac
+```
+
+Create the notary profile once with:
+
+```sh
+xcrun notarytool store-credentials email-notary \
+  --apple-id "you@example.com" \
+  --team-id TEAMID \
+  --password "app-specific-password"
+```
+
+Without `DEVELOPER_ID_APPLICATION`, the script still creates unsigned artifacts for local inspection, but those are not suitable for public downloads because Gatekeeper will warn or block them on other Macs.
+
+The packaged app includes the Node runtime from the build machine. The current local build is Apple Silicon (`arm64`). For Intel Mac support, build a matching `x86_64` or universal macOS app and bundle a matching Node runtime.
+
+## GitHub Downloads
+
+GitHub Actions builds a downloadable macOS artifact on every push to `main` and when run manually:
+
+1. Open the repository on GitHub.
+2. Go to Actions -> macOS App.
+3. Open the latest successful run.
+4. Download the `Email-macOS-...` artifact.
+
+Artifacts from normal workflow runs expire after 14 days. For durable downloads, push a version tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Tags starting with `v` create or update a GitHub Release and attach:
+
+```text
+Email-mac.dmg
+Email-mac.zip
+checksums.txt
+```
+
+Unsigned artifacts are useful for private testing, but public downloads should be signed and notarized. Configure these GitHub repository secrets to enable that in the workflow:
+
+```text
+MACOS_DEVELOPER_ID_CERTIFICATE_BASE64
+MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD
+DEVELOPER_ID_APPLICATION
+APPLE_ID
+APPLE_TEAM_ID
+APPLE_APP_SPECIFIC_PASSWORD
+```
+
+`MACOS_DEVELOPER_ID_CERTIFICATE_BASE64` is a base64-encoded `.p12` export of the Developer ID Application certificate. `DEVELOPER_ID_APPLICATION` should match the identity name, for example:
+
+```text
+Developer ID Application: Your Name (TEAMID)
+```
+
+Optionally set `EMAIL_RELEASE_ENV_BASE64` to a base64-encoded release env file if a private/internal build needs bundled provider configuration. Avoid putting personal secrets into public release builds.
 
 ## Server API
 

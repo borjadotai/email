@@ -29,6 +29,12 @@ enum MailDateFormatter {
     return formatter
   }()
 
+  private static let dayMonthDate: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.setLocalizedDateFormatFromTemplate("dMMM")
+    return formatter
+  }()
+
   static func date(from value: String) -> Date? {
     isoWithFractional.date(from: value) ?? iso.date(from: value)
   }
@@ -40,6 +46,14 @@ enum MailDateFormatter {
     }
     return shortDate.string(from: date)
   }
+
+  static func inboxTimestamp(_ value: String) -> String {
+    guard let date = date(from: value) else { return value }
+    if Calendar.current.isDateInToday(date) {
+      return shortTime.string(from: date)
+    }
+    return dayMonthDate.string(from: date)
+  }
 }
 
 extension String {
@@ -50,6 +64,34 @@ extension String {
       return String(first).uppercased()
     }
     return String(letters).uppercased()
+  }
+
+  var htmlPlainText: String {
+    replacingOccurrences(of: #"(?is)<(script|style)\b[^>]*>.*?</\1>"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
+      .replacingOccurrences(of: #"(?i)</p\s*>|</div\s*>|</li\s*>|</h[1-6]\s*>"#, with: "\n", options: .regularExpression)
+      .replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+      .htmlEntityDecoded
+      .replacingOccurrences(of: #"[ \t\f\r]+"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"\n\s*\n\s*\n+"#, with: "\n\n", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  var htmlEntityDecoded: String {
+    replacingOccurrences(of: "&nbsp;", with: " ")
+      .replacingOccurrences(of: "&amp;", with: "&")
+      .replacingOccurrences(of: "&lt;", with: "<")
+      .replacingOccurrences(of: "&gt;", with: ">")
+      .replacingOccurrences(of: "&quot;", with: "\"")
+      .replacingOccurrences(of: "&#39;", with: "'")
+  }
+
+  var mailPreviewText: String {
+    let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.range(of: #"<[a-z!/][^>]*>"#, options: [.caseInsensitive, .regularExpression]) != nil else {
+      return trimmed
+    }
+    return trimmed.htmlPlainText
   }
 }
 

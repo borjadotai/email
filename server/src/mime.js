@@ -8,13 +8,25 @@ export function base64url(input) {
     .replace(/=+$/u, "");
 }
 
-export function makeTextMessage({ from, to, cc, bcc, subject, text, html }) {
+export function formatAddress(name, email) {
+  const cleanEmail = encodeHeader(email).trim();
+  const cleanName = encodeHeader(name).trim();
+  if (!cleanName || cleanName.toLowerCase() === cleanEmail.toLowerCase()) {
+    return cleanEmail;
+  }
+  return `"${cleanName.replace(/["\\]/gu, "\\$&")}" <${cleanEmail}>`;
+}
+
+export function makeTextMessage({ from, to, cc, bcc, subject, text, html, messageId, inReplyTo, references }) {
   const headers = [
     ["From", from],
     ["To", to],
     ["Cc", cc],
     ["Bcc", bcc],
     ["Subject", subject],
+    ["Message-ID", messageId],
+    ["In-Reply-To", inReplyTo],
+    ["References", Array.isArray(references) ? references.join(" ") : references],
     ["MIME-Version", "1.0"],
     ["Date", new Date().toUTCString()]
   ]
@@ -55,4 +67,3 @@ export function makeTextMessage({ from, to, cc, bcc, subject, text, html }) {
 function encodeHeader(value) {
   return String(value).replace(/\r?\n/gu, " ");
 }
-

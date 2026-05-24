@@ -11,7 +11,8 @@
     "server:dev": "EMAIL_SEED_DEMO=1 node --no-warnings server/src/main.js",
     "test": "node --no-warnings --test server/test/*.test.mjs",
     "build:mac": "xcodebuild -project Apps/Email.xcodeproj -scheme EmailMac -configuration Debug -destination 'platform=macOS' build",
-    "build:ios": "xcodebuild -project Apps/Email.xcodeproj -scheme EmailiOS -configuration Debug -destination 'generic/platform=iOS Simulator' build"
+    "build:ios": "xcodebuild -project Apps/Email.xcodeproj -scheme EmailiOS -configuration Debug -destination 'generic/platform=iOS Simulator' build",
+    "package:mac": "./script/package_mac_release.sh"
   },
   "dependencies": {
     "googleapis": "^172.0.0",
