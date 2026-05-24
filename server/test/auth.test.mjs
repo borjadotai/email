@@ -58,6 +58,74 @@ test("provider availability is server-owned and Gmail auth starts when configure
   }
 });
 
+test("ready endpoint reports configured runtime dependencies", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {
+        googleOAuthClientId: "test-client-id.apps.googleusercontent.com",
+        googleOAuthClientSecret: "test-secret"
+      },
+      baseURL: "http://127.0.0.1:7331"
+    });
+    server = createServer({ store, providers }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const ready = await requestJSON(`${baseURL}/api/ready`);
+
+    assert.equal(ready.status, "ok");
+    assert.equal(ready.storage, "sqlite");
+    assert.equal(ready.checks.database.status, "ok");
+    assert.equal(ready.checks.database.engine, "sqlite");
+    assert.equal(ready.checks.attachmentStorage.status, "ok");
+    assert.equal(ready.checks.attachmentStorage.mode, "inline");
+    assert.equal(ready.checks.auth.status, "ok");
+    assert.equal(ready.checks.providers.status, "ok");
+    assert.equal(ready.checks.providers.gmailConfigured, true);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ready endpoint fails when required provider config is missing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {},
+      baseURL: "http://127.0.0.1:7331"
+    });
+    server = createServer({ store, providers }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const response = await fetch(`${baseURL}/api/ready`);
+    const ready = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(ready.status, "error");
+    assert.equal(ready.checks.database.status, "ok");
+    assert.equal(ready.checks.providers.status, "error");
+    assert.match(ready.checks.providers.error, /Gmail OAuth/u);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("updates account settings through the API", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

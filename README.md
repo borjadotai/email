@@ -375,6 +375,7 @@ Optionally set the GitHub repository variable `EMAIL_RELEASE_SERVER_URL` to the 
 Core endpoints live under `/api`:
 
 - `GET /api/health`
+- `GET /api/ready`
 - `GET /api/accounts`
 - `POST /api/accounts`
 - `GET /api/auth/settings`

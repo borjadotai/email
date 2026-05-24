@@ -43,6 +43,28 @@ export class MailStore {
     this.db.close();
   }
 
+  async checkReadiness() {
+    return {
+      database: await this.checkDatabaseReadiness(),
+      attachmentStorage: await this.checkAttachmentStorageReadiness()
+    };
+  }
+
+  async checkDatabaseReadiness() {
+    this.db.prepare("SELECT 1 AS ok").get();
+    return {
+      engine: "sqlite",
+      path: this.databasePath
+    };
+  }
+
+  async checkAttachmentStorageReadiness() {
+    return {
+      mode: "inline",
+      bucket: null
+    };
+  }
+
   migrate() {
     this.db.exec(`
       PRAGMA journal_mode = WAL;

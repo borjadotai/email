@@ -136,7 +136,7 @@ Current agent experience:
 - [ ] Run `npm run check:hosted -- --env-file .env.fly`.
 - [ ] Deploy to Fly with `npm run deploy:fly -- --env-file .env.fly`.
 - [ ] Run `npm run smoke:hosted -- --base-url https://dearly-email.fly.dev`.
-- [ ] Add a deeper `/api/ready` endpoint that verifies Postgres, private storage,
+- [x] Add a deeper `/api/ready` endpoint that verifies Postgres, private storage,
   auth settings, and required provider configuration. Use this for deploy smoke,
   not just `/api/health`.
 - [ ] Invite one test user and run the two-user isolation checklist in

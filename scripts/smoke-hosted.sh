@@ -40,25 +40,38 @@ done
 
 BASE_URL="${BASE_URL%/}"
 health_file="$(mktemp)"
+ready_file="$(mktemp)"
 settings_file="$(mktemp)"
-trap 'rm -f "$health_file" "$settings_file"' EXIT
+trap 'rm -f "$health_file" "$ready_file" "$settings_file"' EXIT
 
 echo "Checking $BASE_URL/api/health..."
 curl -fsS "$BASE_URL/api/health" > "$health_file"
 
+echo "Checking $BASE_URL/api/ready..."
+curl -fsS "$BASE_URL/api/ready" > "$ready_file"
+
 echo "Checking $BASE_URL/api/auth/settings..."
 curl -fsS "$BASE_URL/api/auth/settings" > "$settings_file"
 
-node --input-type=module - "$health_file" "$settings_file" <<'NODE'
+node --input-type=module - "$health_file" "$ready_file" "$settings_file" <<'NODE'
 import { readFileSync } from "node:fs";
 
-const [healthPath, settingsPath] = process.argv.slice(2);
+const [healthPath, readyPath, settingsPath] = process.argv.slice(2);
 const health = JSON.parse(readFileSync(healthPath, "utf8"));
+const ready = JSON.parse(readFileSync(readyPath, "utf8"));
 const settingsEnvelope = JSON.parse(readFileSync(settingsPath, "utf8"));
 const settings = settingsEnvelope.settings;
 
 if (health.status !== "ok") {
   throw new Error(`Expected health.status=ok, got ${health.status}`);
+}
+if (ready.status !== "ok") {
+  throw new Error(`Expected ready.status=ok, got ${ready.status}`);
+}
+for (const [name, check] of Object.entries(ready.checks ?? {})) {
+  if (check.status !== "ok") {
+    throw new Error(`Readiness check failed: ${name}: ${check.error ?? "unknown error"}`);
+  }
 }
 if (!settings || settings.requireUserAuth !== true) {
   throw new Error("Expected hosted auth settings with requireUserAuth=true.");
@@ -68,6 +81,7 @@ if (!settings.supabaseURL || !settings.supabasePublishableKey) {
 }
 
 console.log(`Health OK: storage=${health.storage ?? "unknown"}`);
+console.log(`Ready OK: checks=${Object.keys(ready.checks ?? {}).join(",")}`);
 console.log(`Auth OK: gmailConfigured=${Boolean(settings.gmailConfigured)}`);
 NODE
 

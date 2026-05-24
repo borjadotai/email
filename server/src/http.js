@@ -50,6 +50,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
     return;
   }
 
+  if (req.method === "GET" && path === "/api/ready") {
+    const readiness = await collectReadiness({ store, providers, authenticator });
+    sendJSON(res, readiness.status === "ok" ? 200 : 503, readiness);
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/auth/settings") {
     requireProviders(providers);
     sendJSON(res, 200, { settings: providers.getAuthSettings() });
@@ -376,6 +382,84 @@ function sendCORS(res) {
 
 function requireProviders(providers) {
   if (!providers) throw httpError(500, "Provider services are not configured.");
+}
+
+async function collectReadiness({ store, providers, authenticator }) {
+  const checks = {
+    database: await readinessCheck(() => checkStoreDatabase(store)),
+    attachmentStorage: await readinessCheck(() => checkStoreAttachmentStorage(store)),
+    auth: await readinessCheck(() => checkAuthConfiguration({ providers, authenticator })),
+    providers: await readinessCheck(() => checkProviderConfiguration(providers))
+  };
+  const status = Object.values(checks).every(check => check.status === "ok") ? "ok" : "error";
+  return {
+    status,
+    storage: store.storageName ?? "sqlite",
+    timestamp: new Date().toISOString(),
+    checks
+  };
+}
+
+async function readinessCheck(fn) {
+  const started = Date.now();
+  try {
+    const details = await fn();
+    return {
+      status: "ok",
+      latencyMs: Date.now() - started,
+      ...details
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      latencyMs: Date.now() - started,
+      error: error?.message ?? String(error)
+    };
+  }
+}
+
+async function checkStoreDatabase(store) {
+  if (typeof store?.checkDatabaseReadiness === "function") {
+    return await store.checkDatabaseReadiness();
+  }
+  if (typeof store?.checkReadiness === "function") {
+    return (await store.checkReadiness()).database ?? {};
+  }
+  throw new Error("Store does not expose a database readiness check.");
+}
+
+async function checkStoreAttachmentStorage(store) {
+  if (typeof store?.checkAttachmentStorageReadiness === "function") {
+    return await store.checkAttachmentStorageReadiness();
+  }
+  if (typeof store?.checkReadiness === "function") {
+    return (await store.checkReadiness()).attachmentStorage ?? {};
+  }
+  return { mode: "unknown", bucket: null };
+}
+
+function checkAuthConfiguration({ providers, authenticator }) {
+  const settings = providers?.getAuthSettings?.() ?? {};
+  const requireUserAuth = authenticator?.requireAuth === true || settings.requireUserAuth === true;
+  if (requireUserAuth && (!settings.supabaseURL || !settings.supabasePublishableKey)) {
+    throw new Error("Supabase Auth is required but public auth config is missing.");
+  }
+  return {
+    mode: requireUserAuth ? "supabase" : "local",
+    requireUserAuth
+  };
+}
+
+function checkProviderConfiguration(providers) {
+  requireProviders(providers);
+  const settings = providers.getAuthSettings();
+  if (!settings.gmailConfigured) {
+    throw new Error("Gmail OAuth is not configured.");
+  }
+  return {
+    gmailConfigured: settings.gmailConfigured === true,
+    icloudConfigured: settings.icloudConfigured === true
+  };
 }
 
 function publicSyncResult(sync = {}) {

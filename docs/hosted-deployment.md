@@ -75,7 +75,7 @@ npm run check:hosted -- --env-file .env.fly
 ```
 
 `npm run deploy:fly` creates the Fly app when needed, stages secrets without
-printing them, deploys the Docker image, and checks `/api/health`. On later
+printing them, deploys the Docker image, and checks `/api/ready`. On later
 deploys you can pass `-- --skip-create`; use `-- --stage-only` to stage secrets
 without deploying. If you prefer token auth instead of `fly auth login`, export
 `FLY_API_TOKEN` before running the command.

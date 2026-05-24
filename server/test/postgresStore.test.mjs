@@ -124,6 +124,39 @@ test("Postgres store stores attachment bytes in private object storage", async (
   assert.equal(Buffer.from(attachment.data).toString("utf8"), "hello");
 });
 
+test("Postgres readiness verifies database schema and private object storage", async () => {
+  const pool = new FakePool();
+  const storage = new FakeStorage();
+  const store = new PostgresMailStore({ pool, storageClient: storage });
+
+  const ready = await store.checkReadiness();
+
+  assert.deepEqual(ready, {
+    database: {
+      engine: "postgres",
+      path: "postgres"
+    },
+    attachmentStorage: {
+      mode: "supabase-storage",
+      bucket: "email-attachments"
+    }
+  });
+  assert.ok(pool.queries.some(query => /to_regclass\(relation_name\)/u.test(query.sql)));
+  assert.ok(pool.queries.some(query => /FROM storage\.buckets/u.test(query.sql)));
+  assert.deepEqual(storage.lists, [{ path: "", limit: 1 }]);
+});
+
+test("Postgres readiness rejects a public attachment bucket", async () => {
+  const pool = new FakePool({ bucketPublic: true });
+  const storage = new FakeStorage();
+  const store = new PostgresMailStore({ pool, storageClient: storage });
+
+  await assert.rejects(
+    () => store.checkReadiness(),
+    /must be private/u
+  );
+});
+
 test("Postgres store persists provider auth sessions in the private schema", async () => {
   const pool = new FakePool();
   const store = new PostgresMailStore({ pool }).forUser(user);
@@ -162,6 +195,11 @@ test("Postgres store persists provider auth sessions in the private schema", asy
 class FakePool {
   queries = [];
 
+  constructor({ bucketPublic = false, missingRelations = [] } = {}) {
+    this.bucketPublic = bucketPublic;
+    this.missingRelations = new Set(missingRelations);
+  }
+
   async connect() {
     return {
       query: async (sql, params = []) => await this.query(sql, params),
@@ -174,6 +212,26 @@ class FakePool {
 
     if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
       return { rows: [], rowCount: 0 };
+    }
+
+    if (/SELECT 1 AS ok/u.test(sql)) {
+      return { rows: [{ ok: 1 }], rowCount: 1 };
+    }
+
+    if (/to_regclass\(relation_name\)/u.test(sql)) {
+      return {
+        rows: params[0].map(relation => ({
+          relation,
+          exists: !this.missingRelations.has(relation)
+        }))
+      };
+    }
+
+    if (/FROM storage\.buckets/u.test(sql)) {
+      return {
+        rows: [{ public: this.bucketPublic }],
+        rowCount: 1
+      };
     }
 
     if (/SELECT id, display_name AS "displayName"/u.test(sql)) {
@@ -351,6 +409,7 @@ class FakePool {
 
 class FakeStorage {
   uploads = [];
+  lists = [];
   objects = new Map();
 
   async upload(path, data, options = {}) {
@@ -369,5 +428,10 @@ class FakeStorage {
       },
       error: null
     };
+  }
+
+  async list(path, options = {}) {
+    this.lists.push({ path, limit: options.limit });
+    return { data: [], error: null };
   }
 }

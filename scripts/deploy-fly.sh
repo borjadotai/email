@@ -17,7 +17,7 @@ Options:
   --skip-secrets   Do not stage runtime secrets.
   --stage-only     Stage secrets but do not deploy.
   --no-deploy      Same as --stage-only.
-  --no-smoke       Skip the post-deploy /api/health check.
+  --no-smoke       Skip the post-deploy /api/ready check.
   -h, --help       Show this help.
 
 Required secret environment variables unless --skip-secrets is used:
@@ -285,10 +285,10 @@ if [[ "$DEPLOY" -eq 1 ]]; then
   "${fly_cmd[@]}" deploy . -a "$APP_NAME" -c "$CONFIG" --now
 
   if [[ "$SMOKE" -eq 1 ]]; then
-    health_url="${EMAIL_HEALTH_URL:-https://${APP_NAME}.fly.dev/api/health}"
-    echo "Checking $health_url..."
-    curl -fsS "$health_url" >/dev/null
-    echo "Health check passed."
+    ready_url="${EMAIL_READY_URL:-${EMAIL_HEALTH_URL:-https://${APP_NAME}.fly.dev/api/ready}}"
+    echo "Checking $ready_url..."
+    curl -fsS "$ready_url" >/dev/null
+    echo "Readiness check passed."
   fi
 else
   echo "Skipping deploy."

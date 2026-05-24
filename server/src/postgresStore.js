@@ -60,6 +60,30 @@ export class PostgresMailStore {
     }
   }
 
+  async checkReadiness() {
+    return {
+      database: await this.checkDatabaseReadiness(),
+      attachmentStorage: await this.checkAttachmentStorageReadiness()
+    };
+  }
+
+  async checkDatabaseReadiness() {
+    await this.pool.query("SELECT 1 AS ok");
+    await this.assertRequiredRelations();
+    return {
+      engine: "postgres",
+      path: this.databasePath
+    };
+  }
+
+  async checkAttachmentStorageReadiness() {
+    await this.assertAttachmentStorageReady();
+    return {
+      mode: "supabase-storage",
+      bucket: this.attachmentBucket
+    };
+  }
+
   async getProfile() {
     const user = await this.ensureCurrentUser();
     return {
@@ -1180,6 +1204,48 @@ export class PostgresMailStore {
       throw error;
     } finally {
       client.release();
+    }
+  }
+
+  async assertRequiredRelations() {
+    const requiredRelations = [
+      "public.app_users",
+      "public.accounts",
+      "public.emails",
+      "public.email_attachments",
+      "email_private.provider_secrets",
+      "email_private.provider_auth_sessions",
+      "storage.buckets"
+    ];
+    const result = await this.pool.query(`
+      SELECT relation_name AS relation, to_regclass(relation_name) IS NOT NULL AS exists
+      FROM unnest($1::text[]) AS required_relation(relation_name)
+    `, [requiredRelations]);
+    const missing = result.rows
+      .filter(row => row.exists !== true)
+      .map(row => row.relation);
+    if (missing.length > 0) {
+      throw new Error(`Missing hosted database relations: ${missing.join(", ")}`);
+    }
+  }
+
+  async assertAttachmentStorageReady() {
+    if (!this.attachmentStorage) {
+      throw new Error("Supabase attachment storage client is not configured.");
+    }
+    const bucket = await this.pool.query(
+      "SELECT public FROM storage.buckets WHERE id = $1 LIMIT 1",
+      [this.attachmentBucket]
+    );
+    if (bucket.rowCount !== 1) {
+      throw new Error(`Supabase Storage bucket '${this.attachmentBucket}' does not exist.`);
+    }
+    if (bucket.rows[0].public === true) {
+      throw new Error(`Supabase Storage bucket '${this.attachmentBucket}' must be private.`);
+    }
+    const { error } = await this.attachmentStorage.list("", { limit: 1 });
+    if (error) {
+      throw new Error(`Supabase Storage bucket '${this.attachmentBucket}' is not readable by the API: ${error.message ?? error}`);
     }
   }
 }
