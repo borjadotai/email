@@ -93,7 +93,8 @@ Required non-secret hosted config:
 - `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000`
 - `EMAIL_BACKGROUND_SYNC_LIMIT=50`
 
-`fly.toml.example` is configured for the hosted Postgres/Storage path and does
-not need a persistent Fly volume. The SQLite/file-secret path remains available
-for personal self-hosting. The rollout checklist is in
+`fly.toml` is configured for the hosted Postgres/Storage path and does not need
+a persistent Fly volume. `fly.toml.example` remains as a template for alternate
+app names or projects. The SQLite/file-secret path remains available for
+personal self-hosting. The rollout checklist is in
 [hosted-deployment.md](hosted-deployment.md).

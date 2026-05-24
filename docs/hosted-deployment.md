@@ -49,17 +49,26 @@ effects.
 
 ## 2. Fly.io API
 
-Use `fly.toml.example` as the app config. Keep public config in `[env]`, and set
-private values as Fly secrets:
+`fly.toml` is the deployable app config. It contains only public runtime config
+and points at the hosted Supabase project. Keep private values as Fly secrets.
+
+Install `flyctl`, authenticate, then deploy:
 
 ```sh
-fly secrets set \
-  EMAIL_POSTGRES_URL='postgresql://...' \
-  EMAIL_SECRET_ENCRYPTION_KEY='...' \
-  GOOGLE_OAUTH_CLIENT_ID='...' \
-  GOOGLE_OAUTH_CLIENT_SECRET='...' \
-  SUPABASE_SERVICE_ROLE_KEY='...'
+export FLY_API_TOKEN='FlyV1 ...'
+export EMAIL_POSTGRES_URL='postgresql://...'
+export EMAIL_SECRET_ENCRYPTION_KEY='...'
+export GOOGLE_OAUTH_CLIENT_ID='...'
+export GOOGLE_OAUTH_CLIENT_SECRET='...'
+export SUPABASE_SERVICE_ROLE_KEY='...'
+
+npm run deploy:fly
 ```
+
+`npm run deploy:fly` creates the Fly app when needed, stages secrets without
+printing them, deploys the Docker image, and checks `/api/health`. On later
+deploys you can pass `-- --skip-create`; use `-- --stage-only` to stage secrets
+without deploying.
 
 Set `EMAIL_PUBLIC_BASE_URL` to the final Fly HTTPS URL before configuring Google
 OAuth callbacks. Set `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000` for a five-minute

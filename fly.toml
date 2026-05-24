@@ -1,0 +1,31 @@
+app = "dearly-email"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  EMAIL_SERVER_HOST = "0.0.0.0"
+  EMAIL_SERVER_PORT = "8080"
+  EMAIL_STORAGE = "postgres"
+  EMAIL_SECRET_STORE = "postgres"
+  EMAIL_REQUIRE_AUTH = "1"
+  EMAIL_INITIAL_SYNC_LIMIT = "500"
+  EMAIL_BACKGROUND_SYNC_INTERVAL_MS = "300000"
+  EMAIL_BACKGROUND_SYNC_LIMIT = "50"
+  EMAIL_ATTACHMENT_BUCKET = "email-attachments"
+  EMAIL_PUBLIC_BASE_URL = "https://dearly-email.fly.dev"
+  SUPABASE_URL = "https://gjfyisfuhkwqrzjuvfjd.supabase.co"
+  SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ceT0ggOi_XVq-wPaJLI6aQ_VgzhRweA"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 100
+    hard_limit = 150
