@@ -8,7 +8,7 @@ import { ProviderService } from "../src/providerAdapters.js";
 import { MemorySecretStore } from "../src/secretStore.js";
 import { MailStore } from "../src/store.js";
 
-test("provider availability is app-owned and Gmail auth starts when configured", async () => {
+test("provider availability is server-owned and Gmail auth starts when configured", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 

@@ -1,6 +1,6 @@
 # Email
 
-A private native email app foundation with:
+A native email app foundation with:
 
 - A local always-on server for account sync, message storage, outbound mail, open tracking, and search.
 - SQLite + FTS5 storage for fast full-history search.
@@ -26,7 +26,7 @@ For an always-running local daemon:
 ./scripts/install-launch-agent.sh
 ```
 
-Copy `.env.example` to `.env` for local app-owned provider credentials. The launch agent reads `.env` through `scripts/start-server.sh`.
+Copy `.env.example` to `.env` only on the machine that runs the server. The launch agent reads `.env` through `scripts/start-server.sh`. Provider credentials and account tokens belong to the server runtime, not to the macOS/iOS app bundle.
 
 ## Build the Apps
 
@@ -74,7 +74,7 @@ The packaged app bundles the local Node server under `Email.app/Contents/Resourc
 Provider secrets should not be bundled into the app. For builds that should use a shared backend, bake only the backend URL into the app:
 
 ```sh
-EMAIL_RELEASE_SERVER_URL=http://space:7331 npm run package:mac
+EMAIL_RELEASE_SERVER_URL=http://your-server:7331 npm run package:mac
 ```
 
 Run the backend separately with the provider secrets in its server environment. Public direct-download distribution requires Developer ID signing and notarization:
@@ -129,7 +129,7 @@ The macOS app uses Sparkle 2 for updates. Its feed URL is:
 https://github.com/borjadotai/email/releases/latest/download/appcast.xml
 ```
 
-Sparkle automatic checks and automatic installs are enabled by default. The app also adds a macOS menu item at Email -> Check for Updates....
+Sparkle automatic checks and automatic installs are enabled by default. The app also adds update controls at Email -> Check for Updates... and Settings -> General -> Updates. The feed and update zip must be publicly reachable by the installed app; private GitHub release assets cannot be fetched by Sparkle.
 
 Unsigned artifacts are useful for private testing, but public downloads should be signed and notarized. Configure these GitHub repository secrets to enable that in the workflow:
 
@@ -149,7 +149,7 @@ SPARKLE_PRIVATE_KEY
 Developer ID Application: Your Name (TEAMID)
 ```
 
-Optionally set the GitHub repository variable `EMAIL_RELEASE_SERVER_URL` to the backend endpoint that release builds should use by default. Do not store provider secrets in release build variables or bundle them into the app.
+Optionally set the GitHub repository variable `EMAIL_RELEASE_SERVER_URL` to the backend endpoint that release builds should use by default. Do not store provider secrets in release build variables or bundle them into the app. This URL is embedded in public app artifacts, so treat it as public configuration.
 
 `SPARKLE_PRIVATE_KEY` is the exported private EdDSA key from Sparkle's `generate_keys` tool. The matching public key is embedded in the app as `SUPublicEDKey`.
 
@@ -197,10 +197,10 @@ http://127.0.0.1:7331/api/auth/gmail/callback
 
 Users do not enter Google OAuth client credentials. Those credentials belong to the server environment. Per-account refresh tokens are stored in the macOS Keychain under the `EmailApp` service. Gmail sync currently imports recent messages into local SQLite/FTS and maps Gmail user labels into local labels.
 
-For a shared backend, also set `EMAIL_PUBLIC_BASE_URL` on that server to the reachable backend origin, and add its callback URL in Google Cloud Console. For example, a backend at `http://space:7331` needs:
+For a shared backend, also set `EMAIL_PUBLIC_BASE_URL` on that server to the reachable backend origin, and add its callback URL in Google Cloud Console. For example, a backend at `http://your-server:7331` needs:
 
 ```text
-http://space:7331/api/auth/gmail/callback
+http://your-server:7331/api/auth/gmail/callback
 ```
 
 After creating the OAuth client, download its JSON file and import it locally:

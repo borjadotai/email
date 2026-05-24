@@ -487,7 +487,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
-				EMAIL_DEFAULT_SERVER_URL = "http://space.local:7331";
+				EMAIL_DEFAULT_SERVER_URL = "http://127.0.0.1:7331";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Email/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Email;
@@ -519,7 +519,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
-				EMAIL_DEFAULT_SERVER_URL = "http://space.local:7331";
+				EMAIL_DEFAULT_SERVER_URL = "http://127.0.0.1:7331";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Email/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Email;
