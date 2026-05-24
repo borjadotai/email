@@ -86,6 +86,7 @@ struct SidebarView: View {
       }
     }
     .listStyle(.sidebar)
+    .mailToolbarContentMargin()
     .navigationTitle("Email")
     .toolbar {
       ToolbarItem {
@@ -201,5 +202,16 @@ private struct SidebarButton: View {
     }
     .buttonStyle(.plain)
     .listRowBackground(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+  }
+}
+
+private extension View {
+  @ViewBuilder
+  func mailToolbarContentMargin() -> some View {
+    #if os(macOS)
+    contentMargins(.top, 10, for: .scrollContent)
+    #else
+    self
+    #endif
   }
 }

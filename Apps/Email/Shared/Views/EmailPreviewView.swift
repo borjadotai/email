@@ -1587,6 +1587,11 @@ private enum HTMLMailDocument {
       with: "",
       options: regexOptions
     )
+    document = document.replacingOccurrences(
+      of: #"<meta\b(?=[^>]*\bname\s*=\s*["']?(color-scheme|supported-color-schemes)["']?)[^>]*>"#,
+      with: "",
+      options: regexOptions
+    )
 
     return document
   }
@@ -1616,21 +1621,27 @@ private enum HTMLMailDocument {
   private static func style(prefersMobileLayout: Bool) -> String {
     """
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: light only; supported-color-schemes: light; }
+    html {
+      background: #ffffff;
+      color: #1d1d1f;
+    }
     html, body {
       width: 100% !important;
       min-width: 0 !important;
       max-width: 100% !important;
       margin: 0 !important;
       padding: 0 !important;
-      background: transparent;
-      color: CanvasText;
       font: -apple-system-body;
       overflow-wrap: anywhere;
       -webkit-text-size-adjust: 100%;
     }
     body {
+      background: transparent;
+      color: inherit;
       box-sizing: border-box;
       line-height: 1.48;
     }
@@ -1868,16 +1879,20 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
   webView.navigationDelegate = coordinator
 
   #if os(iOS)
-  webView.isOpaque = false
-  webView.backgroundColor = .clear
-  webView.scrollView.backgroundColor = .clear
+  webView.isOpaque = true
+  webView.overrideUserInterfaceStyle = .light
+  webView.backgroundColor = .white
+  webView.scrollView.backgroundColor = .white
   webView.scrollView.contentInset = .zero
   webView.scrollView.scrollIndicatorInsets = .zero
   webView.scrollView.contentInsetAdjustmentBehavior = .never
   webView.scrollView.isScrollEnabled = true
   webView.scrollView.bounces = true
   #elseif os(macOS)
-  webView.setValue(false, forKey: "drawsBackground")
+  webView.appearance = NSAppearance(named: .aqua)
+  webView.wantsLayer = true
+  webView.layer?.backgroundColor = NSColor.white.cgColor
+  webView.setValue(true, forKey: "drawsBackground")
   #endif
 
   return webView
