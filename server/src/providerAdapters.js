@@ -22,29 +22,31 @@ export class ProviderService {
     this.pendingGmailStates = new Map();
   }
 
-  getAuthSettings() {
+  getAuthSettings({ baseURL } = {}) {
     return {
       gmailConfigured: Boolean(this.getGoogleClientId()),
-      gmailRedirectURI: this.gmailRedirectURI(),
+      gmailRedirectURI: this.gmailRedirectURI(baseURL),
       icloudConfigured: true,
       icloudAuthType: "app_specific_password",
       appleMailOAuthAvailable: false
     };
   }
 
-  async startGmailAuth(input = {}) {
+  async startGmailAuth(input = {}, { baseURL } = {}) {
     const clientId = this.getGoogleClientId();
     if (!clientId) {
       throw httpError(400, "Gmail sign-in is not configured for this build.");
     }
 
-    const client = this.gmailOAuthClient();
+    const redirectURI = this.gmailRedirectURI(baseURL);
+    const client = this.gmailOAuthClient(redirectURI);
     const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
     const state = randomUUID();
     this.pendingGmailStates.set(state, {
       displayName: input.displayName?.trim() ?? "",
       syncHistory: input.syncHistory !== false,
       codeVerifier,
+      redirectURI,
       createdAt: Date.now()
     });
 
@@ -62,7 +64,7 @@ export class ProviderService {
       provider: "gmail",
       authorizationURL,
       state,
-      redirectURI: this.gmailRedirectURI()
+      redirectURI
     };
   }
 
@@ -75,7 +77,7 @@ export class ProviderService {
     }
     this.pendingGmailStates.delete(state);
 
-    const client = this.gmailOAuthClient();
+    const client = this.gmailOAuthClient(session.redirectURI);
     const { tokens } = await client.getToken({ code, codeVerifier: session.codeVerifier });
     client.setCredentials(tokens);
 
@@ -586,16 +588,16 @@ export class ProviderService {
     return client;
   }
 
-  gmailOAuthClient() {
+  gmailOAuthClient(redirectURI = this.gmailRedirectURI()) {
     return new google.auth.OAuth2(
       this.getGoogleClientId(),
       this.getGoogleClientSecret() || undefined,
-      this.gmailRedirectURI()
+      redirectURI
     );
   }
 
-  gmailRedirectURI() {
-    return `${this.baseURL}/api/auth/gmail/callback`;
+  gmailRedirectURI(baseURL = this.baseURL) {
+    return `${String(baseURL).replace(/\/+$/u, "")}/api/auth/gmail/callback`;
   }
 
   getGoogleClientId() {

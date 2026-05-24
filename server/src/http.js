@@ -6,11 +6,12 @@ const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABA
 
 export function createServer({ store, providers, pushNotifications, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
-  const baseURL = publicBaseURL ?? `http://${host}:${port}`;
+  const configuredBaseURL = normalizedBaseURL(publicBaseURL);
+  const fallbackBaseURL = normalizedBaseURL(`http://${host}:${port}`);
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, providers, pushNotifications, events, baseURL });
+      await route({ req, res, store, providers, pushNotifications, events, configuredBaseURL, fallbackBaseURL });
     } catch (error) {
       const status = error.status ?? 500;
       console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
@@ -29,9 +30,10 @@ export function createServer({ store, providers, pushNotifications, host = "127.
   return { server, events };
 }
 
-async function route({ req, res, store, providers, pushNotifications, events, baseURL }) {
+async function route({ req, res, store, providers, pushNotifications, events, configuredBaseURL, fallbackBaseURL }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
+  const baseURL = requestBaseURL(req, configuredBaseURL, fallbackBaseURL);
 
   if (req.method === "OPTIONS") {
     sendCORS(res);
@@ -66,7 +68,7 @@ async function route({ req, res, store, providers, pushNotifications, events, ba
 
   if (req.method === "GET" && path === "/api/auth/settings") {
     requireProviders(providers);
-    sendJSON(res, 200, { settings: providers.getAuthSettings() });
+    sendJSON(res, 200, { settings: providers.getAuthSettings({ baseURL }) });
     return;
   }
 
@@ -82,7 +84,7 @@ async function route({ req, res, store, providers, pushNotifications, events, ba
   if (req.method === "POST" && path === "/api/auth/gmail/start") {
     requireProviders(providers);
     console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);
-    sendJSON(res, 200, await providers.startGmailAuth(await readJSON(req)));
+    sendJSON(res, 200, await providers.startGmailAuth(await readJSON(req), { baseURL }));
     return;
   }
 
@@ -151,6 +153,14 @@ async function route({ req, res, store, providers, pushNotifications, events, ba
     const label = store.createLabel(await readJSON(req));
     events.emit("labels.changed", { labelId: label.id });
     sendJSON(res, 201, { label });
+    return;
+  }
+
+  const labelRouteMatch = path.match(/^\/api\/labels\/([^/]+)$/);
+  if (labelRouteMatch && req.method === "PATCH") {
+    const label = store.updateLabel(labelRouteMatch[1], await readJSON(req));
+    events.emit("labels.changed", { labelId: label.id });
+    sendJSON(res, 200, { label });
     return;
   }
 
@@ -368,6 +378,26 @@ function sendCORS(res) {
 
 function requireProviders(providers) {
   if (!providers) throw httpError(500, "Provider services are not configured.");
+}
+
+function requestBaseURL(req, configuredBaseURL, fallbackBaseURL) {
+  if (configuredBaseURL) return configuredBaseURL;
+
+  const host = firstHeaderValue(req.headers["x-forwarded-host"]) ?? firstHeaderValue(req.headers.host);
+  if (!host) return fallbackBaseURL;
+
+  const proto = firstHeaderValue(req.headers["x-forwarded-proto"]) ?? "http";
+  return normalizedBaseURL(`${proto}://${host}`);
+}
+
+function firstHeaderValue(value) {
+  const header = Array.isArray(value) ? value[0] : value;
+  return header?.split(",")[0]?.trim() || null;
+}
+
+function normalizedBaseURL(value) {
+  if (!value) return null;
+  return String(value).replace(/\/+$/u, "");
 }
 
 function publicSyncResult(sync = {}) {

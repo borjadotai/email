@@ -109,7 +109,7 @@ Gmail needs a Google OAuth client. You only do this on the server machine:
 3. Add this authorized redirect URI, using your real server URL:
 
 ```text
-http://your-server:7331/api/auth/gmail/callback
+https://your-server.example/api/auth/gmail/callback
 ```
 
 4. Download the OAuth JSON file and import it into the server `.env`:
@@ -121,6 +121,29 @@ launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
 
 The apps never need the Google OAuth client secret. They ask the server to start
 the Gmail sign-in flow, and Google redirects back to your server.
+
+For private testing across your own devices, Tailscale Serve is a good server
+URL. On the server Mac, proxy the local email server through the device's
+tailnet HTTPS name:
+
+```sh
+tailscale serve --bg --https=443 7331
+```
+
+If port `443` is already serving another local app, use another HTTPS port such
+as `8443` and include that port in the URL below.
+
+Then set the server `.env` to the same HTTPS base URL and register the exact
+Google callback:
+
+```sh
+EMAIL_PUBLIC_BASE_URL=https://your-mac.your-tailnet.ts.net
+# Google authorized redirect URI:
+# https://your-mac.your-tailnet.ts.net/api/auth/gmail/callback
+```
+
+Client devices must be signed into the same tailnet and use that Tailscale URL
+as the app's server URL.
 
 Broad public Gmail distribution requires Google OAuth consent screen
 configuration and, because this app requests Gmail mail access scopes, Google
@@ -195,7 +218,8 @@ the device.
 - If that works locally but not from another device, confirm the server URL,
   firewall settings, and that `EMAIL_SERVER_HOST=0.0.0.0` is present in `.env`.
 - If Gmail setup fails, confirm the Google redirect URI exactly matches
-  `EMAIL_PUBLIC_BASE_URL` plus `/api/auth/gmail/callback`.
+  `EMAIL_PUBLIC_BASE_URL` plus `/api/auth/gmail/callback`. Do not use
+  `127.0.0.1` for devices that are not running the server.
 - If the server does not start, check
   `~/Library/Logs/EmailApp/server.error.log`.
 
@@ -365,5 +389,5 @@ Core endpoints live under `/api`:
 ## Runtime Notes
 
 - `EMAIL_INITIAL_SYNC_LIMIT` controls how many messages are imported per sync pass. The default is `500`.
-- `EMAIL_PUBLIC_BASE_URL` must point at a reachable server URL for outbound open tracking pixels to work outside the local machine.
+- `EMAIL_PUBLIC_BASE_URL` must point at a reachable server URL for Gmail OAuth callbacks and outbound open tracking pixels to work outside the local machine.
 - The current iCloud importer focuses on INBOX. Gmail imports all non-spam/trash messages returned by the Gmail API and places them into Inbox, Sent, Drafts, Trash, or Archive based on Gmail system labels.

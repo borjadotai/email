@@ -12,6 +12,10 @@ struct LabelsResponse: Decodable {
   var labels: [MailLabel]
 }
 
+struct LabelResponse: Decodable {
+  var label: MailLabel
+}
+
 struct EmailsResponse: Decodable {
   var emails: [EmailSummary]
 }
@@ -136,6 +140,35 @@ struct MailAPIClient {
   func labels() async throws -> [MailLabel] {
     let response: LabelsResponse = try await request("api/labels")
     return response.labels
+  }
+
+  func createLabel(name: String, color: String, icon: String, accountId: String? = nil) async throws -> MailLabel {
+    struct LabelPayload: Encodable {
+      var accountId: String?
+      var name: String
+      var color: String
+      var icon: String
+    }
+    let response: LabelResponse = try await request(
+      "api/labels",
+      method: "POST",
+      body: LabelPayload(accountId: accountId, name: name, color: color, icon: icon)
+    )
+    return response.label
+  }
+
+  func updateLabel(id: String, name: String, color: String, icon: String) async throws -> MailLabel {
+    struct LabelPayload: Encodable {
+      var name: String
+      var color: String
+      var icon: String
+    }
+    let response: LabelResponse = try await request(
+      "api/labels/\(id)",
+      method: "PATCH",
+      body: LabelPayload(name: name, color: color, icon: icon)
+    )
+    return response.label
   }
 
   func emails(query: EmailQuery) async throws -> [EmailSummary] {

@@ -119,6 +119,11 @@ extension String {
 }
 
 extension MailLabel {
+  var systemImage: String {
+    let value = icon?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return value.isEmpty ? "tag" : value
+  }
+
   var swiftUIColor: Color {
     switch color {
     case "orange": .orange
@@ -127,6 +132,11 @@ extension MailLabel {
     case "purple": .purple
     case "red": .red
     case "yellow": .yellow
+    case "pink": .pink
+    case "teal": .teal
+    case "cyan": .cyan
+    case "indigo": .indigo
+    case "mint": .mint
     default: .secondary
     }
   }

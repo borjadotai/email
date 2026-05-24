@@ -12,6 +12,7 @@ struct PendingArchiveNotification: Identifiable, Hashable {
   var previousEmails: [EmailSummary]
   var previousSelectedEmailID: String?
   var previousSelectedEmail: EmailDetail?
+  var previousConversationEmails: [EmailDetail]
 }
 
 @MainActor
@@ -127,6 +128,18 @@ final class AppModel {
 
   var shouldStartBundledServer: Bool {
     Defaults.isLoopbackURL(serverURLString)
+  }
+
+  var gmailAuthConfigurationWarning: String? {
+    guard authSettings?.gmailConfigured == true,
+          let redirectURI = authSettings?.gmailRedirectURI,
+          !Defaults.isLoopbackURL(serverURLString),
+          Defaults.isLoopbackURL(redirectURI)
+    else {
+      return nil
+    }
+
+    return "Google is still configured to redirect to this Mac. Set EMAIL_PUBLIC_BASE_URL on the email server to its Tailscale HTTPS URL and register that callback in Google Cloud."
   }
 
   func bootstrap() async {
@@ -302,6 +315,32 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = label.id
     await refreshEmails()
+  }
+
+  func createGlobalLabel(name: String, color: String, icon: String) async {
+    do {
+      let label = try await apiClient.createLabel(name: name, color: color, icon: icon)
+      labels = try await apiClient.labels()
+      await selectLabel(label)
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func updateLabel(_ label: MailLabel, name: String, color: String, icon: String) async {
+    do {
+      let updated = try await apiClient.updateLabel(id: label.id, name: name, color: color, icon: icon)
+      labels = labels.map { $0.id == updated.id ? updated : $0 }
+      try await loadEmails()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func labelsAvailable(for email: EmailDetail) -> [MailLabel] {
+    labels.filter { label in
+      label.accountId == nil || label.accountId == email.accountId
+    }
   }
 
   func selectEmail(_ summary: EmailSummary) async {
@@ -544,11 +583,14 @@ final class AppModel {
   }
 
   func archiveSelectedEmail() async {
-    guard !isArchiving, let selectedEmail else { return }
+    guard !isArchiving, let selectedEmailID else { return }
+    let selectedSummary = emails.first { $0.id == selectedEmailID }
+    let loadedSelectedEmail = selectedEmail?.id == selectedEmailID ? selectedEmail : nil
+
     queueArchive(
-      id: selectedEmail.id,
-      subject: selectedEmail.subject,
-      senderName: selectedEmail.senderName
+      id: selectedEmailID,
+      subject: loadedSelectedEmail?.subject ?? selectedSummary?.subject ?? "Message",
+      senderName: loadedSelectedEmail?.senderName ?? selectedSummary?.senderName ?? "Sender"
     )
   }
 
@@ -588,6 +630,7 @@ final class AppModel {
         emails = pendingArchive.previousEmails
         selectedEmailID = pendingArchive.previousSelectedEmailID
         selectedEmail = pendingArchive.previousSelectedEmail
+        conversationEmails = pendingArchive.previousConversationEmails
       }
       self.pendingArchive = nil
     }
@@ -613,14 +656,19 @@ final class AppModel {
     let previousEmails = emails
     let previousSelectedEmailID = selectedEmailID
     let previousSelectedEmail = selectedEmail
+    let previousConversationEmails = conversationEmails
     let shouldRemoveImmediately = shouldRemoveArchivedEmailFromCurrentList(emailId: id)
+    let replacementSelectedEmailID = selectedEmailID == id && shouldRemoveImmediately
+      ? nextVisibleEmailID(afterRemoving: id, from: previousEmails)
+      : nil
 
     if shouldRemoveImmediately {
       withAnimation(.snappy(duration: 0.24)) {
         emails.removeAll { $0.id == id }
         if selectedEmailID == id {
-          selectedEmailID = nil
+          selectedEmailID = replacementSelectedEmailID
           selectedEmail = nil
+          conversationEmails = []
         }
       }
     }
@@ -635,15 +683,43 @@ final class AppModel {
       removedFromCurrentList: shouldRemoveImmediately,
       previousEmails: previousEmails,
       previousSelectedEmailID: previousSelectedEmailID,
-      previousSelectedEmail: previousSelectedEmail
+      previousSelectedEmail: previousSelectedEmail,
+      previousConversationEmails: previousConversationEmails
     )
 
     withAnimation(.snappy(duration: 0.24)) {
       pendingArchive = archive
     }
+    if let replacementSelectedEmailID {
+      loadEmailIfStillSelected(id: replacementSelectedEmailID)
+    }
     statusMessage = "Archiving in \(duration)s"
     errorMessage = nil
     schedulePendingArchiveCommit(id: id, duration: duration)
+  }
+
+  private func nextVisibleEmailID(afterRemoving id: String, from visibleEmails: [EmailSummary]) -> String? {
+    guard let removedIndex = visibleEmails.firstIndex(where: { $0.id == id }) else {
+      return nil
+    }
+
+    let nextIndex = visibleEmails.index(after: removedIndex)
+    if nextIndex < visibleEmails.endIndex {
+      return visibleEmails[nextIndex].id
+    }
+
+    if removedIndex > visibleEmails.startIndex {
+      return visibleEmails[visibleEmails.index(before: removedIndex)].id
+    }
+
+    return nil
+  }
+
+  private func loadEmailIfStillSelected(id: String) {
+    Task { @MainActor in
+      guard selectedEmailID == id else { return }
+      await selectEmail(id: id)
+    }
   }
 
   private func schedulePendingArchiveCommit(id: String, duration: Int) {
@@ -686,6 +762,7 @@ final class AppModel {
           emails = archive.previousEmails
           selectedEmailID = archive.previousSelectedEmailID
           selectedEmail = archive.previousSelectedEmail
+          conversationEmails = archive.previousConversationEmails
         }
       }
       errorMessage = error.localizedDescription

@@ -66,6 +66,18 @@ struct AddAccountView: View {
               .foregroundStyle(.secondary)
           }
         }
+
+        if provider == .gmail, let warning = model.gmailAuthConfigurationWarning {
+          Section {
+            Label {
+              Text(warning)
+            } icon: {
+              Image(systemName: "network.badge.shield.half.filled")
+            }
+            .font(.callout)
+            .foregroundStyle(.orange)
+          }
+        }
       }
       .formStyle(.grouped)
       .navigationTitle("Add Account")

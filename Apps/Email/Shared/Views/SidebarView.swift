@@ -2,12 +2,14 @@ import SwiftUI
 
 struct SidebarView: View {
   @Environment(AppModel.self) private var model
+  @State private var labelEditor: GlobalLabelEditorContext?
   var onAddAccount: () -> Void
   var onShowMessages: () -> Void
 
   var body: some View {
     let visibleMailboxes = scopedMailboxes
     let visibleLabels = scopedLabels
+    let visibleGlobalLabels = globalLabels
 
     List {
       Section {
@@ -21,6 +23,42 @@ struct SidebarView: View {
           onShowMessages()
           Task {
             await model.selectGlobalInbox()
+          }
+        }
+      }
+
+      if activeSidebarAccountID == nil {
+        Section("Global Labels") {
+          ForEach(visibleGlobalLabels) { label in
+            SidebarButton(
+              title: label.name,
+              subtitle: "Global",
+              systemImage: label.systemImage,
+              tint: label.swiftUIColor,
+              isSelected: model.selectedLabelID == label.id
+            ) {
+              onShowMessages()
+              Task {
+                await model.selectLabel(label)
+              }
+            }
+            .contextMenu {
+              if !label.isSystem {
+                Button("Edit Label") {
+                  labelEditor = .edit(label)
+                }
+              }
+            }
+          }
+
+          SidebarButton(
+            title: "New Label",
+            subtitle: nil,
+            systemImage: "plus.circle",
+            tint: .secondary,
+            isSelected: false
+          ) {
+            labelEditor = .create
           }
         }
       }
@@ -97,6 +135,17 @@ struct SidebarView: View {
         .help("Add account")
       }
     }
+    .sheet(item: $labelEditor) { context in
+      GlobalLabelEditorSheet(context: context) { name, color, icon in
+        Task {
+          if let label = context.label {
+            await model.updateLabel(label, name: name, color: color, icon: icon)
+          } else {
+            await model.createGlobalLabel(name: name, color: color, icon: icon)
+          }
+        }
+      }
+    }
   }
 
   private func unreadCount(for account: MailAccount) -> Int {
@@ -128,13 +177,14 @@ struct SidebarView: View {
 
   private var scopedLabels: [MailLabel] {
     if let accountID = activeSidebarAccountID {
-      return model.labels.filter { label in
-        label.accountId == nil || label.accountId == accountID
-      }
+      return model.labels.filter { $0.accountId == accountID }
     }
 
-    guard model.selectedLabelID != nil else { return [] }
-    return model.labels.filter { $0.accountId == nil }
+    return []
+  }
+
+  private var globalLabels: [MailLabel] {
+    model.labels.filter { $0.accountId == nil }
   }
 
   private func image(for role: String) -> String {
@@ -148,6 +198,148 @@ struct SidebarView: View {
     default: "folder"
     }
   }
+}
+
+private struct GlobalLabelEditorContext: Identifiable {
+  var id: String
+  var label: MailLabel?
+
+  static var create: GlobalLabelEditorContext {
+    GlobalLabelEditorContext(id: "create-\(UUID().uuidString)", label: nil)
+  }
+
+  static func edit(_ label: MailLabel) -> GlobalLabelEditorContext {
+    GlobalLabelEditorContext(id: "edit-\(label.id)", label: label)
+  }
+}
+
+private struct GlobalLabelEditorSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  var context: GlobalLabelEditorContext
+  var onSave: (String, String, String) -> Void
+
+  @State private var name: String
+  @State private var color: String
+  @State private var icon: String
+
+  init(context: GlobalLabelEditorContext, onSave: @escaping (String, String, String) -> Void) {
+    self.context = context
+    self.onSave = onSave
+    _name = State(initialValue: context.label?.name ?? "")
+    _color = State(initialValue: context.label?.color ?? LabelEditorOption.colors[0].id)
+    _icon = State(initialValue: context.label?.systemImage ?? LabelEditorOption.icons[0].id)
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("Label") {
+          TextField("Name", text: $name)
+        }
+
+        Section("Icon") {
+          Picker("Icon", selection: $icon) {
+            ForEach(LabelEditorOption.icons) { option in
+              Label(option.title, systemImage: option.id)
+                .tag(option.id)
+            }
+          }
+        }
+
+        Section("Color") {
+          LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 10)], spacing: 10) {
+            ForEach(LabelEditorOption.colors) { option in
+              Button {
+                color = option.id
+              } label: {
+                ZStack {
+                  Circle()
+                    .fill(option.color)
+                    .frame(width: 26, height: 26)
+
+                  if color == option.id {
+                    Image(systemName: "checkmark")
+                      .font(.caption.weight(.bold))
+                      .foregroundStyle(.white)
+                  }
+                }
+                .frame(width: 42, height: 34)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(option.title)
+              .accessibilityAddTraits(color == option.id ? .isSelected : [])
+            }
+          }
+          .padding(.vertical, 4)
+        }
+      }
+      .navigationTitle(context.label == nil ? "New Label" : "Edit Label")
+      #if os(iOS)
+      .navigationBarTitleDisplayMode(.inline)
+      #endif
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") {
+            dismiss()
+          }
+        }
+
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Save") {
+            onSave(trimmedName, color, icon)
+            dismiss()
+          }
+          .disabled(trimmedName.isEmpty)
+        }
+      }
+    }
+    #if os(macOS)
+    .frame(width: 380, height: 420)
+    #endif
+  }
+
+  private var trimmedName: String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
+private struct LabelEditorOption: Identifiable {
+  var id: String
+  var title: String
+  var color: Color = .secondary
+
+  static let icons: [LabelEditorOption] = [
+    LabelEditorOption(id: "tag", title: "Tag"),
+    LabelEditorOption(id: "folder", title: "Folder"),
+    LabelEditorOption(id: "flag", title: "Flag"),
+    LabelEditorOption(id: "star", title: "Star"),
+    LabelEditorOption(id: "bolt", title: "Bolt"),
+    LabelEditorOption(id: "checkmark.circle", title: "Done"),
+    LabelEditorOption(id: "clock", title: "Later"),
+    LabelEditorOption(id: "calendar", title: "Calendar"),
+    LabelEditorOption(id: "briefcase", title: "Work"),
+    LabelEditorOption(id: "person.crop.circle", title: "People"),
+    LabelEditorOption(id: "creditcard", title: "Money"),
+    LabelEditorOption(id: "doc.text", title: "Document"),
+    LabelEditorOption(id: "paperclip", title: "Attachment"),
+    LabelEditorOption(id: "bell", title: "Alert"),
+    LabelEditorOption(id: "flame", title: "Hot")
+  ]
+
+  static let colors: [LabelEditorOption] = [
+    LabelEditorOption(id: "blue", title: "Blue", color: .blue),
+    LabelEditorOption(id: "green", title: "Green", color: .green),
+    LabelEditorOption(id: "orange", title: "Orange", color: .orange),
+    LabelEditorOption(id: "purple", title: "Purple", color: .purple),
+    LabelEditorOption(id: "red", title: "Red", color: .red),
+    LabelEditorOption(id: "pink", title: "Pink", color: .pink),
+    LabelEditorOption(id: "teal", title: "Teal", color: .teal),
+    LabelEditorOption(id: "cyan", title: "Cyan", color: .cyan),
+    LabelEditorOption(id: "indigo", title: "Indigo", color: .indigo),
+    LabelEditorOption(id: "mint", title: "Mint", color: .mint),
+    LabelEditorOption(id: "yellow", title: "Yellow", color: .yellow),
+    LabelEditorOption(id: "gray", title: "Gray", color: .secondary)
+  ]
 }
 
 private struct SidebarButton: View {

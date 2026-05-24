@@ -16,7 +16,7 @@ export function resolveConfig(env = process.env) {
     googleOAuthClientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET ?? "",
     initialSyncLimit: Number.parseInt(env.EMAIL_INITIAL_SYNC_LIMIT ?? "500", 10),
     seedDemo: env.EMAIL_SEED_DEMO === "1",
-    publicBaseURL: env.EMAIL_PUBLIC_BASE_URL,
+    publicBaseURL: env.EMAIL_PUBLIC_BASE_URL?.trim() || undefined,
     apns: {
       keyId: env.APNS_KEY_ID ?? "",
       teamId: env.APNS_TEAM_ID ?? "",

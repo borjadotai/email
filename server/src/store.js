@@ -92,6 +92,7 @@ export class MailStore {
         account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
         name TEXT NOT NULL,
         color TEXT NOT NULL DEFAULT 'gray',
+        icon TEXT NOT NULL DEFAULT 'tag',
         is_system INTEGER NOT NULL DEFAULT 0,
         UNIQUE(account_id, name)
       );
@@ -215,6 +216,7 @@ export class MailStore {
         WHERE provider_uid IS NOT NULL;
     `);
     this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("labels", "icon", "TEXT NOT NULL DEFAULT 'tag'");
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
     this.ensureColumn("emails", "references_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -725,7 +727,7 @@ export class MailStore {
 
     return this.db.prepare(`
       SELECT l.id, l.account_id AS accountId, a.email AS accountEmail,
-             l.name, l.color, l.is_system AS isSystem
+             l.name, l.color, l.icon, l.is_system AS isSystem
       FROM labels l
       LEFT JOIN accounts a ON a.id = l.account_id
       ${where}
@@ -737,10 +739,28 @@ export class MailStore {
     const name = requiredString(input.name, "name");
     const id = randomUUID();
     this.db.prepare(`
-      INSERT INTO labels (id, account_id, name, color, is_system)
-      VALUES (?, ?, ?, ?, 0)
-    `).run(id, input.accountId ?? null, name, input.color ?? "gray");
+      INSERT INTO labels (id, account_id, name, color, icon, is_system)
+      VALUES (?, ?, ?, ?, ?, 0)
+    `).run(id, input.accountId ?? null, name, input.color ?? "gray", input.icon ?? "tag");
     return this.listLabels(input.accountId ?? null).find(label => label.id === id);
+  }
+
+  updateLabel(id, input) {
+    const existing = this.db.prepare("SELECT id, account_id AS accountId, is_system AS isSystem FROM labels WHERE id = ?").get(id);
+    if (!existing) {
+      throw httpError(404, "Label not found.");
+    }
+    if (existing.isSystem) {
+      throw httpError(400, "System labels cannot be edited.");
+    }
+
+    const name = requiredString(input.name, "name");
+    this.db.prepare(`
+      UPDATE labels
+      SET name = ?, color = ?, icon = ?
+      WHERE id = ?
+    `).run(name, input.color ?? "gray", input.icon ?? "tag", id);
+    return this.listLabels(existing.accountId ?? null).find(label => label.id === id);
   }
 
   findOrCreateLabel(input) {
@@ -756,7 +776,8 @@ export class MailStore {
     return this.createLabel({
       accountId,
       name,
-      color: input.color ?? "gray"
+      color: input.color ?? "gray",
+      icon: input.icon ?? "tag"
     });
   }
 
@@ -1119,9 +1140,12 @@ export class MailStore {
     const email = this.getEmail(emailId);
     if (!email) return null;
 
-    const label = this.db.prepare("SELECT id FROM labels WHERE id = ?").get(labelId);
+    const label = this.db.prepare("SELECT id, account_id AS accountId FROM labels WHERE id = ?").get(labelId);
     if (!label) {
       throw httpError(404, "Label not found.");
+    }
+    if (label.accountId && label.accountId !== email.accountId) {
+      throw httpError(400, "Label belongs to a different account.");
     }
 
     if (action === "remove") {
@@ -1360,8 +1384,8 @@ export class MailStore {
 
     for (const [name, color] of SYSTEM_LABELS) {
       this.db.prepare(`
-        INSERT OR IGNORE INTO labels (id, account_id, name, color, is_system)
-        VALUES (?, ?, ?, ?, 1)
+      INSERT OR IGNORE INTO labels (id, account_id, name, color, is_system)
+      VALUES (?, ?, ?, ?, 1)
       `).run(randomUUID(), accountId, name, color);
     }
   }
@@ -1385,7 +1409,7 @@ export class MailStore {
 
   labelsForEmail(emailId) {
     return this.db.prepare(`
-      SELECT l.id, l.account_id AS accountId, l.name, l.color, l.is_system AS isSystem
+      SELECT l.id, l.account_id AS accountId, l.name, l.color, l.icon, l.is_system AS isSystem
       FROM labels l
       JOIN email_labels el ON el.label_id = l.id
       WHERE el.email_id = ?

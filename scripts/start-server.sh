@@ -13,7 +13,6 @@ fi
 export EMAIL_DATA_DIR="${EMAIL_DATA_DIR:-$HOME/Library/Application Support/EmailApp}"
 export EMAIL_SERVER_PORT="${EMAIL_SERVER_PORT:-7331}"
 export EMAIL_SERVER_HOST="${EMAIL_SERVER_HOST:-0.0.0.0}"
-export EMAIL_PUBLIC_BASE_URL="${EMAIL_PUBLIC_BASE_URL:-http://127.0.0.1:$EMAIL_SERVER_PORT}"
 
 if [[ -z "${NODE_BIN:-}" ]]; then
   for candidate in \

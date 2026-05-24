@@ -6,6 +6,9 @@ struct EmailListView: View {
   @State private var selectedFilter: InboxFilter = .all
   #endif
   @State private var selectionTask: Task<Void, Never>?
+  #if os(macOS)
+  @FocusState private var isMessageListFocused: Bool
+  #endif
   var onCompose: () -> Void
   var onSettings: () -> Void
   var onShowDetail: () -> Void
@@ -135,27 +138,44 @@ struct EmailListView: View {
       } else if model.emails.isEmpty {
         ContentUnavailableView("No Messages", systemImage: "tray")
       } else {
-        List(selection: selection) {
-          ForEach(model.emails) { email in
-            EmailRow(email: email)
-              .tag(email.id)
-              .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 14))
-              .contentShape(Rectangle())
-              .transition(.asymmetric(
-                insertion: .opacity,
-                removal: .move(edge: .trailing).combined(with: .opacity)
-              ))
-              .onTapGesture {
-                select(email)
-              }
-              .mailRowSwipeActions(email: email, model: model)
+        ScrollViewReader { proxy in
+          List(selection: selection) {
+            ForEach(model.emails) { email in
+              EmailRow(email: email)
+                .tag(email.id)
+                .id(email.id)
+                .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 14))
+                .contentShape(Rectangle())
+                .transition(.asymmetric(
+                  insertion: .opacity,
+                  removal: .move(edge: .trailing).combined(with: .opacity)
+                ))
+                .onTapGesture {
+                  select(email)
+                }
+                .mailRowSwipeActions(email: email, model: model)
+            }
           }
+          .listStyle(.plain)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .clipped()
+          .focusable()
+          .focused($isMessageListFocused)
+          .onAppear {
+            isMessageListFocused = true
+          }
+          .onMoveCommand { direction in
+            selectEmail(for: direction)
+          }
+          .onChange(of: model.selectedEmailID) { _, selectedEmailID in
+            guard let selectedEmailID else { return }
+            withAnimation(.snappy(duration: 0.18)) {
+              proxy.scrollTo(selectedEmailID, anchor: .center)
+            }
+          }
+          .animation(.snappy(duration: 0.24), value: model.emails.map(\.id))
+          .mailPullToRefresh(model)
         }
-        .listStyle(.plain)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .animation(.snappy(duration: 0.24), value: model.emails.map(\.id))
-        .mailPullToRefresh(model)
       }
     }
   }
@@ -186,6 +206,36 @@ struct EmailListView: View {
       await model.selectEmail(email)
     }
   }
+
+  #if os(macOS)
+  private func selectEmail(for direction: MoveCommandDirection) {
+    switch direction {
+    case .up:
+      selectAdjacentEmail(offset: -1)
+    case .down:
+      selectAdjacentEmail(offset: 1)
+    default:
+      break
+    }
+  }
+
+  private func selectAdjacentEmail(offset: Int) {
+    guard !model.emails.isEmpty else { return }
+
+    let currentIndex = model.selectedEmailID.flatMap { selectedEmailID in
+      model.emails.firstIndex { $0.id == selectedEmailID }
+    }
+    let targetIndex: Int
+    if let currentIndex {
+      targetIndex = min(max(currentIndex + offset, 0), model.emails.count - 1)
+    } else {
+      targetIndex = offset < 0 ? model.emails.count - 1 : 0
+    }
+
+    guard currentIndex != targetIndex else { return }
+    select(model.emails[targetIndex])
+  }
+  #endif
 
   #if os(iOS)
   private var filteredEmails: [EmailSummary] {
@@ -328,7 +378,7 @@ private struct EmailRow: View {
         Text(email.snippet.mailPreviewText)
           .font(.caption)
           .foregroundStyle(.secondary)
-          .lineLimit(2)
+          .lineLimit(1)
 
         if !email.labels.isEmpty {
           ScrollView(.horizontal, showsIndicators: false) {

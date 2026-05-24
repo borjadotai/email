@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import WebKit
 
@@ -97,12 +98,12 @@ struct EmailPreviewView: View {
 
               #if os(macOS)
               Menu {
-                ForEach(model.labels) { label in
+                ForEach(model.labelsAvailable(for: email)) { label in
                   Button {
                     Task { await model.toggleLabel(label) }
                   } label: {
                     let isApplied = email.labels.contains(where: { $0.id == label.id })
-                    Label(label.name, systemImage: isApplied ? "checkmark.circle.fill" : "circle")
+                    Label(label.name, systemImage: isApplied ? "checkmark.circle.fill" : label.systemImage)
                   }
                 }
               } label: {
@@ -153,12 +154,12 @@ struct EmailPreviewView: View {
                 }
 
                 Section("Labels") {
-                  ForEach(model.labels) { label in
+                  ForEach(model.labelsAvailable(for: email)) { label in
                     Button {
                       Task { await model.toggleLabel(label) }
                     } label: {
                       let isApplied = email.labels.contains(where: { $0.id == label.id })
-                      Label(label.name, systemImage: isApplied ? "checkmark.circle.fill" : "circle")
+                      Label(label.name, systemImage: isApplied ? "checkmark.circle.fill" : label.systemImage)
                     }
                   }
                 }
@@ -1592,8 +1593,33 @@ private enum HTMLMailDocument {
       with: "",
       options: regexOptions
     )
+    document = clampPixelCSSProperty("font-size", in: document, maximum: 34)
 
     return document
+  }
+
+  private static func clampPixelCSSProperty(_ property: String, in html: String, maximum: Double) -> String {
+    let escapedProperty = NSRegularExpression.escapedPattern(for: property)
+    let pattern = #"(?i)(\b\#(escapedProperty)\s*:\s*)(\d+(?:\.\d+)?)(px\b)"#
+
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return html }
+
+    let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
+    let matches = regex.matches(in: html, range: nsRange).reversed()
+    var result = html
+
+    for match in matches {
+      guard
+        match.numberOfRanges >= 4,
+        let valueRange = Range(match.range(at: 2), in: result),
+        let value = Double(result[valueRange]),
+        value > maximum
+      else { continue }
+
+      result.replaceSubrange(valueRange, with: String(Int(maximum)))
+    }
+
+    return result
   }
 
   private static func injectStyle(into html: String, prefersMobileLayout: Bool) -> String {
@@ -1669,8 +1695,13 @@ private enum HTMLMailDocument {
       max-width: 100% !important;
     }
     table {
-      width: 100% !important;
+      max-width: 100% !important;
       border-collapse: collapse;
+    }
+    body > table,
+    body > center > table,
+    table[width="100%"] {
+      width: 100% !important;
     }
     td, th {
       overflow-wrap: anywhere !important;
@@ -1681,7 +1712,13 @@ private enum HTMLMailDocument {
     }
     img, video, canvas, iframe {
       max-width: 100% !important;
+      max-height: 760px !important;
       height: auto !important;
+      object-fit: contain !important;
+    }
+    svg {
+      max-width: 100% !important;
+      max-height: 760px !important;
     }
     pre, code, .plain-text {
       white-space: pre-wrap;
@@ -1694,41 +1731,7 @@ private enum HTMLMailDocument {
       border-left: 3px solid var(--mail-border);
       color: var(--mail-muted);
     }
-    a { color: var(--mail-link); }
-    @media (prefers-color-scheme: dark) {
-      body,
-      body :not(img):not(video):not(canvas):not(svg):not(path):not([fill]) {
-        color: var(--mail-fg) !important;
-      }
-      body,
-      body div,
-      body section,
-      body article,
-      body main,
-      body header,
-      body footer,
-      body table,
-      body tbody,
-      body thead,
-      body tfoot,
-      body tr,
-      body td,
-      body th,
-      body p,
-      body span {
-        background-color: transparent !important;
-      }
-      body a,
-      body a * {
-        color: var(--mail-link) !important;
-      }
-      body [style*="border"],
-      body table,
-      body td,
-      body th {
-        border-color: var(--mail-border) !important;
-      }
-    }
+    :where(a) { color: var(--mail-link); }
     \(prefersMobileLayout ? mobileLayoutStyle : "")
   </style>
   """

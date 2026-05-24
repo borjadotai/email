@@ -59,6 +59,7 @@ struct MailLabel: Codable, Identifiable, Hashable {
   var accountEmail: String?
   var name: String
   var color: String
+  var icon: String?
   var isSystem: Bool
 }
 

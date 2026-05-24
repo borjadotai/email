@@ -320,6 +320,73 @@ test("filters message lists by mailbox role", () => {
   }
 });
 
+test("creates editable global labels and filters across accounts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const gmail = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const icloud = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person iCloud"
+    });
+    const gmailInbox = store.mailboxForRole(gmail.id, "inbox");
+    const icloudInbox = store.mailboxForRole(icloud.id, "inbox");
+    const gmailEmail = store.upsertProviderEmail(testProviderEmail({
+      id: "global-label-gmail",
+      accountId: gmail.id,
+      mailboxId: gmailInbox.id,
+      providerUID: "provider-global-label-gmail",
+      senderName: "Gmail Sender",
+      senderEmail: "gmail@example.com",
+      receivedAt: "2026-05-23T10:00:00.000Z"
+    }));
+    const icloudEmail = store.upsertProviderEmail(testProviderEmail({
+      id: "global-label-icloud",
+      accountId: icloud.id,
+      mailboxId: icloudInbox.id,
+      providerUID: "provider-global-label-icloud",
+      senderName: "iCloud Sender",
+      senderEmail: "icloud@example.com",
+      receivedAt: "2026-05-23T11:00:00.000Z"
+    }));
+
+    const label = store.createLabel({ name: "Follow Up", color: "teal", icon: "flag" });
+    assert.equal(label.accountId, null);
+    assert.equal(label.color, "teal");
+    assert.equal(label.icon, "flag");
+
+    store.setEmailLabel(gmailEmail.id, label.id, "add");
+    store.setEmailLabel(icloudEmail.id, label.id, "add");
+
+    assert.deepEqual(
+      store.listEmails({ labelId: label.id }).map(email => email.id),
+      [icloudEmail.id, gmailEmail.id]
+    );
+    assert.equal(store.getEmail(gmailEmail.id).labels[0].icon, "flag");
+
+    const updated = store.updateLabel(label.id, { name: "Waiting", color: "purple", icon: "clock" });
+    assert.equal(updated.name, "Waiting");
+    assert.equal(updated.color, "purple");
+    assert.equal(updated.icon, "clock");
+    assert.equal(store.getEmail(gmailEmail.id).labels[0].name, "Waiting");
+
+    const accountLabel = store.createLabel({ accountId: gmail.id, name: "Gmail Only", color: "blue", icon: "tag" });
+    assert.throws(
+      () => store.setEmailLabel(icloudEmail.id, accountLabel.id, "add"),
+      /different account/u
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("reclassifies only same-account inbox messages as sent", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
