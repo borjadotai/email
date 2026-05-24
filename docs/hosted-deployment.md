@@ -68,6 +68,12 @@ EOF
 npm run deploy:fly -- --env-file .env.fly
 ```
 
+Check readiness without changing Fly first:
+
+```sh
+npm run check:hosted -- --env-file .env.fly
+```
+
 `npm run deploy:fly` creates the Fly app when needed, stages secrets without
 printing them, deploys the Docker image, and checks `/api/health`. On later
 deploys you can pass `-- --skip-create`; use `-- --stage-only` to stage secrets
