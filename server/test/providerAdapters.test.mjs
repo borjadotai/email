@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ProviderService } from "../src/providerAdapters.js";
+import { ProviderService, plainSnippet } from "../src/providerAdapters.js";
 import { MemorySecretStore } from "../src/secretStore.js";
 import { MailStore } from "../src/store.js";
 
@@ -60,4 +60,24 @@ test("classifies sent messages by the synced account identity", () => {
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("extracts email snippets from visible HTML body content", () => {
+  const html = `
+    <!doctype html>
+    <html>
+      <head>
+        <title>Order metadata title</title>
+        <meta content="not preview content">
+        <style>.hidden { display: none; }</style>
+      </head>
+      <body>
+        <div style="display:none">Hidden preheader text</div>
+        <p>Your order is ready.</p>
+        <p>It ships tomorrow.</p>
+      </body>
+    </html>
+  `;
+
+  assert.equal(plainSnippet(html), "Your order is ready. It ships tomorrow.");
 });

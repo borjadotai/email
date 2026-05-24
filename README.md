@@ -70,6 +70,34 @@ Server logs are written to:
 ~/Library/Logs/EmailApp/server.error.log
 ```
 
+### Background Polling
+
+The apps poll the server every five minutes while they are running. On iOS, the
+app also schedules a `BGAppRefreshTask` when it goes into the background; iOS
+chooses the actual wake time, so this is best-effort rather than exact. When a
+background poll imports new unread inbox mail, the app shows a local
+notification that opens the message.
+
+### Push Notifications
+
+Remote APNs notifications are optional future plumbing. The server can store
+active tokens from `POST /api/push/tokens` and send a push when a sync imports
+new unread inbox mail.
+
+Required server settings:
+
+```sh
+APNS_KEY_ID=
+APNS_TEAM_ID=
+APNS_PRIVATE_KEY_PATH=/absolute/path/AuthKey_XXXXXXXXXX.p8
+APNS_ENVIRONMENT=development
+APNS_IOS_TOPIC=com.borjadotai.email.ios
+APNS_MACOS_TOPIC=com.borjadotai.email.mac
+```
+
+The Apple Developer account must have Push Notifications enabled for both bundle
+IDs, and the installed app must be signed with the `aps-environment` entitlement.
+
 ## Add Accounts
 
 ### Gmail

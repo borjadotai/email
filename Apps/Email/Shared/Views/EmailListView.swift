@@ -22,9 +22,16 @@ struct EmailListView: View {
         Button {
           Task { await model.refreshVisibleMail() }
         } label: {
-          Image(systemName: "arrow.clockwise")
+          if model.isRefreshingMail {
+            ProgressView()
+              .controlSize(.small)
+          } else {
+            Image(systemName: "arrow.clockwise")
+          }
         }
+        .disabled(model.isRefreshingMail)
         .help("Refresh")
+        .accessibilityLabel(model.isRefreshingMail ? "Refreshing mail" : "Refresh")
 
         Button(action: onCompose) {
           Image(systemName: "square.and.pencil")
@@ -54,6 +61,17 @@ struct EmailListView: View {
       .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 6, trailing: 0))
       .listRowSeparator(.hidden)
       .listRowBackground(Color.clear)
+
+      if model.isRefreshingMail {
+        IOSRefreshStatusRow(
+          scopeTitle: refreshScopeTitle,
+          startedAt: model.refreshStartedAt
+        )
+        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 10, trailing: 18))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .transition(.move(edge: .top).combined(with: .opacity))
+      }
 
       if model.isLoading && model.emails.isEmpty {
         ProgressView()
@@ -101,6 +119,7 @@ struct EmailListView: View {
     .scrollContentBackground(.hidden)
     .background(.background)
     .animation(.snappy(duration: 0.24), value: filteredEmails.map(\.id))
+    .animation(.snappy(duration: 0.2), value: model.isRefreshingMail)
     .mailPullToRefresh(model)
     .navigationBarTitleDisplayMode(.inline)
   }
@@ -119,6 +138,7 @@ struct EmailListView: View {
           ForEach(model.emails) { email in
             EmailRow(email: email)
               .tag(email.id)
+              .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 14))
               .contentShape(Rectangle())
               .transition(.asymmetric(
                 insertion: .opacity,
@@ -152,6 +172,7 @@ struct EmailListView: View {
   }
 
   private func select(_ email: EmailSummary) {
+    model.beginSelectingEmail(id: email.id)
     onShowDetail()
     Task {
       await model.selectEmail(email)
@@ -180,6 +201,15 @@ struct EmailListView: View {
 
   private var iOSInboxTitle: String {
     "Inbox"
+  }
+
+  private var refreshScopeTitle: String {
+    if let syncingAccountID = model.syncingAccountID,
+       let account = model.accounts.first(where: { $0.id == syncingAccountID }) {
+      return account.displayName
+    }
+
+    return model.navigationTitle
   }
 
   private var emptyTitle: String {
@@ -356,6 +386,52 @@ private struct IOSInboxHeader: View {
   }
 }
 
+private struct IOSRefreshStatusRow: View {
+  var scopeTitle: String
+  var startedAt: Date?
+
+  var body: some View {
+    TimelineView(.periodic(from: startedAt ?? Date(), by: 1)) { timeline in
+      HStack(spacing: 10) {
+        ProgressView()
+          .controlSize(.small)
+          .frame(width: 20, height: 20)
+
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Refreshing \(scopeTitle)")
+            .font(.system(size: 14.5, weight: .semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+
+          Text(elapsedText(now: timeline.date))
+            .font(.system(size: 13))
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .lineLimit(1)
+        }
+
+        Spacer(minLength: 8)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Refreshing \(scopeTitle)")
+      .accessibilityValue(elapsedText(now: timeline.date))
+    }
+  }
+
+  private func elapsedText(now: Date) -> String {
+    let startedAt = startedAt ?? now
+    let elapsedSeconds = max(0, Int(now.timeIntervalSince(startedAt)))
+    let minutes = elapsedSeconds / 60
+    let seconds = elapsedSeconds % 60
+    let paddedSeconds = seconds < 10 ? "0\(seconds)" : "\(seconds)"
+    return "\(minutes):\(paddedSeconds) elapsed"
+  }
+}
+
 private struct IOSDateSectionHeader: View {
   var title: String
   var topPadding: CGFloat
@@ -388,20 +464,19 @@ private struct IOSMailRow: View {
       )
 
       VStack(alignment: .leading, spacing: 2) {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-          if !email.isRead {
-            Circle()
-              .fill(Color.accentColor)
-              .frame(width: 9, height: 9)
-              .alignmentGuide(.firstTextBaseline) { dimensions in
-                dimensions[VerticalAlignment.center]
-              }
-          }
+        HStack(alignment: .center, spacing: 8) {
+          HStack(alignment: .center, spacing: 6) {
+            if !email.isRead {
+              Circle()
+                .fill(Color.accentColor)
+                .frame(width: 9, height: 9)
+            }
 
-          Text(email.senderName)
-            .font(.system(size: 16.5, weight: email.isRead ? .semibold : .bold))
-            .foregroundStyle(.primary)
-            .lineLimit(1)
+            Text(email.senderName)
+              .font(.system(size: 16.5, weight: email.isRead ? .semibold : .bold))
+              .foregroundStyle(.primary)
+              .lineLimit(1)
+          }
 
           Spacer(minLength: 8)
 

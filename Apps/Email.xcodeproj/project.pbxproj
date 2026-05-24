@@ -12,6 +12,7 @@
 		100000000000000000000103 /* Services/MailAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* Services/MailAPIClient.swift */; };
 		100000000000000000000120 /* Services/LocalServerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000212 /* Services/LocalServerController.swift */; };
 		100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* Services/SoftwareUpdateController.swift */; };
+		100000000000000000000125 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
 		100000000000000000000104 /* Stores/AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000204 /* Stores/AppModel.swift */; };
 		100000000000000000000105 /* Support/Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000205 /* Support/Formatters.swift */; };
 		100000000000000000000106 /* Views/AvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000206 /* Views/AvatarView.swift */; };
@@ -39,6 +40,7 @@
 		10000000000000000000011C /* Views/ComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020C /* Views/ComposeView.swift */; };
 		10000000000000000000011D /* Views/AddAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020D /* Views/AddAccountView.swift */; };
 		10000000000000000000011E /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020E /* Views/SettingsView.swift */; };
+		100000000000000000000126 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
 		10000000000000000000011F /* ../Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020F /* ../Resources/Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -48,6 +50,7 @@
 		100000000000000000000203 /* Services/MailAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/MailAPIClient.swift; sourceTree = "<group>"; };
 		100000000000000000000212 /* Services/LocalServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalServerController.swift; sourceTree = "<group>"; };
 		100000000000000000000213 /* Services/SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SoftwareUpdateController.swift; sourceTree = "<group>"; };
+		100000000000000000000214 /* Services/PushNotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PushNotificationController.swift; sourceTree = "<group>"; };
 		100000000000000000000204 /* Stores/AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stores/AppModel.swift; sourceTree = "<group>"; };
 		100000000000000000000205 /* Support/Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Support/Formatters.swift; sourceTree = "<group>"; };
 		100000000000000000000206 /* Views/AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AvatarView.swift; sourceTree = "<group>"; };
@@ -116,6 +119,7 @@
 				100000000000000000000203 /* Services/MailAPIClient.swift */,
 				100000000000000000000212 /* Services/LocalServerController.swift */,
 				100000000000000000000213 /* Services/SoftwareUpdateController.swift */,
+				100000000000000000000214 /* Services/PushNotificationController.swift */,
 				100000000000000000000204 /* Stores/AppModel.swift */,
 				100000000000000000000205 /* Support/Formatters.swift */,
 				100000000000000000000206 /* Views/AvatarView.swift */,
@@ -241,6 +245,7 @@
 				100000000000000000000103 /* Services/MailAPIClient.swift in Sources */,
 				100000000000000000000120 /* Services/LocalServerController.swift in Sources */,
 				100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */,
+				100000000000000000000125 /* Services/PushNotificationController.swift in Sources */,
 				100000000000000000000104 /* Stores/AppModel.swift in Sources */,
 				100000000000000000000105 /* Support/Formatters.swift in Sources */,
 				100000000000000000000106 /* Views/AvatarView.swift in Sources */,
@@ -262,6 +267,7 @@
 				100000000000000000000111 /* App/EmailApp.swift in Sources */,
 				100000000000000000000112 /* Models/MailModels.swift in Sources */,
 				100000000000000000000113 /* Services/MailAPIClient.swift in Sources */,
+				100000000000000000000126 /* Services/PushNotificationController.swift in Sources */,
 				100000000000000000000114 /* Stores/AppModel.swift in Sources */,
 				100000000000000000000115 /* Support/Formatters.swift in Sources */,
 				100000000000000000000116 /* Views/AvatarView.swift in Sources */,
@@ -489,7 +495,7 @@
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				EMAIL_DEFAULT_SERVER_URL = "http://127.0.0.1:7331";
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Email/Resources/Info.plist;
+				INFOPLIST_FILE = "Email/Resources/Info-iOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Email;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -521,7 +527,7 @@
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				EMAIL_DEFAULT_SERVER_URL = "http://127.0.0.1:7331";
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Email/Resources/Info.plist;
+				INFOPLIST_FILE = "Email/Resources/Info-iOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Email;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;

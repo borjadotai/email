@@ -3,6 +3,11 @@ import SwiftUI
 @main
 struct EmailApp: App {
   @State private var model = AppModel()
+  #if os(iOS)
+  @UIApplicationDelegateAdaptor(EmailAppDelegate.self) private var appDelegate
+  #elseif os(macOS)
+  @NSApplicationDelegateAdaptor(EmailMacAppDelegate.self) private var appDelegate
+  #endif
   #if os(macOS)
   @State private var localServer = LocalServerController()
   @State private var softwareUpdateController = SoftwareUpdateController()
@@ -13,10 +18,18 @@ struct EmailApp: App {
       RootView(prepareForBootstrap: prepareForBootstrap)
         .environment(model)
         .preferredColorScheme(model.colorScheme)
+        .task {
+          await PushNotificationController.shared.start(model: model)
+        }
         #if os(macOS)
         .frame(minWidth: 1040, minHeight: 680)
         #endif
     }
+    #if os(iOS)
+    .backgroundTask(.appRefresh(BackgroundMailRefreshController.taskIdentifier)) {
+      await BackgroundMailRefreshController.shared.handleAppRefresh(model: model)
+    }
+    #endif
     #if os(macOS)
     .commands {
       SoftwareUpdateCommands(updater: softwareUpdateController)

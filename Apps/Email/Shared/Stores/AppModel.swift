@@ -30,6 +30,8 @@ final class AppModel {
   var selectedLabelID: String?
   var searchText: String = ""
   var isLoading = false
+  var isRefreshingMail = false
+  var refreshStartedAt: Date?
   var isSending = false
   var isConnectingAccount = false
   var syncingAccountID: String?
@@ -46,6 +48,7 @@ final class AppModel {
   var composeRequestCount = 0
   var composeDraft: ComposeDraft?
   var settingsRequestCount = 0
+  var notificationNavigationRequestCount = 0
   var isSearchPresented = false
   var isArchiving = false
   var pendingArchive: PendingArchiveNotification?
@@ -75,6 +78,7 @@ final class AppModel {
 
   private var hasBootstrapped = false
   @ObservationIgnored private var pendingArchiveTask: Task<Void, Never>?
+  @ObservationIgnored private var isAutoPollingMail = false
 
   init() {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
@@ -131,7 +135,7 @@ final class AppModel {
     await refreshAll()
   }
 
-  func refreshAll() async {
+  func refreshAll(reportErrors: Bool = true) async {
     isLoading = true
     defer { isLoading = false }
 
@@ -144,7 +148,9 @@ final class AppModel {
       labels = try await apiClient.labels()
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      if reportErrors {
+        errorMessage = error.localizedDescription
+      }
     }
   }
 
@@ -161,9 +167,15 @@ final class AppModel {
       .filter { $0.id != pendingArchiveID }
 
     if let selectedEmailID, emails.contains(where: { $0.id == selectedEmailID }) {
-      selectedEmail = try? await apiClient.email(id: selectedEmailID)
-      if let selectedEmail {
-        conversationEmails = (try? await apiClient.thread(emailId: selectedEmail.id)) ?? [selectedEmail]
+      if let loadedEmail = try? await apiClient.email(id: selectedEmailID) {
+        guard self.selectedEmailID == selectedEmailID else { return }
+        selectedEmail = loadedEmail
+        let loadedConversation = (try? await apiClient.thread(emailId: loadedEmail.id)) ?? [loadedEmail]
+        guard self.selectedEmailID == selectedEmailID else { return }
+        conversationEmails = loadedConversation
+      } else if self.selectedEmailID == selectedEmailID {
+        selectedEmail = nil
+        conversationEmails = []
       }
     } else {
       selectedEmailID = nil
@@ -181,13 +193,21 @@ final class AppModel {
   }
 
   func refreshVisibleMail() async {
+    guard !isRefreshingMail else { return }
+    isRefreshingMail = true
+    refreshStartedAt = Date()
     let accountIds = visibleAccountIDsForRefresh()
+    defer {
+      isRefreshingMail = false
+      refreshStartedAt = nil
+      syncingAccountID = nil
+    }
+
     if accountIds.isEmpty {
       await refreshAll()
       return
     }
 
-    defer { syncingAccountID = nil }
     var syncErrors: [String] = []
     for accountId in accountIds {
       syncingAccountID = accountId
@@ -205,6 +225,46 @@ final class AppModel {
       statusMessage = "Mail refreshed"
     }
     await refreshAll()
+  }
+
+  func pollAllMailForNewEmails() async -> [String] {
+    guard !isRefreshingMail, !isAutoPollingMail else { return [] }
+    isAutoPollingMail = true
+    defer { isAutoPollingMail = false }
+
+    if accounts.isEmpty {
+      await refreshAll(reportErrors: false)
+    }
+
+    let accountIDs = accounts.map(\.id)
+    guard !accountIDs.isEmpty else { return [] }
+
+    var newEmailIDs: [String] = []
+    for accountID in accountIDs {
+      do {
+        let result = try await apiClient.syncAccount(id: accountID, limit: 50)
+        newEmailIDs.append(contentsOf: result.newEmailIds ?? [])
+      } catch {
+        continue
+      }
+    }
+
+    await refreshAll(reportErrors: false)
+    return uniqueEmailIDs(newEmailIDs)
+  }
+
+  func emailDetails(for ids: [String]) async -> [EmailDetail] {
+    var details: [EmailDetail] = []
+    for id in uniqueEmailIDs(ids) {
+      do {
+        let detail = try await apiClient.email(id: id)
+        guard !detail.isRead, detail.mailboxRole == "inbox" else { continue }
+        details.append(detail)
+      } catch {
+        continue
+      }
+    }
+    return details
   }
 
   func checkHealth() async {
@@ -245,17 +305,53 @@ final class AppModel {
   }
 
   func selectEmail(_ summary: EmailSummary) async {
-    selectedEmailID = summary.id
+    await selectEmail(id: summary.id)
+  }
+
+  func beginSelectingEmail(id: String) {
+    selectedEmailID = id
+    if selectedEmail?.id != id {
+      selectedEmail = nil
+      conversationEmails = []
+    }
+  }
+
+  func selectEmail(id: String) async {
+    beginSelectingEmail(id: id)
     do {
-      var detail = try await apiClient.email(id: summary.id)
+      var detail = try await apiClient.email(id: id)
+      guard selectedEmailID == id else { return }
+
       if !detail.isRead {
         detail = try await apiClient.updateEmail(id: detail.id, isRead: true)
-        await refreshAll()
+        guard selectedEmailID == id else { return }
+        await refreshAll(reportErrors: false)
+        guard selectedEmailID == id else { return }
       }
+
       selectedEmail = detail
-      conversationEmails = try await apiClient.thread(emailId: detail.id)
+      conversationEmails = [detail]
+
+      do {
+        let thread = try await apiClient.thread(emailId: detail.id)
+        guard selectedEmailID == id else { return }
+        conversationEmails = thread
+      } catch {
+        guard selectedEmailID == id else { return }
+        conversationEmails = [detail]
+      }
     } catch {
+      guard selectedEmailID == id else { return }
       errorMessage = error.localizedDescription
+      selectedEmail = nil
+      conversationEmails = []
+    }
+  }
+
+  func openEmailFromNotification(id: String) async {
+    await selectEmail(id: id)
+    if selectedEmailID == id {
+      notificationNavigationRequestCount += 1
     }
   }
 
@@ -737,6 +833,11 @@ final class AppModel {
     }
 
     return accounts.map(\.id)
+  }
+
+  private func uniqueEmailIDs(_ ids: [String]) -> [String] {
+    var seen = Set<String>()
+    return ids.filter { seen.insert($0).inserted }
   }
 }
 

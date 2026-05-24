@@ -1,5 +1,6 @@
 .DS_Store
 .env
+AuthKey_*.p8
 node_modules/
 
 # Local server state

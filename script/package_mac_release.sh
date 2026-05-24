@@ -144,6 +144,7 @@ else
 fi
 
 echo "Signing final bundle with $SIGNING_DESCRIPTION"
+
 sign_macho_files() {
   local root="$1"
   if [[ ! -d "$root" ]]; then

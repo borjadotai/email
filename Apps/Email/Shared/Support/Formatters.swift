@@ -67,10 +67,15 @@ extension String {
   }
 
   var htmlPlainText: String {
-    replacingOccurrences(of: #"(?is)<(script|style)\b[^>]*>.*?</\1>"#, with: " ", options: .regularExpression)
+    visibleHTMLContent
+      .replacingOccurrences(of: #"(?is)<([a-z][\w:-]*)\b[^>]*(display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all)[^>]*>.*?</\1>"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"(?i)<[^>]*(display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all)[^>]*/?>"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"(?is)<(script|style|noscript|template|svg)\b[^>]*>.*?</\1>"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"(?is)<title\b[^>]*>.*?</title>"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"(?i)<(meta|link|base)\b[^>]*(>|$)"#, with: " ", options: .regularExpression)
       .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
       .replacingOccurrences(of: #"(?i)</p\s*>|</div\s*>|</li\s*>|</h[1-6]\s*>"#, with: "\n", options: .regularExpression)
-      .replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"(?i)</?[a-z!][^>\n]*(>|$)"#, with: " ", options: .regularExpression)
       .htmlEntityDecoded
       .replacingOccurrences(of: #"[ \t\f\r]+"#, with: " ", options: .regularExpression)
       .replacingOccurrences(of: #"\n\s*\n\s*\n+"#, with: "\n\n", options: .regularExpression)
@@ -88,10 +93,28 @@ extension String {
 
   var mailPreviewText: String {
     let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.range(of: #"<[a-z!/][^>]*>"#, options: [.caseInsensitive, .regularExpression]) != nil else {
+    guard trimmed.range(of: #"<[a-z!/][^>]*(>|$)"#, options: [.caseInsensitive, .regularExpression]) != nil else {
       return trimmed
     }
     return trimmed.htmlPlainText
+  }
+
+  private var visibleHTMLContent: String {
+    if let body = firstRegexCapture(#"(?is)<body\b[^>]*>(.*?)</body>"#) {
+      return body
+    }
+    return replacingOccurrences(of: #"(?is)<head\b[^>]*>.*?</head>"#, with: " ", options: .regularExpression)
+  }
+
+  private func firstRegexCapture(_ pattern: String) -> String? {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let range = NSRange(startIndex..., in: self)
+    guard
+      let match = regex.firstMatch(in: self, range: range),
+      match.numberOfRanges > 1,
+      let captureRange = Range(match.range(at: 1), in: self)
+    else { return nil }
+    return String(self[captureRange])
   }
 }
 

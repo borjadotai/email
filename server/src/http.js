@@ -4,13 +4,13 @@ import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 
-export function createServer({ store, providers, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
+export function createServer({ store, providers, pushNotifications, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
   const baseURL = publicBaseURL ?? `http://${host}:${port}`;
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, providers, events, baseURL });
+      await route({ req, res, store, providers, pushNotifications, events, baseURL });
     } catch (error) {
       const status = error.status ?? 500;
       console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
@@ -29,7 +29,7 @@ export function createServer({ store, providers, host = "127.0.0.1", port = 7331
   return { server, events };
 }
 
-async function route({ req, res, store, providers, events, baseURL }) {
+async function route({ req, res, store, providers, pushNotifications, events, baseURL }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
 
@@ -70,6 +70,15 @@ async function route({ req, res, store, providers, events, baseURL }) {
     return;
   }
 
+  if (req.method === "POST" && path === "/api/push/tokens") {
+    const token = store.registerPushToken(await readJSON(req));
+    sendJSON(res, 201, {
+      token,
+      pushConfigured: Boolean(pushNotifications?.isConfigured)
+    });
+    return;
+  }
+
   if (req.method === "POST" && path === "/api/auth/gmail/start") {
     requireProviders(providers);
     console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);
@@ -94,7 +103,7 @@ async function route({ req, res, store, providers, events, baseURL }) {
     console.log(`${new Date().toISOString()} iCloud connected email=${redactEmail(result.account.email)} imported=${result.sync.imported}`);
     events.emit("accounts.changed", { accountId: result.account.id });
     events.emit("emails.changed", { accountId: result.account.id });
-    sendJSON(res, 200, result);
+    sendJSON(res, 200, { ...result, sync: publicSyncResult(result.sync) });
     return;
   }
 
@@ -123,7 +132,8 @@ async function route({ req, res, store, providers, events, baseURL }) {
       limit: body.limit
     });
     events.emit("emails.changed", { accountId: accountSyncMatch[1] });
-    sendJSON(res, 200, { sync });
+    await sendPushNotifications(pushNotifications, sync.newEmails);
+    sendJSON(res, 200, { sync: publicSyncResult(sync) });
     return;
   }
 
@@ -358,6 +368,23 @@ function sendCORS(res) {
 
 function requireProviders(providers) {
   if (!providers) throw httpError(500, "Provider services are not configured.");
+}
+
+function publicSyncResult(sync = {}) {
+  const { newEmails, ...publicSync } = sync;
+  return publicSync;
+}
+
+async function sendPushNotifications(pushNotifications, newEmails = []) {
+  if (!pushNotifications || !Array.isArray(newEmails) || newEmails.length === 0) return;
+  try {
+    const result = await pushNotifications.sendNewEmailNotifications(newEmails);
+    if (result.sent > 0) {
+      console.log(`${new Date().toISOString()} push notifications sent=${result.sent}`);
+    }
+  } catch (error) {
+    console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);
+  }
 }
 
 function authSuccessPage(result) {

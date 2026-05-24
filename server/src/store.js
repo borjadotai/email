@@ -175,6 +175,21 @@ export class MailStore {
         UNIQUE(account_id, scope, value)
       );
 
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        id TEXT PRIMARY KEY,
+        token TEXT NOT NULL,
+        platform TEXT NOT NULL CHECK (platform IN ('ios', 'macos')),
+        bundle_id TEXT NOT NULL,
+        environment TEXT NOT NULL CHECK (environment IN ('development', 'production')),
+        device_name TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        disabled_at TEXT,
+        failure_reason TEXT,
+        UNIQUE(token, bundle_id, environment)
+      );
+
       CREATE VIRTUAL TABLE IF NOT EXISTS email_fts USING fts5(
         email_id UNINDEXED,
         account_id UNINDEXED,
@@ -193,6 +208,8 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
       CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
       CREATE INDEX IF NOT EXISTS idx_blocked_senders_account ON blocked_senders(account_id, scope, value);
+      CREATE INDEX IF NOT EXISTS idx_push_tokens_active ON push_tokens(platform, bundle_id, environment)
+        WHERE disabled_at IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
         ON emails(account_id, provider_uid)
         WHERE provider_uid IS NOT NULL;
@@ -993,6 +1010,80 @@ export class MailStore {
     `).all(...args);
   }
 
+  registerPushToken(input = {}) {
+    const token = normalizePushToken(input.token);
+    const platform = normalizePushPlatform(input.platform);
+    const bundleId = requiredString(input.bundleId ?? input.bundleID, "bundleId");
+    const environment = normalizePushEnvironment(input.environment);
+    const deviceName = optionalString(input.deviceName);
+    const now = new Date().toISOString();
+    const id = randomUUID();
+
+    this.db.prepare(`
+      INSERT INTO push_tokens (
+        id, token, platform, bundle_id, environment, device_name,
+        created_at, updated_at, last_seen_at, disabled_at, failure_reason
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+      ON CONFLICT(token, bundle_id, environment) DO UPDATE SET
+        platform = excluded.platform,
+        device_name = excluded.device_name,
+        updated_at = excluded.updated_at,
+        last_seen_at = excluded.last_seen_at,
+        disabled_at = NULL,
+        failure_reason = NULL
+    `).run(id, token, platform, bundleId, environment, deviceName, now, now, now);
+
+    return this.db.prepare(`
+      SELECT id, token, platform, bundle_id AS bundleId, environment,
+             device_name AS deviceName, created_at AS createdAt,
+             updated_at AS updatedAt, last_seen_at AS lastSeenAt,
+             disabled_at AS disabledAt, failure_reason AS failureReason
+      FROM push_tokens
+      WHERE token = ? AND bundle_id = ? AND environment = ?
+    `).get(token, bundleId, environment);
+  }
+
+  listPushTokens(filters = {}) {
+    const where = ["disabled_at IS NULL"];
+    const args = [];
+
+    if (filters.platform) {
+      where.push("platform = ?");
+      args.push(normalizePushPlatform(filters.platform));
+    }
+    if (filters.environment) {
+      where.push("environment = ?");
+      args.push(normalizePushEnvironment(filters.environment));
+    }
+
+    return this.db.prepare(`
+      SELECT id, token, platform, bundle_id AS bundleId, environment,
+             device_name AS deviceName, created_at AS createdAt,
+             updated_at AS updatedAt, last_seen_at AS lastSeenAt
+      FROM push_tokens
+      WHERE ${where.join(" AND ")}
+      ORDER BY updated_at DESC
+    `).all(...args);
+  }
+
+  disablePushToken(id, reason = "disabled") {
+    this.db.prepare(`
+      UPDATE push_tokens
+      SET disabled_at = ?, failure_reason = ?
+      WHERE id = ?
+    `).run(new Date().toISOString(), String(reason), id);
+  }
+
+  inboxUnreadCount() {
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(unread_count), 0) AS count
+      FROM mailboxes
+      WHERE role = 'inbox'
+    `).get();
+    return row.count ?? 0;
+  }
+
   blockSenderForEmail(emailId, scope) {
     const email = this.getEmail(emailId);
     if (!email) return null;
@@ -1471,12 +1562,12 @@ export class MailStore {
       }
       this.refreshMailboxUnread(existing.mailboxId);
       this.refreshMailboxUnread(resolvedEmail.mailboxId);
-      return this.getEmail(existing.id);
+      return { ...this.getEmail(existing.id), wasNew: false };
     }
 
     this.insertEmail(resolvedEmail);
     this.refreshMailboxUnread(resolvedEmail.mailboxId);
-    return this.getEmail(resolvedEmail.id);
+    return { ...this.getEmail(resolvedEmail.id), wasNew: true };
   }
 
   insertEmailFTS(email) {
@@ -1623,6 +1714,28 @@ function normalizeEmailAddress(value, name) {
     throw httpError(400, `${name} must be an email address.`);
   }
   return email;
+}
+
+function normalizePushToken(value) {
+  const token = requiredString(value, "token").toLowerCase();
+  if (!/^[a-f0-9]{32,}$/u.test(token)) {
+    throw httpError(400, "token must be a hex APNs device token.");
+  }
+  return token;
+}
+
+function normalizePushPlatform(value) {
+  if (value !== "ios" && value !== "macos") {
+    throw httpError(400, "platform must be ios or macos.");
+  }
+  return value;
+}
+
+function normalizePushEnvironment(value) {
+  if (value !== "development" && value !== "production") {
+    throw httpError(400, "environment must be development or production.");
+  }
+  return value;
 }
 
 function normalizeEmailForComparison(value) {

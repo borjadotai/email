@@ -18,8 +18,11 @@ struct RootView: View {
   var prepareForBootstrap: (() async -> Void)?
 
   @Environment(AppModel.self) private var model
+  @Environment(\.scenePhase) private var scenePhase
   @State private var sheet: AppSheet?
   @State private var searchTask: Task<Void, Never>?
+  @State private var mailPollingTask: Task<Void, Never>?
+  @State private var mailPollingShouldNotify = false
   @State private var preferredCompactColumn: NavigationSplitViewColumn = .content
 
   var body: some View {
@@ -46,6 +49,7 @@ struct RootView: View {
         await prepareForBootstrap()
       }
       await model.bootstrap()
+      configureMailPolling(for: scenePhase)
     }
     .onSubmit(of: .search) {
       Task { await model.refreshEmails() }
@@ -63,6 +67,15 @@ struct RootView: View {
     }
     .onChange(of: model.settingsRequestCount) { _, _ in
       sheet = .settings
+    }
+    .onChange(of: model.notificationNavigationRequestCount) { _, _ in
+      preferredCompactColumn = .detail
+    }
+    .onChange(of: scenePhase) { _, newPhase in
+      configureMailPolling(for: newPhase)
+    }
+    .onDisappear {
+      stopMailPolling()
     }
     .archiveDeleteCommand(model)
     .overlay(alignment: .bottom) {
@@ -113,6 +126,45 @@ struct RootView: View {
         }
       }
     )
+  }
+
+  private func configureMailPolling(for phase: ScenePhase) {
+    #if os(iOS)
+    switch phase {
+    case .active:
+      startMailPolling(shouldNotify: false)
+    case .background:
+      stopMailPolling()
+      BackgroundMailRefreshController.shared.scheduleNextRefresh()
+    case .inactive:
+      stopMailPolling()
+    @unknown default:
+      startMailPolling(shouldNotify: false)
+    }
+    #else
+    startMailPolling(shouldNotify: phase != .active)
+    #endif
+  }
+
+  private func startMailPolling(shouldNotify: Bool) {
+    guard mailPollingTask == nil || mailPollingShouldNotify != shouldNotify else { return }
+    stopMailPolling()
+    mailPollingShouldNotify = shouldNotify
+    mailPollingTask = Task {
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(5 * 60))
+        guard !Task.isCancelled else { return }
+        let newEmailIDs = await model.pollAllMailForNewEmails()
+        guard shouldNotify else { continue }
+        let newEmails = await model.emailDetails(for: newEmailIDs)
+        await PushNotificationController.shared.notifyNewEmails(newEmails)
+      }
+    }
+  }
+
+  private func stopMailPolling() {
+    mailPollingTask?.cancel()
+    mailPollingTask = nil
   }
 }
 

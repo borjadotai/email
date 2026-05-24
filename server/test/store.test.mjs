@@ -750,6 +750,38 @@ test("blocks a sender domain and includes subdomains", () => {
   }
 });
 
+test("registers and refreshes push notification tokens", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const first = store.registerPushToken({
+      token: "a".repeat(64),
+      platform: "ios",
+      bundleId: "com.borjadotai.email.ios",
+      environment: "development",
+      deviceName: "Borja"
+    });
+    const updated = store.registerPushToken({
+      token: "a".repeat(64),
+      platform: "ios",
+      bundleId: "com.borjadotai.email.ios",
+      environment: "development",
+      deviceName: "Borja iPhone"
+    });
+
+    assert.equal(first.id, updated.id);
+    assert.equal(updated.deviceName, "Borja iPhone");
+    assert.equal(store.listPushTokens().length, 1);
+
+    store.disablePushToken(updated.id, "Unregistered");
+    assert.equal(store.listPushTokens().length, 0);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function testProviderEmail(overrides = {}) {
   return {
     id: overrides.id,

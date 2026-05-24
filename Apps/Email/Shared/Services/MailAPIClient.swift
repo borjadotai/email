@@ -239,6 +239,10 @@ struct MailAPIClient {
     try await request("api/messages/send", method: "POST", body: message)
   }
 
+  func registerPushToken(_ input: PushTokenRegistrationRequest) async throws -> PushTokenRegistrationResponse {
+    try await request("api/push/tokens", method: "POST", body: input)
+  }
+
   func downloadAttachment(emailId: String, attachmentId: String) async throws -> Data {
     let url = try attachmentDownloadURL(emailId: emailId, attachmentId: attachmentId)
     var request = URLRequest(url: url)

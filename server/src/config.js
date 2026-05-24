@@ -16,6 +16,15 @@ export function resolveConfig(env = process.env) {
     googleOAuthClientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET ?? "",
     initialSyncLimit: Number.parseInt(env.EMAIL_INITIAL_SYNC_LIMIT ?? "500", 10),
     seedDemo: env.EMAIL_SEED_DEMO === "1",
-    publicBaseURL: env.EMAIL_PUBLIC_BASE_URL
+    publicBaseURL: env.EMAIL_PUBLIC_BASE_URL,
+    apns: {
+      keyId: env.APNS_KEY_ID ?? "",
+      teamId: env.APNS_TEAM_ID ?? "",
+      privateKey: env.APNS_PRIVATE_KEY ?? "",
+      privateKeyPath: env.APNS_PRIVATE_KEY_PATH ?? "",
+      environment: env.APNS_ENVIRONMENT === "production" ? "production" : "development",
+      iosTopic: env.APNS_IOS_TOPIC ?? "com.borjadotai.email.ios",
+      macosTopic: env.APNS_MACOS_TOPIC ?? "com.borjadotai.email.mac"
+    }
   };
 }

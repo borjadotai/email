@@ -253,6 +253,7 @@ export class ProviderService {
     }
 
     let imported = 0;
+    const newEmails = [];
     let pageToken = undefined;
     do {
       const pageSize = Math.min(500, Math.max(1, limit - imported));
@@ -277,6 +278,9 @@ export class ProviderService {
           store: this.store,
           attachments: await gmailAttachmentsForMessage(gmail, message.data)
         }));
+        if (saved.wasNew) {
+          newEmails.push(saved);
+        }
         for (const labelId of message.data.labelIds ?? []) {
           const localLabelId = userLabels.get(labelId);
           if (localLabelId) {
@@ -296,7 +300,7 @@ export class ProviderService {
       gmailThreadsTotal: profile.data.threadsTotal ?? null
     });
 
-    return { provider: "gmail", imported };
+    return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
   }
 
   async syncICloudAccount(accountId, { limit = 100 } = {}) {
@@ -309,6 +313,7 @@ export class ProviderService {
     const client = createICloudIMAPClient(user, password);
 
     let imported = 0;
+    const newEmails = [];
     let syncMetadata = null;
     await client.connect();
     try {
@@ -337,7 +342,7 @@ export class ProviderService {
         }, syncWindow.fetchOptions)) {
           const parsed = await simpleParser(message.source);
           const mailbox = this.iCloudMailboxFor(account.id, parsed);
-          this.store.upsertProviderEmail(iCloudMessageToEmail({
+          const saved = this.store.upsertProviderEmail(iCloudMessageToEmail({
             account,
             parsed,
             message,
@@ -345,6 +350,9 @@ export class ProviderService {
             store: this.store,
             attachments: iCloudAttachmentsFromParsed(parsed)
           }));
+          if (saved.wasNew) {
+            newEmails.push(saved);
+          }
           if (Number.isInteger(message.uid) && message.uid > maxUID) {
             maxUID = message.uid;
           }
@@ -360,7 +368,7 @@ export class ProviderService {
     }
 
     this.store.markAccountSynced(account.id, syncMetadata);
-    return { provider: "icloud", imported };
+    return { provider: "icloud", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
   }
 
   async sendGmailMessage(account, email, input) {
@@ -931,17 +939,21 @@ function decodeBase64URL(value) {
   return Buffer.from(String(value).replaceAll("-", "+").replaceAll("_", "/"), "base64");
 }
 
-function plainSnippet(value) {
+export function plainSnippet(value) {
   const text = htmlToPlainText(value).replace(/\s+/gu, " ").trim();
   return text.slice(0, 180);
 }
 
 function htmlToPlainText(value) {
   if (typeof value !== "string") return "";
+  const html = visibleHTMLContent(value);
   return decodeHTMLEntities(
-    value
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
+    html
+      .replace(/<([a-z][\w:-]*)\b[^>]*(?:display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all)[^>]*>[\s\S]*?<\/\1>/giu, " ")
+      .replace(/<[^>]*(?:display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all)[^>]*\/?>/giu, " ")
+      .replace(/<(script|style|noscript|template|svg)\b[^>]*>[\s\S]*?<\/\1>/giu, " ")
+      .replace(/<title\b[^>]*>[\s\S]*?<\/title>/giu, " ")
+      .replace(/<(meta|link|base)\b[^>]*\/?>/giu, " ")
       .replace(/<br\s*\/?>/giu, "\n")
       .replace(/<\/(p|div|li|h[1-6])\s*>/giu, "\n")
       .replace(/<[^>]+>/gu, " ")
@@ -949,6 +961,12 @@ function htmlToPlainText(value) {
       .replace(/\n\s*\n\s*\n+/gu, "\n\n")
       .trim()
   );
+}
+
+function visibleHTMLContent(value) {
+  const bodyMatch = String(value).match(/<body\b[^>]*>([\s\S]*?)<\/body>/iu);
+  if (bodyMatch) return bodyMatch[1];
+  return String(value).replace(/<head\b[^>]*>[\s\S]*?<\/head>/giu, " ");
 }
 
 function decodeHTMLEntities(value) {

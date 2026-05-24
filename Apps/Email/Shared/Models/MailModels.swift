@@ -195,6 +195,7 @@ struct UpdateAccountSettingsRequest: Encodable {
 struct ProviderSyncResult: Codable, Hashable {
   var provider: String
   var imported: Int
+  var newEmailIds: [String]?
 }
 
 struct ProviderConnectResponse: Decodable {
@@ -204,6 +205,18 @@ struct ProviderConnectResponse: Decodable {
 
 struct SyncResponse: Decodable {
   var sync: ProviderSyncResult
+}
+
+struct PushTokenRegistrationRequest: Encodable {
+  var token: String
+  var platform: String
+  var bundleId: String
+  var environment: String
+  var deviceName: String?
+}
+
+struct PushTokenRegistrationResponse: Decodable {
+  var pushConfigured: Bool
 }
 
 struct SendMessageRequest: Encodable {

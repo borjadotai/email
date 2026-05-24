@@ -1,6 +1,7 @@
 import { resolveConfig } from "./config.js";
 import { createServer } from "./http.js";
 import { ProviderService } from "./providerAdapters.js";
+import { PushNotificationService } from "./pushNotifications.js";
 import { KeychainSecretStore } from "./secretStore.js";
 import { MailStore } from "./store.js";
 
@@ -16,9 +17,11 @@ const providers = new ProviderService({
   baseURL,
   secretStore: new KeychainSecretStore()
 });
+const pushNotifications = new PushNotificationService({ store, config });
 const { server } = createServer({
   store,
   providers,
+  pushNotifications,
   host: config.host,
   port: config.port,
   publicBaseURL: config.publicBaseURL
