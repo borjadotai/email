@@ -35,8 +35,10 @@ final class PushNotificationController: NSObject, UNUserNotificationCenterDelega
     do {
       _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
     } catch {
-      model.statusMessage = nil
-      model.errorMessage = "Notification permission failed: \(error.localizedDescription)"
+      // Notification authorization can fail for local unsigned/dev builds.
+      // Mail and hosted sign-in should still work, so keep this out of the
+      // user-facing error path.
+      print("Notification permission failed: \(error.localizedDescription)")
     }
   }
 

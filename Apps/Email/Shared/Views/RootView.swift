@@ -109,7 +109,7 @@ struct RootView: View {
           .environment(model)
       }
     }
-    .alert("Server unavailable", isPresented: errorBinding) {
+    .alert("Action failed", isPresented: errorBinding) {
       Button("OK") {
         model.errorMessage = nil
       }

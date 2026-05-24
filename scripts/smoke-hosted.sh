@@ -53,10 +53,10 @@ curl -fsS "$BASE_URL/api/ready" > "$ready_file"
 echo "Checking $BASE_URL/api/auth/settings..."
 curl -fsS "$BASE_URL/api/auth/settings" > "$settings_file"
 
-node --input-type=module - "$health_file" "$ready_file" "$settings_file" <<'NODE'
+node --input-type=module - "$health_file" "$ready_file" "$settings_file" "$BASE_URL" <<'NODE'
 import { readFileSync } from "node:fs";
 
-const [healthPath, readyPath, settingsPath] = process.argv.slice(2);
+const [healthPath, readyPath, settingsPath, baseURL] = process.argv.slice(2);
 const health = JSON.parse(readFileSync(healthPath, "utf8"));
 const ready = JSON.parse(readFileSync(readyPath, "utf8"));
 const settingsEnvelope = JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -79,10 +79,20 @@ if (!settings || settings.requireUserAuth !== true) {
 if (!settings.supabaseURL || !settings.supabasePublishableKey) {
   throw new Error("Hosted auth settings are missing Supabase public config.");
 }
+if (settings.gmailConfigured) {
+  const expectedRedirectURI = `${baseURL}/api/auth/gmail/callback`;
+  if (settings.gmailRedirectURI !== expectedRedirectURI) {
+    throw new Error(`Expected Gmail redirect URI ${expectedRedirectURI}, got ${settings.gmailRedirectURI}`);
+  }
+}
 
 console.log(`Health OK: storage=${health.storage ?? "unknown"}`);
 console.log(`Ready OK: checks=${Object.keys(ready.checks ?? {}).join(",")}`);
 console.log(`Auth OK: gmailConfigured=${Boolean(settings.gmailConfigured)}`);
+if (settings.gmailConfigured) {
+  console.log(`Gmail redirect URI: ${settings.gmailRedirectURI}`);
+  console.log("Google Console must list that exact URI as an Authorized redirect URI.");
+}
 NODE
 
 if [[ -n "${EMAIL_SMOKE_EMAIL:-}" || -n "${EMAIL_SMOKE_PASSWORD:-}" ]]; then

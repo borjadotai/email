@@ -98,6 +98,18 @@ The Google OAuth web redirect URI must be:
 https://YOUR_FLY_APP.fly.dev/api/auth/gmail/callback
 ```
 
+For the current production app, add this exact value to the Google OAuth client:
+
+```text
+https://dearly-email.fly.dev/api/auth/gmail/callback
+```
+
+The Google OAuth client must be an **OAuth client ID** with application type
+**Web application**. Put the callback above under **Authorized redirect URIs**.
+If the callback is missing, has a trailing slash, uses localhost, or belongs to
+a different OAuth client than the `GOOGLE_OAUTH_CLIENT_ID` stored in Fly, Google
+will reject Gmail connect with `Error 400: redirect_uri_mismatch`.
+
 For external users beyond a small test group, Gmail restricted scopes will need
 Google OAuth app verification.
 

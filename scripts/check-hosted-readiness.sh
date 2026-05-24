@@ -241,6 +241,10 @@ if [[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]] && ! is_placeholder_value "$SUPABAS
 fi
 
 echo
+echo "Google OAuth redirect URI to register:"
+echo "  ${BASE_URL%/}/api/auth/gmail/callback"
+echo "  Add this exact value to the Web application OAuth client's Authorized redirect URIs."
+echo
 echo "Next commands:"
 echo "  npm run deploy:fly -- --env-file .env.fly"
 echo "  npm run smoke:hosted -- --base-url $BASE_URL"
