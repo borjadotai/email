@@ -900,6 +900,55 @@ test("persists provider auth sessions for OAuth callbacks", () => {
   }
 });
 
+test("keeps attachment IDs when replacing remote metadata with downloaded bytes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "alice@gmail.com",
+      displayName: "Alice Gmail"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = store.upsertProviderEmail(testProviderEmail({
+      id: "email-with-attachment",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "gmail-message-1",
+      senderName: "Billing",
+      senderEmail: "billing@example.com",
+      subject: "Invoice"
+    }));
+
+    store.replaceEmailAttachments(email.id, [{
+      providerAttachmentId: "gmail-attachment-1",
+      filename: "Invoice.pdf",
+      mimeType: "application/pdf",
+      size: 123,
+      data: null
+    }]);
+    const metadataOnly = store.attachmentsForEmail(email.id)[0];
+    assert.equal(metadataOnly.isDownloaded, false);
+
+    store.replaceEmailAttachments(email.id, [{
+      providerAttachmentId: "gmail-attachment-1",
+      filename: "Invoice.pdf",
+      mimeType: "application/pdf",
+      data: Buffer.from("hello")
+    }]);
+
+    const downloaded = store.attachmentsForEmail(email.id)[0];
+    assert.equal(downloaded.id, metadataOnly.id);
+    assert.equal(downloaded.isDownloaded, true);
+    const attachment = store.getAttachment(email.id, metadataOnly.id);
+    assert.equal(Buffer.from(attachment.data).toString("utf8"), "hello");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("lists connected accounts eligible for hosted background sync", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

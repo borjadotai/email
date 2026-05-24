@@ -185,6 +185,37 @@ test("Postgres store stores attachment bytes in private object storage", async (
   assert.equal(Buffer.from(attachment.data).toString("utf8"), "hello");
 });
 
+test("Postgres store preserves attachment IDs when replacing remote metadata", async () => {
+  const attachmentId = "40000000-0000-4000-8000-000000000001";
+  const pool = new FakePool({
+    existingAttachments: [{
+      id: attachmentId,
+      providerAttachmentId: "gmail-attachment-1",
+      contentId: null,
+      filename: "Invoice Q1.pdf",
+      mimeType: "application/pdf",
+      size: 123,
+      disposition: null,
+      isInline: false
+    }]
+  });
+  const storage = new FakeStorage();
+  const store = new PostgresMailStore({ pool, storageClient: storage }).forUser(user);
+  const emailId = "20000000-0000-4000-8000-000000000001";
+
+  await store.replaceEmailAttachments(emailId, [{
+    providerAttachmentId: "gmail-attachment-1",
+    filename: "Invoice Q1.pdf",
+    mimeType: "application/pdf",
+    data: Buffer.from("hello")
+  }]);
+
+  const insert = pool.queries.find(query => /INSERT INTO public\.email_attachments/u.test(query.sql));
+  assert.ok(insert);
+  assert.equal(insert.params[0], attachmentId);
+  assert.equal(storage.uploads[0].path, `${user.id}/${emailId}/${attachmentId}/Invoice-Q1.pdf`);
+});
+
 test("Postgres readiness verifies database schema and private object storage", async () => {
   const pool = new FakePool();
   const storage = new FakeStorage();
@@ -256,10 +287,11 @@ test("Postgres store persists provider auth sessions in the private schema", asy
 class FakePool {
   queries = [];
 
-  constructor({ bucketPublic = false, missingRelations = [], rateLimitExceeded = false } = {}) {
+  constructor({ bucketPublic = false, missingRelations = [], rateLimitExceeded = false, existingAttachments = [] } = {}) {
     this.bucketPublic = bucketPublic;
     this.missingRelations = new Set(missingRelations);
     this.rateLimitExceeded = rateLimitExceeded;
+    this.existingAttachments = existingAttachments;
   }
 
   async connect() {
@@ -447,6 +479,13 @@ class FakePool {
           trackingId: null,
           openedAt: null
         }]
+      };
+    }
+
+    if (/provider_attachment_id AS "providerAttachmentId"/u.test(sql)) {
+      return {
+        rows: this.existingAttachments,
+        rowCount: this.existingAttachments.length
       };
     }
 

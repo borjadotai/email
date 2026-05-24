@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ProviderService, plainSnippet } from "../src/providerAdapters.js";
+import { ProviderService, gmailAttachmentsForMessage, plainSnippet } from "../src/providerAdapters.js";
 import { MemorySecretStore } from "../src/secretStore.js";
 import { MailStore } from "../src/store.js";
 
@@ -80,4 +80,41 @@ test("extracts email snippets from visible HTML body content", () => {
   `;
 
   assert.equal(plainSnippet(html), "Your order is ready. It ships tomorrow.");
+});
+
+test("Gmail attachment extraction can skip bytes during first sync", async () => {
+  let fetchedAttachmentBytes = 0;
+  const gmail = {
+    users: {
+      messages: {
+        attachments: {
+          get: async () => {
+            fetchedAttachmentBytes += 1;
+            return { data: { data: Buffer.from("hello").toString("base64url") } };
+          }
+        }
+      }
+    }
+  };
+  const message = {
+    id: "gmail-message-1",
+    payload: {
+      parts: [{
+        filename: "Invoice.pdf",
+        mimeType: "application/pdf",
+        body: { attachmentId: "attachment-1", size: 123 },
+        headers: [{ name: "Content-Disposition", value: "attachment" }]
+      }]
+    }
+  };
+
+  const metadataOnly = await gmailAttachmentsForMessage(gmail, message, { includeData: false });
+  assert.equal(fetchedAttachmentBytes, 0);
+  assert.equal(metadataOnly[0].providerAttachmentId, "attachment-1");
+  assert.equal(metadataOnly[0].size, 123);
+  assert.equal(metadataOnly[0].data, null);
+
+  const withBytes = await gmailAttachmentsForMessage(gmail, message, { includeData: true });
+  assert.equal(fetchedAttachmentBytes, 1);
+  assert.equal(Buffer.from(withBytes[0].data).toString("utf8"), "hello");
 });

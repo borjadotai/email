@@ -161,9 +161,15 @@ final class AppModel {
 
     do {
       health = try await apiClient.health()
-      authSettings = try? await apiClient.authSettings()
+      authSettings = try await apiClient.authSettings()
       if requiresUserAuth {
-        try await refreshAuthSessionIfNeeded()
+        do {
+          try await refreshAuthSessionIfNeeded()
+        } catch {
+          resetAuthSession()
+          clearMailData()
+          return
+        }
         guard authSession != nil else {
           clearMailData()
           return
@@ -175,6 +181,11 @@ final class AppModel {
       labels = try await apiClient.labels()
       try await loadEmails()
     } catch {
+      if isAuthenticationRequired(error) {
+        resetAuthSession()
+        clearMailData()
+        return
+      }
       if reportErrors {
         errorMessage = error.localizedDescription
       }
@@ -190,8 +201,7 @@ final class AppModel {
   }
 
   func signOut() {
-    AuthSessionStore.shared.clear()
-    authSession = nil
+    resetAuthSession()
     clearMailData()
   }
 
@@ -244,6 +254,18 @@ final class AppModel {
   private func setAuthSession(_ session: AuthSession) {
     authSession = session
     AuthSessionStore.shared.save(session)
+  }
+
+  private func resetAuthSession() {
+    AuthSessionStore.shared.clear()
+    authSession = nil
+  }
+
+  private func isAuthenticationRequired(_ error: Error) -> Bool {
+    if case MailAPIError.server(let status, _) = error {
+      return status == 401
+    }
+    return false
   }
 
   private func supabaseAuthClient() throws -> SupabaseAuthClient {

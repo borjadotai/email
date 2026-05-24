@@ -306,7 +306,7 @@ export class ProviderService {
             message: message.data,
             mailboxId: mailbox.id,
             store: this.store,
-            attachments: await gmailAttachmentsForMessage(gmail, message.data)
+            attachments: await gmailAttachmentsForMessage(gmail, message.data, { includeData: false })
           }));
           if (saved.wasNew) {
             newEmails.push(saved);
@@ -318,6 +318,15 @@ export class ProviderService {
             }
           }
           imported += 1;
+          if (imported % 25 === 0) {
+            operationalInfo("provider.sync.progress", {
+              provider: "gmail",
+              accountId: account.id,
+              userId: this.user?.id,
+              imported,
+              limit
+            });
+          }
           if (imported >= limit) break;
         }
         pageToken = list.data.nextPageToken;
@@ -556,7 +565,7 @@ export class ProviderService {
   async ensureEmailAttachments(email) {
     if (!email?.hasAttachments) return [];
     const existing = await this.store.attachmentsForEmail(email.id);
-    if (existing.length > 0) return existing;
+    if (existing.length > 0 && existing.every(attachment => attachment.isDownloaded)) return existing;
 
     const account = await this.store.getAccount(email.accountId);
     if (!account) throw httpError(404, "Account not found.");
@@ -600,7 +609,7 @@ export class ProviderService {
       id: email.providerUID,
       format: "full"
     });
-    return gmailAttachmentsForMessage(gmail, message.data);
+    return gmailAttachmentsForMessage(gmail, message.data, { includeData: true });
   }
 
   async iCloudAttachmentsForEmail(account, email) {
@@ -727,7 +736,7 @@ export class ProviderService {
   }
 
   initialSyncLimit() {
-    return Number.isFinite(this.config.initialSyncLimit) ? this.config.initialSyncLimit : 500;
+    return Number.isFinite(this.config.initialSyncLimit) ? this.config.initialSyncLimit : 50;
   }
 
   async gmailMailboxFor(accountId, message) {
@@ -967,13 +976,13 @@ function iCloudMessageToEmail({ account, parsed, message, mailboxId, store, atta
   };
 }
 
-async function gmailAttachmentsForMessage(gmail, message) {
+export async function gmailAttachmentsForMessage(gmail, message, { includeData = false } = {}) {
   const parts = collectGmailAttachmentParts(message.payload);
   const attachments = [];
 
   for (const part of parts) {
-    let data = part.body?.data ? decodeBase64URL(part.body.data) : null;
-    if (!data && part.body?.attachmentId && message.id) {
+    let data = includeData && part.body?.data ? decodeBase64URL(part.body.data) : null;
+    if (includeData && !data && part.body?.attachmentId && message.id) {
       const attachment = await gmail.users.messages.attachments.get({
         userId: "me",
         messageId: message.id,

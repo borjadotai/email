@@ -1768,6 +1768,15 @@ export class MailStore {
 
   replaceEmailAttachments(emailId, attachments = []) {
     const now = new Date().toISOString();
+    const existingIDsByKey = new Map(this.db.prepare(`
+      SELECT id, provider_attachment_id AS providerAttachmentId, content_id AS contentId,
+             filename, mime_type AS mimeType, size, disposition, is_inline AS isInline
+      FROM email_attachments
+      WHERE email_id = ?
+    `).all(emailId).map(row => [
+      attachmentIdentityKey({ ...row, isInline: Boolean(row.isInline) }),
+      row.id
+    ]));
     this.db.prepare("DELETE FROM email_attachments WHERE email_id = ?").run(emailId);
 
     const insert = this.db.prepare(`
@@ -1783,16 +1792,26 @@ export class MailStore {
         : attachment.data
           ? Buffer.from(attachment.data)
           : null;
+      const filename = optionalString(attachment.filename) ?? "Attachment";
+      const mimeType = optionalString(attachment.mimeType) ?? "application/octet-stream";
+      const size = Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0;
+      const isInline = attachment.isInline === true;
       insert.run(
-        attachment.id ?? randomUUID(),
+        attachment.id ?? existingIDsByKey.get(attachmentIdentityKey({
+          ...attachment,
+          filename,
+          mimeType,
+          size,
+          isInline
+        })) ?? randomUUID(),
         emailId,
         optionalString(attachment.providerAttachmentId),
         optionalString(attachment.contentId),
-        optionalString(attachment.filename) ?? "Attachment",
-        optionalString(attachment.mimeType) ?? "application/octet-stream",
-        Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0,
+        filename,
+        mimeType,
+        size,
         optionalString(attachment.disposition),
-        attachment.isInline ? 1 : 0,
+        isInline ? 1 : 0,
         data,
         now
       );
@@ -2053,6 +2072,21 @@ function requiredString(value, name) {
 
 function optionalString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function attachmentIdentityKey(attachment) {
+  const providerAttachmentId = optionalString(attachment.providerAttachmentId);
+  if (providerAttachmentId) return `provider:${providerAttachmentId}`;
+  const contentId = optionalString(attachment.contentId);
+  if (contentId) return `content:${contentId}`;
+  return [
+    "metadata",
+    optionalString(attachment.filename) ?? "Attachment",
+    optionalString(attachment.mimeType) ?? "application/octet-stream",
+    Number.isFinite(Number(attachment.size)) ? Number(attachment.size) : 0,
+    attachment.isInline === true ? "inline" : "attachment",
+    optionalString(attachment.disposition) ?? ""
+  ].join("\u001f");
 }
 
 function normalizeBlockScope(value) {

@@ -1028,12 +1028,27 @@ export class PostgresMailStore {
   async replaceEmailAttachments(emailId, attachments = [], client = null) {
     const writeAttachments = async db => {
       const userId = await this.currentUserId();
+      const existing = await db.query(`
+        SELECT id, provider_attachment_id AS "providerAttachmentId", content_id AS "contentId",
+               filename, mime_type AS "mimeType", size, disposition, is_inline AS "isInline"
+        FROM public.email_attachments
+        WHERE email_id = $1 AND user_id = $2
+      `, [emailId, userId]);
+      const existingIDsByKey = new Map(existing.rows.map(row => [attachmentIdentityKey(row), row.id]));
       await db.query("DELETE FROM public.email_attachments WHERE email_id = $1 AND user_id = $2", [emailId, userId]);
       for (const attachment of attachments) {
-        const id = attachment.id ?? randomUUID();
         const filename = optionalString(attachment.filename) ?? "Attachment";
         const mimeType = optionalString(attachment.mimeType) ?? "application/octet-stream";
         const data = attachment.data ? Buffer.from(attachment.data) : null;
+        const size = Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0;
+        const isInline = attachment.isInline === true;
+        const id = attachment.id ?? existingIDsByKey.get(attachmentIdentityKey({
+          ...attachment,
+          filename,
+          mimeType,
+          size,
+          isInline
+        })) ?? randomUUID();
         const storagePath = data ? attachmentObjectPath(userId, emailId, id, filename) : null;
         if (data && storagePath) {
           await this.uploadAttachmentObject(storagePath, data, mimeType);
@@ -1052,9 +1067,9 @@ export class PostgresMailStore {
           optionalString(attachment.contentId),
           filename,
           mimeType,
-          Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0,
+          size,
           optionalString(attachment.disposition),
-          attachment.isInline === true,
+          isInline,
           data ? "stored" : "remote_only",
           data ? this.attachmentBucket : null,
           storagePath
@@ -1498,6 +1513,21 @@ function requiredString(value, name) {
 
 function optionalString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function attachmentIdentityKey(attachment) {
+  const providerAttachmentId = optionalString(attachment.providerAttachmentId);
+  if (providerAttachmentId) return `provider:${providerAttachmentId}`;
+  const contentId = optionalString(attachment.contentId);
+  if (contentId) return `content:${contentId}`;
+  return [
+    "metadata",
+    optionalString(attachment.filename) ?? "Attachment",
+    optionalString(attachment.mimeType) ?? "application/octet-stream",
+    Number.isFinite(Number(attachment.size)) ? Number(attachment.size) : 0,
+    attachment.isInline === true ? "inline" : "attachment",
+    optionalString(attachment.disposition) ?? ""
+  ].join("\u001f");
 }
 
 function normalizeBlockScope(value) {

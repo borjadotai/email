@@ -28,7 +28,7 @@ export function resolveConfig(env = process.env) {
     secretStorePath: env.EMAIL_SECRET_STORE_PATH ?? join(dataDir, "secrets.json"),
     postgresURL: env.EMAIL_POSTGRES_URL ?? env.DATABASE_URL ?? "",
     attachmentBucket: env.EMAIL_ATTACHMENT_BUCKET ?? "email-attachments",
-    initialSyncLimit: Number.parseInt(env.EMAIL_INITIAL_SYNC_LIMIT ?? "500", 10),
+    initialSyncLimit: Number.parseInt(env.EMAIL_INITIAL_SYNC_LIMIT ?? "50", 10),
     backgroundSyncIntervalMs: Number.isFinite(backgroundSyncIntervalMs) ? backgroundSyncIntervalMs : 0,
     backgroundSyncLimit: Number.isFinite(backgroundSyncLimit) ? backgroundSyncLimit : 50,
     backgroundSyncLeaseTtlMs: Number.isFinite(backgroundSyncLeaseTtlMs) ? backgroundSyncLeaseTtlMs : 300_000,

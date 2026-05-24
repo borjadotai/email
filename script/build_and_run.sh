@@ -72,23 +72,28 @@ fi
 
 SERVER_HEALTH_URL="${SERVER_BASE_URL%/}/api/health"
 
+health_check() {
+  local timeout_seconds="$1"
+  curl --max-time "$timeout_seconds" -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1
+}
+
 if [[ "$SERVER_BASE_URL" == http://127.0.0.1* || "$SERVER_BASE_URL" == http://localhost* ]]; then
-  if ! curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
+  if ! health_check 2; then
     nohup env EMAIL_SEED_DEMO="${EMAIL_SEED_DEMO:-1}" "$ROOT_DIR/scripts/start-server.sh" >/tmp/email-server.log 2>&1 &
     for _ in {1..40}; do
-      if curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
+      if health_check 2; then
         break
       fi
       sleep 0.1
     done
 
-    if ! curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
+    if ! health_check 2; then
       echo "Email server did not become healthy. See /tmp/email-server.log." >&2
       exit 1
     fi
   fi
 else
-  if ! curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
+  if ! health_check 10; then
     echo "Hosted Email API is not healthy at $SERVER_HEALTH_URL." >&2
     exit 1
   fi
