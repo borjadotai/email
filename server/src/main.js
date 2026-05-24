@@ -1,8 +1,10 @@
 import { resolveConfig } from "./config.js";
+import { RequestAuthenticator } from "./auth.js";
 import { createServer } from "./http.js";
+import { maybeEncryptedSecretStore } from "./encryption.js";
 import { ProviderService } from "./providerAdapters.js";
 import { PushNotificationService } from "./pushNotifications.js";
-import { KeychainSecretStore } from "./secretStore.js";
+import { FileSecretStore, KeychainSecretStore, PostgresSecretStore } from "./secretStore.js";
 import { MailStore } from "./store.js";
 
 const config = resolveConfig();
@@ -11,17 +13,20 @@ const store = new MailStore({
   seedDemo: config.seedDemo
 });
 const baseURL = config.publicBaseURL ?? `http://${config.host}:${config.port}`;
+const secretStore = maybeEncryptedSecretStore(secretStoreForRuntime(config), config);
 const providers = new ProviderService({
   store,
   config,
   baseURL,
-  secretStore: new KeychainSecretStore()
+  secretStore
 });
 const pushNotifications = new PushNotificationService({ store, config });
+const authenticator = new RequestAuthenticator(config);
 const { server } = createServer({
   store,
   providers,
   pushNotifications,
+  authenticator,
   host: config.host,
   port: config.port,
   publicBaseURL: config.publicBaseURL
@@ -34,11 +39,29 @@ server.listen(config.port, config.host, () => {
 
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
-  server.close(() => {
+  server.close(async () => {
     store.close();
+    await secretStore.close?.();
     process.exit(0);
   });
 }
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+function secretStoreForRuntime(config) {
+  const requested = config.secretStore || (process.platform === "darwin" ? "keychain" : "file");
+  if (requested === "file") {
+    return new FileSecretStore({ path: config.secretStorePath });
+  }
+  if (requested === "postgres") {
+    if (!config.secretEncryptionKey) {
+      throw new Error("EMAIL_SECRET_ENCRYPTION_KEY is required when EMAIL_SECRET_STORE=postgres.");
+    }
+    return new PostgresSecretStore({ connectionString: config.postgresURL });
+  }
+  if (requested === "keychain") {
+    return new KeychainSecretStore();
+  }
+  throw new Error(`Unsupported EMAIL_SECRET_STORE: ${requested}`);
+}

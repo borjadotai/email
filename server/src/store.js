@@ -24,11 +24,19 @@ const SEARCH_INDEX_VERSION = "2";
 export class MailStore {
   constructor({ databasePath = ":memory:", seedDemo = false } = {}) {
     this.databasePath = databasePath;
+    this.currentUser = null;
     this.db = new DatabaseSync(databasePath);
     this.migrate();
     if (seedDemo) {
       this.seedDemoData();
     }
+  }
+
+  forUser(user) {
+    const scoped = Object.create(this);
+    scoped.currentUser = normalizeAppUser(user);
+    scoped.ensureCurrentUser();
+    return scoped;
   }
 
   close() {
@@ -177,6 +185,7 @@ export class MailStore {
 
       CREATE TABLE IF NOT EXISTS push_tokens (
         id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES app_users(id) ON DELETE CASCADE,
         token TEXT NOT NULL,
         platform TEXT NOT NULL CHECK (platform IN ('ios', 'macos')),
         bundle_id TEXT NOT NULL,
@@ -210,6 +219,8 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_blocked_senders_account ON blocked_senders(account_id, scope, value);
       CREATE INDEX IF NOT EXISTS idx_push_tokens_active ON push_tokens(platform, bundle_id, environment)
         WHERE disabled_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_push_tokens_user_active ON push_tokens(user_id, platform, bundle_id, environment)
+        WHERE disabled_at IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
         ON emails(account_id, provider_uid)
         WHERE provider_uid IS NOT NULL;
@@ -218,9 +229,11 @@ export class MailStore {
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
     this.ensureColumn("emails", "references_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("push_tokens", "user_id", "TEXT REFERENCES app_users(id) ON DELETE CASCADE");
     this.ensureDefaultsForExistingAccounts();
     this.ensureLocalUser();
     this.linkUnownedAccountsToLocalUser();
+    this.linkUnownedPushTokensToLocalUser();
     this.hydrateLocalUserFromAccounts();
     this.reclassifyLocalUserInboxMessages();
     this.repairCrossAccountSentMisclassifications();
@@ -272,7 +285,7 @@ export class MailStore {
         now
       );
       this.ensureDefaultsForAccount(id);
-      this.linkAccountToLocalUser(id, provider, email);
+      this.linkAccountToCurrentUser(id, provider, email);
     });
 
     this.reclassifyLocalUserInboxMessages();
@@ -307,7 +320,7 @@ export class MailStore {
         existing.id
       );
       this.ensureDefaultsForAccount(existing.id);
-      this.linkAccountToLocalUser(existing.id, provider, email);
+      this.linkAccountToCurrentUser(existing.id, provider, email);
       this.reclassifyLocalUserInboxMessages();
       this.repairCrossAccountSentMisclassifications();
       this.repairLocalUserSenderNames();
@@ -329,8 +342,10 @@ export class MailStore {
              a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
              a.created_at AS createdAt
       FROM accounts a
+      JOIN account_user_links l ON l.account_id = a.id
+      WHERE l.user_id = ?
       ORDER BY a.created_at ASC
-    `).all().map(row => ({
+    `).all(this.currentUserId()).map(row => ({
       ...row,
       syncHistory: Boolean(row.syncHistory),
       providerMetadata: parseJSON(row.providerMetadataJSON, {})
@@ -338,7 +353,7 @@ export class MailStore {
   }
 
   getProfile() {
-    const user = this.ensureLocalUser();
+    const user = this.ensureCurrentUser();
     return {
       ...user,
       accounts: this.listAccounts()
@@ -349,7 +364,7 @@ export class MailStore {
     const provider = normalizeProvider(input.provider);
     const email = requiredString(input.email, "email").toLowerCase();
     const displayName = input.displayName?.trim() || email;
-    const user = this.ensureLocalUser();
+    const user = this.ensureCurrentUser();
     const primaryEmail = user.primaryEmail || email;
 
     this.db.prepare(`
@@ -359,7 +374,7 @@ export class MailStore {
     `).run(displayName, primaryEmail, new Date().toISOString(), user.id);
 
     if (input.accountId) {
-      this.linkAccountToLocalUser(input.accountId, provider, email);
+      this.linkAccountToCurrentUser(input.accountId, provider, email);
     }
 
     return this.getProfile();
@@ -373,10 +388,43 @@ export class MailStore {
              a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
              a.created_at AS createdAt
       FROM accounts a
+      JOIN account_user_links l ON l.account_id = a.id
       WHERE a.id = ?
-    `).get(id);
+        AND l.user_id = ?
+    `).get(id, this.currentUserId());
     if (!row) return null;
     return { ...row, syncHistory: Boolean(row.syncHistory), providerMetadata: parseJSON(row.providerMetadataJSON, {}) };
+  }
+
+  ensureCurrentUser() {
+    if (!this.currentUser) return this.ensureLocalUser();
+
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO app_users (id, display_name, primary_email, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        display_name = excluded.display_name,
+        primary_email = COALESCE(app_users.primary_email, excluded.primary_email),
+        updated_at = excluded.updated_at
+    `).run(
+      this.currentUser.id,
+      this.currentUser.displayName,
+      this.currentUser.email,
+      now,
+      now
+    );
+
+    return this.db.prepare(`
+      SELECT id, display_name AS displayName, primary_email AS primaryEmail,
+             created_at AS createdAt, updated_at AS updatedAt
+      FROM app_users
+      WHERE id = ?
+    `).get(this.currentUser.id);
+  }
+
+  currentUserId() {
+    return this.ensureCurrentUser().id;
   }
 
   ensureLocalUser() {
@@ -411,6 +459,15 @@ export class MailStore {
     }
   }
 
+  linkUnownedPushTokensToLocalUser() {
+    const user = this.ensureLocalUser();
+    this.db.prepare(`
+      UPDATE push_tokens
+      SET user_id = ?
+      WHERE user_id IS NULL
+    `).run(user.id);
+  }
+
   hydrateLocalUserFromAccounts() {
     const user = this.ensureLocalUser();
     if (user.primaryEmail) return;
@@ -435,6 +492,11 @@ export class MailStore {
     this.linkAccountToUser(user.id, accountId, provider, email);
   }
 
+  linkAccountToCurrentUser(accountId, provider, email) {
+    const user = this.ensureCurrentUser();
+    this.linkAccountToUser(user.id, accountId, provider, email);
+  }
+
   linkAccountToUser(userId, accountId, provider, email) {
     this.db.prepare(`
       INSERT INTO account_user_links (account_id, user_id, provider, provider_email, linked_at)
@@ -453,13 +515,16 @@ export class MailStore {
     return Boolean(this.db.prepare(`
       SELECT 1
       FROM (
-        SELECT email FROM accounts
+        SELECT a.email FROM accounts a
+        JOIN account_user_links l ON l.account_id = a.id
+        WHERE l.user_id = ?
         UNION
         SELECT provider_email AS email FROM account_user_links
+        WHERE user_id = ?
       ) identities
       WHERE lower(email) = ?
       LIMIT 1
-    `).get(normalized));
+    `).get(this.currentUserId(), this.currentUserId(), normalized));
   }
 
   isAccountIdentityEmail(accountId, email) {
@@ -484,10 +549,12 @@ export class MailStore {
 
     const account = this.db.prepare(`
       SELECT display_name AS displayName
-      FROM accounts
-      WHERE lower(email) = ?
+      FROM accounts a
+      JOIN account_user_links l ON l.account_id = a.id
+      WHERE lower(a.email) = ?
+        AND l.user_id = ?
       LIMIT 1
-    `).get(normalized);
+    `).get(normalized, this.currentUserId());
     if (account?.displayName) {
       return account.displayName;
     }
@@ -497,8 +564,9 @@ export class MailStore {
       FROM account_user_links l
       JOIN app_users u ON u.id = l.user_id
       WHERE lower(l.provider_email) = ?
+        AND l.user_id = ?
       LIMIT 1
-    `).get(normalized)?.displayName ?? null;
+    `).get(normalized, this.currentUserId())?.displayName ?? null;
   }
 
   reclassifyLocalUserInboxMessages(accountId = null) {
@@ -561,12 +629,17 @@ export class MailStore {
       WHERE current.role = 'sent'
         ${accountFilter}
         AND lower(e.sender_email) IN (
-          SELECT lower(email) FROM accounts
+          SELECT lower(a.email)
+          FROM accounts a
+          JOIN account_user_links l ON l.account_id = a.id
+          WHERE l.user_id = ?
           UNION
-          SELECT lower(provider_email) FROM account_user_links
+          SELECT lower(provider_email)
+          FROM account_user_links
+          WHERE user_id = ?
         )
         AND NOT ${accountIdentityMatchSQL("e", "a")}
-    `).all(...args);
+    `).all(...args, this.currentUserId(), this.currentUserId());
 
     const update = this.db.prepare("UPDATE emails SET mailbox_id = ? WHERE id = ?");
     const touchedMailboxIDs = new Set();
@@ -595,13 +668,20 @@ export class MailStore {
       SET sender_name = (
         SELECT a.display_name
         FROM accounts a
+        JOIN account_user_links l ON l.account_id = a.id
         WHERE lower(a.email) = lower(e.sender_email)
+          AND l.user_id = ?
         LIMIT 1
       )
-      WHERE lower(e.sender_email) IN (SELECT lower(email) FROM accounts)
+      WHERE lower(e.sender_email) IN (
+        SELECT lower(a.email)
+        FROM accounts a
+        JOIN account_user_links l ON l.account_id = a.id
+        WHERE l.user_id = ?
+      )
         ${accountFilter}
         AND lower(e.sender_name) = lower(e.sender_email)
-    `).run(...args);
+    `).run(this.currentUserId(), this.currentUserId(), ...args);
 
     if ((result.changes ?? 0) > 0) {
       this.rebuildEmailFTS();
@@ -649,16 +729,18 @@ export class MailStore {
       this.db.prepare(`
         UPDATE emails
         SET sender_name = ?
-        WHERE lower(sender_email) = lower(?)
-      `).run(displayName, account.email);
+        WHERE account_id = ?
+          AND lower(sender_email) = lower(?)
+      `).run(displayName, account.id, account.email);
     }
 
     if (hasAvatarURL) {
       this.db.prepare(`
         UPDATE emails
         SET sender_avatar_url = ?
-        WHERE lower(sender_email) = lower(?)
-      `).run(avatarURL || senderLogoURLForEmail(account.email), account.email);
+        WHERE account_id = ?
+          AND lower(sender_email) = lower(?)
+      `).run(avatarURL || senderLogoURLForEmail(account.email), account.id, account.email);
     }
 
     if (displayName !== account.displayName) {
@@ -689,10 +771,10 @@ export class MailStore {
   }
 
   listMailboxes(accountId = null) {
-    const args = [];
-    let where = "";
+    const args = [this.currentUserId()];
+    let where = "WHERE l.user_id = ?";
     if (accountId) {
-      where = "WHERE m.account_id = ?";
+      where += " AND m.account_id = ?";
       args.push(accountId);
     }
 
@@ -701,6 +783,7 @@ export class MailStore {
              m.name, m.role, m.unread_count AS unreadCount
       FROM mailboxes m
       JOIN accounts a ON a.id = m.account_id
+      JOIN account_user_links l ON l.account_id = a.id
       ${where}
       ORDER BY a.created_at ASC,
         CASE m.role
@@ -716,10 +799,10 @@ export class MailStore {
   }
 
   listLabels(accountId = null) {
-    const args = [];
-    let where = "";
+    const args = [this.currentUserId()];
+    let where = "WHERE (l.account_id IS NULL OR ul.user_id = ?)";
     if (accountId) {
-      where = "WHERE l.account_id IS NULL OR l.account_id = ?";
+      where += " AND (l.account_id IS NULL OR l.account_id = ?)";
       args.push(accountId);
     }
 
@@ -728,6 +811,7 @@ export class MailStore {
              l.name, l.color, l.is_system AS isSystem
       FROM labels l
       LEFT JOIN accounts a ON a.id = l.account_id
+      LEFT JOIN account_user_links ul ON ul.account_id = a.id
       ${where}
       ORDER BY l.is_system DESC, l.name ASC
     `).all(...args).map(row => ({ ...row, isSystem: Boolean(row.isSystem) }));
@@ -735,6 +819,9 @@ export class MailStore {
 
   createLabel(input) {
     const name = requiredString(input.name, "name");
+    if (input.accountId && !this.getAccount(input.accountId)) {
+      throw httpError(404, "Account not found.");
+    }
     const id = randomUUID();
     this.db.prepare(`
       INSERT INTO labels (id, account_id, name, color, is_system)
@@ -746,6 +833,9 @@ export class MailStore {
   findOrCreateLabel(input) {
     const name = requiredString(input.name, "name");
     const accountId = input.accountId ?? null;
+    if (accountId && !this.getAccount(accountId)) {
+      throw httpError(404, "Account not found.");
+    }
     const existing = this.db.prepare(`
       SELECT id FROM labels
       WHERE name = ? AND ${accountId ? "account_id = ?" : "account_id IS NULL"}
@@ -765,10 +855,11 @@ export class MailStore {
     const offset = clampInt(filters.offset, 0, 100000, 0);
     const joins = [
       "JOIN accounts a ON a.id = e.account_id",
-      "JOIN mailboxes m ON m.id = e.mailbox_id"
+      "JOIN mailboxes m ON m.id = e.mailbox_id",
+      "JOIN account_user_links owner_link ON owner_link.account_id = e.account_id"
     ];
-    const where = [];
-    const args = [];
+    const where = ["owner_link.user_id = ?"];
+    const args = [this.currentUserId()];
     const query = normalizeSearch(filters.q);
 
     if (query) {
@@ -831,7 +922,11 @@ export class MailStore {
     }));
   }
 
-  getEmail(id) {
+  getEmail(id, options = {}) {
+    const scoped = options.unscoped !== true;
+    const ownerJoin = scoped ? "JOIN account_user_links l ON l.account_id = e.account_id" : "";
+    const ownerWhere = scoped ? "AND l.user_id = ?" : "";
+    const args = scoped ? [id, this.currentUserId()] : [id];
     const row = this.db.prepare(`
       SELECT e.id, e.account_id AS accountId, a.email AS accountEmail, a.provider,
              e.mailbox_id AS mailboxId, m.name AS mailboxName, m.role AS mailboxRole,
@@ -850,8 +945,10 @@ export class MailStore {
       FROM emails e
       JOIN accounts a ON a.id = e.account_id
       JOIN mailboxes m ON m.id = e.mailbox_id
+      ${ownerJoin}
       WHERE e.id = ?
-    `).get(id);
+        ${ownerWhere}
+    `).get(...args);
     if (!row) return null;
 
     return {
@@ -992,10 +1089,10 @@ export class MailStore {
   }
 
   listBlockedSenders(accountId = null) {
-    const args = [];
-    let where = "";
+    const args = [this.currentUserId()];
+    let where = "WHERE l.user_id = ?";
     if (accountId) {
-      where = "WHERE b.account_id = ?";
+      where += " AND b.account_id = ?";
       args.push(accountId);
     }
 
@@ -1005,6 +1102,7 @@ export class MailStore {
              b.created_at AS createdAt
       FROM blocked_senders b
       JOIN accounts a ON a.id = b.account_id
+      JOIN account_user_links l ON l.account_id = a.id
       ${where}
       ORDER BY b.created_at DESC
     `).all(...args);
@@ -1021,18 +1119,19 @@ export class MailStore {
 
     this.db.prepare(`
       INSERT INTO push_tokens (
-        id, token, platform, bundle_id, environment, device_name,
+        id, user_id, token, platform, bundle_id, environment, device_name,
         created_at, updated_at, last_seen_at, disabled_at, failure_reason
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
       ON CONFLICT(token, bundle_id, environment) DO UPDATE SET
+        user_id = excluded.user_id,
         platform = excluded.platform,
         device_name = excluded.device_name,
         updated_at = excluded.updated_at,
         last_seen_at = excluded.last_seen_at,
         disabled_at = NULL,
         failure_reason = NULL
-    `).run(id, token, platform, bundleId, environment, deviceName, now, now, now);
+    `).run(id, this.currentUserId(), token, platform, bundleId, environment, deviceName, now, now, now);
 
     return this.db.prepare(`
       SELECT id, token, platform, bundle_id AS bundleId, environment,
@@ -1040,13 +1139,13 @@ export class MailStore {
              updated_at AS updatedAt, last_seen_at AS lastSeenAt,
              disabled_at AS disabledAt, failure_reason AS failureReason
       FROM push_tokens
-      WHERE token = ? AND bundle_id = ? AND environment = ?
-    `).get(token, bundleId, environment);
+      WHERE user_id = ? AND token = ? AND bundle_id = ? AND environment = ?
+    `).get(this.currentUserId(), token, bundleId, environment);
   }
 
   listPushTokens(filters = {}) {
-    const where = ["disabled_at IS NULL"];
-    const args = [];
+    const where = ["disabled_at IS NULL", "user_id = ?"];
+    const args = [this.currentUserId()];
 
     if (filters.platform) {
       where.push("platform = ?");
@@ -1078,9 +1177,11 @@ export class MailStore {
   inboxUnreadCount() {
     const row = this.db.prepare(`
       SELECT COALESCE(SUM(unread_count), 0) AS count
-      FROM mailboxes
-      WHERE role = 'inbox'
-    `).get();
+      FROM mailboxes m
+      JOIN account_user_links l ON l.account_id = m.account_id
+      WHERE m.role = 'inbox'
+        AND l.user_id = ?
+    `).get(this.currentUserId());
     return row.count ?? 0;
   }
 
@@ -1119,7 +1220,12 @@ export class MailStore {
     const email = this.getEmail(emailId);
     if (!email) return null;
 
-    const label = this.db.prepare("SELECT id FROM labels WHERE id = ?").get(labelId);
+    const label = this.db.prepare(`
+      SELECT id, account_id AS accountId
+      FROM labels
+      WHERE id = ?
+        AND (account_id IS NULL OR account_id = ?)
+    `).get(labelId, email.accountId);
     if (!label) {
       throw httpError(404, "Label not found.");
     }
@@ -1230,7 +1336,12 @@ export class MailStore {
   }
 
   recordOpen(trackingId, meta = {}) {
-    const email = this.db.prepare("SELECT id, opened_at AS openedAt FROM emails WHERE tracking_id = ?").get(trackingId);
+    const email = this.db.prepare(`
+      SELECT e.id, e.opened_at AS openedAt, l.user_id AS userId
+      FROM emails e
+      LEFT JOIN account_user_links l ON l.account_id = e.account_id
+      WHERE e.tracking_id = ?
+    `).get(trackingId);
     if (!email) return null;
 
     const now = new Date().toISOString();
@@ -1244,7 +1355,7 @@ export class MailStore {
       `).run(randomUUID(), email.id, trackingId, meta.userAgent ?? null, meta.remoteAddr ?? null, now);
     });
 
-    return this.getEmail(email.id);
+    return { ...this.getEmail(email.id, { unscoped: true }), userId: email.userId ?? null };
   }
 
   seedDemoData() {
@@ -1688,6 +1799,16 @@ function normalizeProvider(provider) {
     throw httpError(400, "Provider must be gmail or icloud.");
   }
   return provider;
+}
+
+function normalizeAppUser(user) {
+  if (!user || typeof user !== "object") {
+    throw httpError(401, "Authentication is required.");
+  }
+  const id = requiredString(user.id, "user.id");
+  const email = optionalString(user.email)?.toLowerCase() ?? null;
+  const displayName = optionalString(user.displayName) || email || "User";
+  return { id, email, displayName };
 }
 
 function requiredString(value, name) {

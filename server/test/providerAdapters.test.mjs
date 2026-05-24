@@ -7,7 +7,7 @@ import { ProviderService, plainSnippet } from "../src/providerAdapters.js";
 import { MemorySecretStore } from "../src/secretStore.js";
 import { MailStore } from "../src/store.js";
 
-test("classifies sent messages by the synced account identity", () => {
+test("classifies sent messages by the synced account identity", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-provider-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 
@@ -29,24 +29,24 @@ test("classifies sent messages by the synced account identity", () => {
       baseURL: "http://127.0.0.1:7331"
     });
 
-    const gmailSelfMailbox = providers.gmailMailboxFor(gmail.id, {
+    const gmailSelfMailbox = await providers.gmailMailboxFor(gmail.id, {
       labelIds: ["INBOX"],
       payload: {
         headers: [{ name: "From", value: "Person <person@example.com>" }]
       }
     });
-    const gmailInboundMailbox = providers.gmailMailboxFor(gmail.id, {
+    const gmailInboundMailbox = await providers.gmailMailboxFor(gmail.id, {
       labelIds: ["INBOX"],
       payload: {
         headers: [{ name: "From", value: "Person iCloud <person@icloud.com>" }]
       }
     });
-    const iCloudInboundMailbox = providers.iCloudMailboxFor(icloud.id, {
+    const iCloudInboundMailbox = await providers.iCloudMailboxFor(icloud.id, {
       from: {
         value: [{ address: "person@example.com" }]
       }
     });
-    const iCloudSelfMailbox = providers.iCloudMailboxFor(icloud.id, {
+    const iCloudSelfMailbox = await providers.iCloudMailboxFor(icloud.id, {
       from: {
         value: [{ address: "person@icloud.com" }]
       }

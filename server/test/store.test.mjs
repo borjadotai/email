@@ -782,6 +782,88 @@ test("registers and refreshes push notification tokens", () => {
   }
 });
 
+test("scopes accounts, search results, and push tokens to the current app user", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const aliceStore = store.forUser({
+      id: "user-alice",
+      email: "alice@example.com",
+      displayName: "Alice"
+    });
+    const bobStore = store.forUser({
+      id: "user-bob",
+      email: "bob@example.com",
+      displayName: "Bob"
+    });
+
+    const aliceAccount = aliceStore.createAccount({
+      provider: "gmail",
+      email: "alice@gmail.com",
+      displayName: "Alice Gmail"
+    });
+    const bobAccount = bobStore.createAccount({
+      provider: "icloud",
+      email: "bob@icloud.com",
+      displayName: "Bob iCloud"
+    });
+
+    const aliceInbox = aliceStore.mailboxForRole(aliceAccount.id, "inbox");
+    const bobInbox = bobStore.mailboxForRole(bobAccount.id, "inbox");
+
+    const aliceEmail = aliceStore.upsertProviderEmail(testProviderEmail({
+      id: "alice-email",
+      accountId: aliceAccount.id,
+      mailboxId: aliceInbox.id,
+      providerUID: "alice-provider-email",
+      senderName: "Project",
+      senderEmail: "project@example.com",
+      subject: "Quarterly launch plan",
+      bodyText: "The launch plan is ready."
+    }));
+    const bobEmail = bobStore.upsertProviderEmail(testProviderEmail({
+      id: "bob-email",
+      accountId: bobAccount.id,
+      mailboxId: bobInbox.id,
+      providerUID: "bob-provider-email",
+      senderName: "Project",
+      senderEmail: "project@example.com",
+      subject: "Quarterly launch plan",
+      bodyText: "The launch plan is ready."
+    }));
+
+    aliceStore.registerPushToken({
+      token: "a".repeat(64),
+      platform: "ios",
+      bundleId: "com.borjadotai.email.ios",
+      environment: "development",
+      deviceName: "Alice iPhone"
+    });
+    bobStore.registerPushToken({
+      token: "b".repeat(64),
+      platform: "ios",
+      bundleId: "com.borjadotai.email.ios",
+      environment: "development",
+      deviceName: "Bob iPhone"
+    });
+
+    assert.deepEqual(aliceStore.listAccounts().map(account => account.id), [aliceAccount.id]);
+    assert.deepEqual(bobStore.listAccounts().map(account => account.id), [bobAccount.id]);
+    assert.equal(aliceStore.getAccount(bobAccount.id), null);
+    assert.equal(bobStore.getAccount(aliceAccount.id), null);
+    assert.deepEqual(aliceStore.listEmails({ q: "launch" }).map(email => email.id), [aliceEmail.id]);
+    assert.deepEqual(bobStore.listEmails({ q: "launch" }).map(email => email.id), [bobEmail.id]);
+    assert.equal(aliceStore.getEmail(bobEmail.id), null);
+    assert.equal(bobStore.getEmail(aliceEmail.id), null);
+    assert.deepEqual(aliceStore.listPushTokens().map(token => token.deviceName), ["Alice iPhone"]);
+    assert.deepEqual(bobStore.listPushTokens().map(token => token.deviceName), ["Bob iPhone"]);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function testProviderEmail(overrides = {}) {
   return {
     id: overrides.id,

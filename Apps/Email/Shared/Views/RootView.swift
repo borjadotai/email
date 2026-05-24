@@ -78,6 +78,12 @@ struct RootView: View {
       stopMailPolling()
     }
     .archiveDeleteCommand(model)
+    .overlay {
+      if model.shouldShowAuthGate {
+        AuthGateView()
+          .environment(model)
+      }
+    }
     .overlay(alignment: .bottom) {
       if let pendingArchive = model.pendingArchive {
         ArchiveUndoBanner(archive: pendingArchive) {
@@ -165,6 +171,106 @@ struct RootView: View {
   private func stopMailPolling() {
     mailPollingTask?.cancel()
     mailPollingTask = nil
+  }
+}
+
+private struct AuthGateView: View {
+  @Environment(AppModel.self) private var model
+  @State private var mode: Mode = .signIn
+  @State private var email = ""
+  @State private var password = ""
+
+  var body: some View {
+    VStack {
+      Spacer(minLength: 28)
+
+      VStack(spacing: 18) {
+        Image(systemName: "lock.shield")
+          .font(.system(size: 34, weight: .semibold))
+          .foregroundStyle(.tint)
+          .frame(width: 48, height: 48)
+
+        Picker("Mode", selection: $mode) {
+          ForEach(Mode.allCases) { mode in
+            Text(mode.title).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+
+        VStack(spacing: 10) {
+          TextField("Email", text: $email)
+            #if os(iOS)
+            .textInputAutocapitalization(.never)
+            .keyboardType(.emailAddress)
+            #endif
+            .textContentType(.username)
+
+          SecureField("Password", text: $password)
+            .textContentType(mode == .signUp ? .newPassword : .password)
+        }
+        .textFieldStyle(.roundedBorder)
+
+        Button {
+          Task { await submit() }
+        } label: {
+          Label(mode.buttonTitle, systemImage: mode == .signIn ? "arrow.right.circle" : "person.badge.plus")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(model.isAuthenticating)
+
+        if model.isAuthenticating {
+          ProgressView()
+            .controlSize(.small)
+        }
+
+        if let statusMessage = model.statusMessage {
+          Text(statusMessage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+        }
+      }
+      .padding(22)
+      .frame(width: 340)
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .shadow(color: .black.opacity(0.16), radius: 24, x: 0, y: 12)
+
+      Spacer(minLength: 28)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(.background.opacity(0.82))
+  }
+
+  private func submit() async {
+    switch mode {
+    case .signIn:
+      _ = await model.signIn(email: email, password: password)
+    case .signUp:
+      _ = await model.signUp(email: email, password: password)
+    }
+  }
+
+  private enum Mode: String, CaseIterable, Identifiable {
+    case signIn
+    case signUp
+
+    var id: String { rawValue }
+
+    var title: String {
+      switch self {
+      case .signIn: "Sign In"
+      case .signUp: "Sign Up"
+      }
+    }
+
+    var buttonTitle: String {
+      switch self {
+      case .signIn: "Sign In"
+      case .signUp: "Create Account"
+      }
+    }
   }
 }
 

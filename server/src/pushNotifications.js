@@ -12,6 +12,12 @@ export class PushNotificationService {
     this.apns = new APNsClient(config.apns ?? {});
   }
 
+  forStore(store) {
+    const service = Object.create(this);
+    service.store = store;
+    return service;
+  }
+
   get isConfigured() {
     return this.apns.isConfigured;
   }
@@ -27,8 +33,8 @@ export class PushNotificationService {
         continue;
       }
 
-      const tokens = this.store.listPushTokens();
-      const badge = this.store.inboxUnreadCount();
+      const tokens = await this.store.listPushTokens();
+      const badge = await this.store.inboxUnreadCount();
       for (const token of tokens) {
         const topic = topicForToken(token, this.apns.config);
         if (!topic) {
@@ -46,7 +52,7 @@ export class PushNotificationService {
           sent += 1;
         } catch (error) {
           if (isPermanentAPNSError(error)) {
-            this.store.disablePushToken(token.id, error.reason ?? error.message);
+            await this.store.disablePushToken(token.id, error.reason ?? error.message);
           }
           console.warn(`${new Date().toISOString()} push send failed token=${token.id}: ${error.message}`);
         }

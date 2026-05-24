@@ -1,12 +1,18 @@
 # Email
 
-Self-hosted native email clients for macOS and iOS.
+Native email clients for macOS and iOS, with both personal self-hosted and
+hosted multi-tenant backend paths.
 
 The important idea is simple: the private part runs on a machine you control, and
 the apps are just clients. The macOS and iOS apps should not contain Google
 secrets, account passwords, refresh tokens, or a private `.env` file. They talk
 to your server over HTTP, and your server stores mail, syncs accounts, sends
 messages, and keeps provider credentials private.
+
+The hosted architecture plan is in
+[docs/hosted-architecture.md](docs/hosted-architecture.md). That path uses
+Supabase Auth, tenant-scoped API requests, encrypted provider secrets, and a
+Fly.io-hosted server process.
 
 ## Start Here
 

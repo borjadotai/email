@@ -86,6 +86,70 @@ test("updates account settings through the API", async () => {
   }
 });
 
+test("authenticated API requests are scoped to the bearer user", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const aliceStore = store.forUser({
+      id: "user-alice",
+      email: "alice@example.com",
+      displayName: "Alice"
+    });
+    const bobStore = store.forUser({
+      id: "user-bob",
+      email: "bob@example.com",
+      displayName: "Bob"
+    });
+    const aliceAccount = aliceStore.createAccount({
+      provider: "gmail",
+      email: "alice@gmail.com",
+      displayName: "Alice Gmail"
+    });
+    const bobAccount = bobStore.createAccount({
+      provider: "icloud",
+      email: "bob@icloud.com",
+      displayName: "Bob iCloud"
+    });
+
+    server = createServer({
+      store,
+      authenticator: new HeaderAuthenticator()
+    }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const unauthenticated = await fetch(`${baseURL}/api/accounts`);
+    assert.equal(unauthenticated.status, 401);
+
+    const aliceResponse = await requestJSON(`${baseURL}/api/accounts`, {
+      headers: { Authorization: "Bearer user-alice" }
+    });
+    const bobResponse = await requestJSON(`${baseURL}/api/accounts`, {
+      headers: { Authorization: "Bearer user-bob" }
+    });
+
+    assert.deepEqual(aliceResponse.accounts.map(account => account.id), [aliceAccount.id]);
+    assert.deepEqual(bobResponse.accounts.map(account => account.id), [bobAccount.id]);
+
+    const crossTenant = await fetch(`${baseURL}/api/accounts/${bobAccount.id}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: "Bearer user-alice",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ displayName: "Compromised" })
+    });
+    assert.equal(crossTenant.status, 404);
+    assert.equal(bobStore.getAccount(bobAccount.id).displayName, "Bob iCloud");
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 async function requestJSON(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -103,4 +167,20 @@ function close(server) {
   return new Promise((resolve, reject) => {
     server.close(error => error ? reject(error) : resolve());
   });
+}
+
+class HeaderAuthenticator {
+  authenticate(req) {
+    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/iu)?.[1]?.trim();
+    if (!token) {
+      const error = new Error("Authentication is required.");
+      error.status = 401;
+      throw error;
+    }
+    return {
+      id: token,
+      email: `${token}@example.com`,
+      displayName: token
+    };
+  }
 }

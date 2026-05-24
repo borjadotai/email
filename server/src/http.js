@@ -4,13 +4,13 @@ import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 
-export function createServer({ store, providers, pushNotifications, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
+export function createServer({ store, providers, pushNotifications, authenticator, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
   const baseURL = publicBaseURL ?? `http://${host}:${port}`;
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, providers, pushNotifications, events, baseURL });
+      await route({ req, res, store, providers, pushNotifications, authenticator, events, baseURL });
     } catch (error) {
       const status = error.status ?? 500;
       console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
@@ -29,7 +29,7 @@ export function createServer({ store, providers, pushNotifications, host = "127.
   return { server, events };
 }
 
-async function route({ req, res, store, providers, pushNotifications, events, baseURL }) {
+async function route({ req, res, store, providers, pushNotifications, authenticator, events, baseURL }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
 
@@ -44,23 +44,9 @@ async function route({ req, res, store, providers, pushNotifications, events, ba
     sendJSON(res, 200, {
       status: "ok",
       databasePath: store.databasePath,
+      storage: store.storageName ?? "sqlite",
       timestamp: new Date().toISOString()
     });
-    return;
-  }
-
-  if (req.method === "GET" && path === "/api/events") {
-    events.subscribe(req, res);
-    return;
-  }
-
-  if (req.method === "GET" && path === "/api/accounts") {
-    sendJSON(res, 200, { accounts: store.listAccounts() });
-    return;
-  }
-
-  if (req.method === "GET" && path === "/api/profile") {
-    sendJSON(res, 200, { profile: store.getProfile() });
     return;
   }
 
@@ -70,232 +56,23 @@ async function route({ req, res, store, providers, pushNotifications, events, ba
     return;
   }
 
-  if (req.method === "POST" && path === "/api/push/tokens") {
-    const token = store.registerPushToken(await readJSON(req));
-    sendJSON(res, 201, {
-      token,
-      pushConfigured: Boolean(pushNotifications?.isConfigured)
-    });
-    return;
-  }
-
-  if (req.method === "POST" && path === "/api/auth/gmail/start") {
-    requireProviders(providers);
-    console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);
-    sendJSON(res, 200, await providers.startGmailAuth(await readJSON(req)));
-    return;
-  }
-
   if (req.method === "GET" && path === "/api/auth/gmail/callback") {
     requireProviders(providers);
     const result = await providers.completeGmailAuth(Object.fromEntries(url.searchParams.entries()));
-    events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
+    events.emit("accounts.changed", { accountId: result.account.id }, result.userId);
+    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit, user: result.user });
     sendHTML(res, 200, authSuccessPage(result));
-    return;
-  }
-
-  if (req.method === "POST" && path === "/api/auth/icloud/connect") {
-    requireProviders(providers);
-    const body = await readJSON(req);
-    console.log(`${new Date().toISOString()} POST /api/auth/icloud/connect email=${redactEmail(body.email)}`);
-    const result = await providers.connectICloud(body);
-    console.log(`${new Date().toISOString()} iCloud connected email=${redactEmail(result.account.email)} imported=${result.sync.imported}`);
-    events.emit("accounts.changed", { accountId: result.account.id });
-    events.emit("emails.changed", { accountId: result.account.id });
-    sendJSON(res, 200, { ...result, sync: publicSyncResult(result.sync) });
-    return;
-  }
-
-  if (req.method === "POST" && path === "/api/accounts") {
-    const account = store.createAccount(await readJSON(req));
-    events.emit("accounts.changed", { accountId: account.id });
-    sendJSON(res, 201, { account });
-    return;
-  }
-
-  const accountMatch = path.match(/^\/api\/accounts\/([^/]+)$/);
-  if (accountMatch && req.method === "PATCH") {
-    const account = store.updateAccountSettings(accountMatch[1], await readJSON(req));
-    if (!account) throw httpError(404, "Account not found.");
-    events.emit("accounts.changed", { accountId: account.id });
-    events.emit("emails.changed", { accountId: account.id });
-    sendJSON(res, 200, { account });
-    return;
-  }
-
-  const accountSyncMatch = path.match(/^\/api\/accounts\/([^/]+)\/sync$/);
-  if (accountSyncMatch && req.method === "POST") {
-    requireProviders(providers);
-    const body = await readJSON(req);
-    const sync = await providers.syncAccount(accountSyncMatch[1], {
-      limit: body.limit
-    });
-    events.emit("emails.changed", { accountId: accountSyncMatch[1] });
-    await sendPushNotifications(pushNotifications, sync.newEmails);
-    sendJSON(res, 200, { sync: publicSyncResult(sync) });
-    return;
-  }
-
-  if (req.method === "GET" && path === "/api/mailboxes") {
-    sendJSON(res, 200, { mailboxes: store.listMailboxes(url.searchParams.get("accountId")) });
-    return;
-  }
-
-  if (req.method === "GET" && path === "/api/labels") {
-    sendJSON(res, 200, { labels: store.listLabels(url.searchParams.get("accountId")) });
-    return;
-  }
-
-  if (req.method === "POST" && path === "/api/labels") {
-    const label = store.createLabel(await readJSON(req));
-    events.emit("labels.changed", { labelId: label.id });
-    sendJSON(res, 201, { label });
-    return;
-  }
-
-  if (req.method === "GET" && path === "/api/emails") {
-    const emails = store.listEmails(Object.fromEntries(url.searchParams.entries()));
-    sendJSON(res, 200, { emails });
-    return;
-  }
-
-  const emailMatch = path.match(/^\/api\/emails\/([^/]+)$/);
-  if (emailMatch && req.method === "GET") {
-    let email = store.getEmail(emailMatch[1]);
-    if (!email) throw httpError(404, "Email not found.");
-    await ensureStoredAttachments({ store, providers, email });
-    email = store.getEmail(email.id);
-    sendJSON(res, 200, { email });
-    return;
-  }
-
-  const threadMatch = path.match(/^\/api\/emails\/([^/]+)\/thread$/);
-  if (threadMatch && req.method === "GET") {
-    let emails = store.listThreadEmails(threadMatch[1]);
-    if (!emails) throw httpError(404, "Email not found.");
-    for (const email of emails) {
-      await ensureStoredAttachments({ store, providers, email });
-    }
-    emails = store.listThreadEmails(threadMatch[1]);
-    sendJSON(res, 200, { emails });
-    return;
-  }
-
-  const attachmentDownloadMatch = path.match(/^\/api\/emails\/([^/]+)\/attachments\/([^/]+)\/download$/);
-  if (attachmentDownloadMatch && req.method === "GET") {
-    const email = store.getEmail(attachmentDownloadMatch[1]);
-    if (!email) throw httpError(404, "Email not found.");
-    let attachment = store.getAttachment(email.id, attachmentDownloadMatch[2]);
-    if (!attachment?.data && providers) {
-      await providers.ensureEmailAttachments(email);
-      attachment = store.getAttachment(email.id, attachmentDownloadMatch[2]);
-    }
-    if (!attachment?.data) throw httpError(404, "Attachment not found.");
-    sendAttachment(res, attachment);
-    return;
-  }
-
-  if (emailMatch && req.method === "PATCH") {
-    const email = store.updateEmail(emailMatch[1], await readJSON(req));
-    if (!email) throw httpError(404, "Email not found.");
-    events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
-    return;
-  }
-
-  const spamMatch = path.match(/^\/api\/emails\/([^/]+)\/spam$/);
-  if (spamMatch && req.method === "POST") {
-    const current = store.getEmail(spamMatch[1]);
-    if (!current) throw httpError(404, "Email not found.");
-    if (providers) {
-      await providers.markEmailSpam(current);
-    }
-    const email = store.markEmailSpam(spamMatch[1]);
-    events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
-    return;
-  }
-
-  const archiveMatch = path.match(/^\/api\/emails\/([^/]+)\/archive$/);
-  if (archiveMatch && req.method === "POST") {
-    const current = store.getEmail(archiveMatch[1]);
-    if (!current) throw httpError(404, "Email not found.");
-    if (providers) {
-      await providers.archiveEmail(current);
-    }
-    const email = store.archiveEmail(archiveMatch[1]);
-    events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
-    return;
-  }
-
-  const trashMatch = path.match(/^\/api\/emails\/([^/]+)\/trash$/);
-  if (trashMatch && req.method === "POST") {
-    const current = store.getEmail(trashMatch[1]);
-    if (!current) throw httpError(404, "Email not found.");
-    if (providers) {
-      await providers.trashEmail(current);
-    }
-    const email = store.trashEmail(trashMatch[1]);
-    events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
-    return;
-  }
-
-  const blockMatch = path.match(/^\/api\/emails\/([^/]+)\/block$/);
-  if (blockMatch && req.method === "POST") {
-    const result = store.blockSenderForEmail(blockMatch[1], (await readJSON(req)).scope);
-    if (!result) throw httpError(404, "Email not found.");
-    events.emit("emails.changed", { emailId: result.email.id, affectedCount: result.affectedCount });
-    sendJSON(res, 200, result);
-    return;
-  }
-
-  const labelMatch = path.match(/^\/api\/emails\/([^/]+)\/labels$/);
-  if (labelMatch && req.method === "POST") {
-    const body = await readJSON(req);
-    const email = store.setEmailLabel(labelMatch[1], body.labelId, body.action);
-    events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
-    return;
-  }
-
-  if (req.method === "POST" && path === "/api/messages/send") {
-    const body = await readJSON(req);
-    const email = store.sendMessage(body);
-    if (providers) {
-      try {
-        const result = await providers.sendMessage(email, body);
-        if (result.status === "sent") {
-          store.markOutboundSent(email.outboundId, result.providerUID);
-          email.outboundStatus = "sent";
-        }
-      } catch (error) {
-        const message = error?.message ?? String(error);
-        store.markOutboundFailed(email.outboundId, error);
-        email.outboundStatus = "failed";
-        email.outboundError = message;
-        events.emit("emails.changed", { emailId: email.id });
-        throw httpError(502, `Sending failed: ${message}`);
-      }
-    }
-    events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 202, {
-      email,
-      trackingPixelURL: email.trackingId ? `${baseURL}/api/track/open/${email.trackingId}.gif` : null
-    });
     return;
   }
 
   const trackingMatch = path.match(/^\/api\/track\/open\/([^/]+)\.gif$/);
   if (trackingMatch && req.method === "GET") {
-    const email = store.recordOpen(trackingMatch[1], {
+    const email = await store.recordOpen(trackingMatch[1], {
       userAgent: req.headers["user-agent"] ?? null,
       remoteAddr: req.socket.remoteAddress ?? null
     });
     if (email) {
-      events.emit("emails.changed", { emailId: email.id });
+      events.emit("emails.changed", { emailId: email.id }, email.userId);
     }
     sendCORS(res);
     res.writeHead(200, {
@@ -304,6 +81,237 @@ async function route({ req, res, store, providers, pushNotifications, events, ba
       "Content-Length": trackingPixel.length
     });
     res.end(trackingPixel);
+    return;
+  }
+
+  const user = authenticator
+    ? await authenticator.authenticate(req)
+    : { id: "local", email: null, displayName: "Local Profile", isLocal: true };
+  const requestStore = user.isLocal ? store : store.forUser(user);
+  const requestProviders = providers?.forStore ? providers.forStore(requestStore, user) : providers;
+  const requestPushNotifications = pushNotifications?.forStore ? pushNotifications.forStore(requestStore) : pushNotifications;
+
+  if (req.method === "GET" && path === "/api/events") {
+    events.subscribe(req, res, user.id);
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/accounts") {
+    sendJSON(res, 200, { accounts: await requestStore.listAccounts() });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/profile") {
+    sendJSON(res, 200, { profile: await requestStore.getProfile() });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/push/tokens") {
+    const token = await requestStore.registerPushToken(await readJSON(req));
+    sendJSON(res, 201, {
+      token,
+      pushConfigured: Boolean(requestPushNotifications?.isConfigured)
+    });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/auth/gmail/start") {
+    requireProviders(requestProviders);
+    console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);
+    sendJSON(res, 200, await requestProviders.startGmailAuth(await readJSON(req), user));
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/auth/icloud/connect") {
+    requireProviders(requestProviders);
+    const body = await readJSON(req);
+    console.log(`${new Date().toISOString()} POST /api/auth/icloud/connect email=${redactEmail(body.email)}`);
+    const result = await requestProviders.connectICloud(body);
+    console.log(`${new Date().toISOString()} iCloud connected email=${redactEmail(result.account.email)} imported=${result.sync.imported}`);
+    events.emit("accounts.changed", { accountId: result.account.id }, user.id);
+    events.emit("emails.changed", { accountId: result.account.id }, user.id);
+    sendJSON(res, 200, { ...result, sync: publicSyncResult(result.sync) });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/accounts") {
+    const account = await requestStore.createAccount(await readJSON(req));
+    events.emit("accounts.changed", { accountId: account.id }, user.id);
+    sendJSON(res, 201, { account });
+    return;
+  }
+
+  const accountMatch = path.match(/^\/api\/accounts\/([^/]+)$/);
+  if (accountMatch && req.method === "PATCH") {
+    const account = await requestStore.updateAccountSettings(accountMatch[1], await readJSON(req));
+    if (!account) throw httpError(404, "Account not found.");
+    events.emit("accounts.changed", { accountId: account.id }, user.id);
+    events.emit("emails.changed", { accountId: account.id }, user.id);
+    sendJSON(res, 200, { account });
+    return;
+  }
+
+  const accountSyncMatch = path.match(/^\/api\/accounts\/([^/]+)\/sync$/);
+  if (accountSyncMatch && req.method === "POST") {
+    requireProviders(requestProviders);
+    const body = await readJSON(req);
+    const sync = await requestProviders.syncAccount(accountSyncMatch[1], {
+      limit: body.limit
+    });
+    events.emit("emails.changed", { accountId: accountSyncMatch[1] }, user.id);
+    await sendPushNotifications(requestPushNotifications, sync.newEmails);
+    sendJSON(res, 200, { sync: publicSyncResult(sync) });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/mailboxes") {
+    sendJSON(res, 200, { mailboxes: await requestStore.listMailboxes(url.searchParams.get("accountId")) });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/labels") {
+    sendJSON(res, 200, { labels: await requestStore.listLabels(url.searchParams.get("accountId")) });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/labels") {
+    const label = await requestStore.createLabel(await readJSON(req));
+    events.emit("labels.changed", { labelId: label.id }, user.id);
+    sendJSON(res, 201, { label });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/emails") {
+    const emails = await requestStore.listEmails(Object.fromEntries(url.searchParams.entries()));
+    sendJSON(res, 200, { emails });
+    return;
+  }
+
+  const emailMatch = path.match(/^\/api\/emails\/([^/]+)$/);
+  if (emailMatch && req.method === "GET") {
+    let email = await requestStore.getEmail(emailMatch[1]);
+    if (!email) throw httpError(404, "Email not found.");
+    await ensureStoredAttachments({ store: requestStore, providers: requestProviders, email });
+    email = await requestStore.getEmail(email.id);
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const threadMatch = path.match(/^\/api\/emails\/([^/]+)\/thread$/);
+  if (threadMatch && req.method === "GET") {
+    let emails = await requestStore.listThreadEmails(threadMatch[1]);
+    if (!emails) throw httpError(404, "Email not found.");
+    for (const email of emails) {
+      await ensureStoredAttachments({ store: requestStore, providers: requestProviders, email });
+    }
+    emails = await requestStore.listThreadEmails(threadMatch[1]);
+    sendJSON(res, 200, { emails });
+    return;
+  }
+
+  const attachmentDownloadMatch = path.match(/^\/api\/emails\/([^/]+)\/attachments\/([^/]+)\/download$/);
+  if (attachmentDownloadMatch && req.method === "GET") {
+    const email = await requestStore.getEmail(attachmentDownloadMatch[1]);
+    if (!email) throw httpError(404, "Email not found.");
+    let attachment = await requestStore.getAttachment(email.id, attachmentDownloadMatch[2]);
+    if (!attachment?.data && requestProviders) {
+      await requestProviders.ensureEmailAttachments(email);
+      attachment = await requestStore.getAttachment(email.id, attachmentDownloadMatch[2]);
+    }
+    if (!attachment?.data) throw httpError(404, "Attachment not found.");
+    sendAttachment(res, attachment);
+    return;
+  }
+
+  if (emailMatch && req.method === "PATCH") {
+    const email = await requestStore.updateEmail(emailMatch[1], await readJSON(req));
+    if (!email) throw httpError(404, "Email not found.");
+    events.emit("emails.changed", { emailId: email.id }, user.id);
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const spamMatch = path.match(/^\/api\/emails\/([^/]+)\/spam$/);
+  if (spamMatch && req.method === "POST") {
+    const current = await requestStore.getEmail(spamMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (requestProviders) {
+      await requestProviders.markEmailSpam(current);
+    }
+    const email = await requestStore.markEmailSpam(spamMatch[1]);
+    events.emit("emails.changed", { emailId: email.id }, user.id);
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const archiveMatch = path.match(/^\/api\/emails\/([^/]+)\/archive$/);
+  if (archiveMatch && req.method === "POST") {
+    const current = await requestStore.getEmail(archiveMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (requestProviders) {
+      await requestProviders.archiveEmail(current);
+    }
+    const email = await requestStore.archiveEmail(archiveMatch[1]);
+    events.emit("emails.changed", { emailId: email.id }, user.id);
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const trashMatch = path.match(/^\/api\/emails\/([^/]+)\/trash$/);
+  if (trashMatch && req.method === "POST") {
+    const current = await requestStore.getEmail(trashMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (requestProviders) {
+      await requestProviders.trashEmail(current);
+    }
+    const email = await requestStore.trashEmail(trashMatch[1]);
+    events.emit("emails.changed", { emailId: email.id }, user.id);
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  const blockMatch = path.match(/^\/api\/emails\/([^/]+)\/block$/);
+  if (blockMatch && req.method === "POST") {
+    const result = await requestStore.blockSenderForEmail(blockMatch[1], (await readJSON(req)).scope);
+    if (!result) throw httpError(404, "Email not found.");
+    events.emit("emails.changed", { emailId: result.email.id, affectedCount: result.affectedCount }, user.id);
+    sendJSON(res, 200, result);
+    return;
+  }
+
+  const labelMatch = path.match(/^\/api\/emails\/([^/]+)\/labels$/);
+  if (labelMatch && req.method === "POST") {
+    const body = await readJSON(req);
+    const email = await requestStore.setEmailLabel(labelMatch[1], body.labelId, body.action);
+    events.emit("emails.changed", { emailId: email.id }, user.id);
+    sendJSON(res, 200, { email });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/messages/send") {
+    const body = await readJSON(req);
+    const email = await requestStore.sendMessage(body);
+    if (requestProviders) {
+      try {
+        const result = await requestProviders.sendMessage(email, body);
+        if (result.status === "sent") {
+          await requestStore.markOutboundSent(email.outboundId, result.providerUID);
+          email.outboundStatus = "sent";
+        }
+      } catch (error) {
+        const message = error?.message ?? String(error);
+        await requestStore.markOutboundFailed(email.outboundId, error);
+        email.outboundStatus = "failed";
+        email.outboundError = message;
+        events.emit("emails.changed", { emailId: email.id }, user.id);
+        throw httpError(502, `Sending failed: ${message}`);
+      }
+    }
+    events.emit("emails.changed", { emailId: email.id }, user.id);
+    sendJSON(res, 202, {
+      email,
+      trackingPixelURL: email.trackingId ? `${baseURL}/api/track/open/${email.trackingId}.gif` : null
+    });
     return;
   }
 
@@ -416,14 +424,15 @@ function authSuccessPage(result) {
 </html>`;
 }
 
-function syncAccountInBackground({ providers, events, accountId, limit }) {
+function syncAccountInBackground({ providers, events, accountId, limit, user }) {
   setTimeout(async () => {
     try {
       console.log(`${new Date().toISOString()} background sync started account=${accountId}`);
-      const sync = await providers.syncGmailAccount(accountId, { limit });
+      const scopedProviders = !user?.isLocal && providers.forUser ? providers.forUser(user) : providers;
+      const sync = await scopedProviders.syncGmailAccount(accountId, { limit });
       console.log(`${new Date().toISOString()} background sync completed account=${accountId} imported=${sync.imported}`);
-      events.emit("emails.changed", { accountId });
-      events.emit("accounts.changed", { accountId });
+      events.emit("emails.changed", { accountId }, user?.id);
+      events.emit("accounts.changed", { accountId }, user?.id);
     } catch (error) {
       console.error(`${new Date().toISOString()} background sync failed account=${accountId}: ${error.message}`);
     }
@@ -465,7 +474,7 @@ class EventHub {
     this.clients = new Set();
   }
 
-  subscribe(req, res) {
+  subscribe(req, res, userId) {
     sendCORS(res);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -474,14 +483,16 @@ class EventHub {
       "X-Accel-Buffering": "no"
     });
     res.write("event: ready\ndata: {}\n\n");
-    this.clients.add(res);
-    req.on("close", () => this.clients.delete(res));
+    const client = { res, userId };
+    this.clients.add(client);
+    req.on("close", () => this.clients.delete(client));
   }
 
-  emit(event, data) {
+  emit(event, data, userId = null) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of this.clients) {
-      client.write(payload);
+      if (userId && client.userId !== userId) continue;
+      client.res.write(payload);
     }
   }
 }

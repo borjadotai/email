@@ -126,6 +126,13 @@ private struct GeneralSettingsPane: View {
             LabeledContent("Primary", value: primaryEmail)
           }
           LabeledContent("Accounts", value: "\(profile.accounts.count)")
+          if model.requiresUserAuth {
+            Button(role: .destructive) {
+              model.signOut()
+            } label: {
+              Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+            }
+          }
         }
       }
 

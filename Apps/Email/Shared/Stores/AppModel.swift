@@ -14,6 +14,11 @@ struct PendingArchiveNotification: Identifiable, Hashable {
   var previousSelectedEmail: EmailDetail?
 }
 
+private enum AuthMode {
+  case signIn
+  case signUp
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -39,6 +44,8 @@ final class AppModel {
   var statusMessage: String?
   var health: HealthResponse?
   var authSettings: AuthSettings?
+  var authSession: AuthSession?
+  var isAuthenticating = false
   var updatingAccountID: String?
   var shortcutBindings: [MailShortcutBinding] = MailShortcutBinding.defaults {
     didSet {
@@ -91,6 +98,7 @@ final class AppModel {
     themePreference = ThemePreference(rawValue: rawTheme) ?? .system
     archiveUndoDurationSeconds = Defaults.loadArchiveUndoDurationSeconds()
     shortcutBindings = Defaults.loadShortcutBindings()
+    authSession = AuthSessionStore.shared.load()
   }
 
   var colorScheme: ColorScheme? {
@@ -122,11 +130,19 @@ final class AppModel {
 
   var apiClient: MailAPIClient {
     let fallback = URL(string: Defaults.defaultServerURL) ?? URL(string: "http://127.0.0.1:7331")!
-    return MailAPIClient(baseURL: URL(string: serverURLString) ?? fallback)
+    return MailAPIClient(baseURL: URL(string: serverURLString) ?? fallback, accessToken: authSession?.accessToken)
   }
 
   var shouldStartBundledServer: Bool {
     Defaults.isLoopbackURL(serverURLString)
+  }
+
+  var requiresUserAuth: Bool {
+    authSettings?.requireUserAuth == true
+  }
+
+  var shouldShowAuthGate: Bool {
+    requiresUserAuth && authSession == nil
   }
 
   func bootstrap() async {
@@ -142,6 +158,13 @@ final class AppModel {
     do {
       health = try await apiClient.health()
       authSettings = try? await apiClient.authSettings()
+      if requiresUserAuth {
+        try await refreshAuthSessionIfNeeded()
+        guard authSession != nil else {
+          clearMailData()
+          return
+        }
+      }
       profile = try? await apiClient.profile()
       accounts = try await apiClient.accounts()
       mailboxes = try await apiClient.mailboxes()
@@ -152,6 +175,96 @@ final class AppModel {
         errorMessage = error.localizedDescription
       }
     }
+  }
+
+  func signIn(email: String, password: String) async -> Bool {
+    await authenticate(email: email, password: password, mode: .signIn)
+  }
+
+  func signUp(email: String, password: String) async -> Bool {
+    await authenticate(email: email, password: password, mode: .signUp)
+  }
+
+  func signOut() {
+    AuthSessionStore.shared.clear()
+    authSession = nil
+    clearMailData()
+  }
+
+  private func authenticate(email: String, password: String, mode: AuthMode) async -> Bool {
+    let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !normalizedEmail.isEmpty, !password.isEmpty else {
+      errorMessage = "Email and password are required."
+      return false
+    }
+
+    isAuthenticating = true
+    errorMessage = nil
+    defer { isAuthenticating = false }
+
+    do {
+      if authSettings == nil {
+        authSettings = try await apiClient.authSettings()
+      }
+      let client = try supabaseAuthClient()
+      switch mode {
+      case .signIn:
+        let session = try await client.signIn(email: normalizedEmail, password: password)
+        setAuthSession(session)
+        statusMessage = nil
+        await refreshAll()
+        return true
+      case .signUp:
+        if let session = try await client.signUp(email: normalizedEmail, password: password) {
+          setAuthSession(session)
+          statusMessage = nil
+          await refreshAll()
+          return true
+        }
+        statusMessage = "Check your email, then sign in."
+        return false
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  private func refreshAuthSessionIfNeeded() async throws {
+    guard var session = authSession else { return }
+    guard session.shouldRefresh else { return }
+    session = try await supabaseAuthClient().refresh(session.refreshToken)
+    setAuthSession(session)
+  }
+
+  private func setAuthSession(_ session: AuthSession) {
+    authSession = session
+    AuthSessionStore.shared.save(session)
+  }
+
+  private func supabaseAuthClient() throws -> SupabaseAuthClient {
+    guard let settings = authSettings,
+          let urlString = settings.supabaseURL,
+          let url = URL(string: urlString),
+          let publishableKey = settings.supabasePublishableKey,
+          !publishableKey.isEmpty else {
+      throw SupabaseAuthError.missingConfiguration
+    }
+    return SupabaseAuthClient(url: url, publishableKey: publishableKey)
+  }
+
+  private func clearMailData() {
+    profile = nil
+    accounts = []
+    mailboxes = []
+    labels = []
+    emails = []
+    selectedEmail = nil
+    conversationEmails = []
+    selectedEmailID = nil
+    selectedAccountID = nil
+    selectedMailboxID = nil
+    selectedLabelID = nil
   }
 
   private func loadEmails() async throws {

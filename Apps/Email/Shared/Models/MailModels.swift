@@ -164,6 +164,9 @@ struct AuthSettings: Codable, Hashable {
   var icloudConfigured: Bool
   var icloudAuthType: String
   var appleMailOAuthAvailable: Bool
+  var requireUserAuth: Bool?
+  var supabaseURL: String?
+  var supabasePublishableKey: String?
 }
 
 struct GmailAuthStartRequest: Encodable {
