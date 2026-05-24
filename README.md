@@ -228,6 +228,16 @@ npx supabase start --exclude edge-runtime,imgproxy,realtime,studio,vector --igno
 npx supabase db reset --local --no-seed --yes
 ```
 
+Run the optional real Supabase Postgres/Storage isolation test against that local
+stack:
+
+```sh
+EMAIL_TEST_POSTGRES_URL='postgresql://postgres:postgres@127.0.0.1:54322/postgres' \
+EMAIL_TEST_SUPABASE_URL='http://127.0.0.1:54321' \
+EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY='local-service-role-key-from-npx-supabase-status-o-env' \
+npm run test:postgres
+```
+
 Build the apps:
 
 ```sh

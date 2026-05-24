@@ -399,7 +399,7 @@ struct SupabaseAuthClient {
       method: "POST",
       body: EmailPasswordRequest(email: email, password: password)
     )
-    return response.session?.authSession
+    return response.authSession
   }
 
   func refresh(_ refreshToken: String) async throws -> AuthSession {
@@ -528,6 +528,22 @@ private struct SupabaseTokenResponse: Decodable {
 
 private struct SupabaseSignUpResponse: Decodable {
   var session: SupabaseTokenResponse?
+  var accessToken: String?
+  var refreshToken: String?
+  var expiresIn: Int?
+  var expiresAt: Int?
+  var user: AuthUser?
+
+  var authSession: AuthSession? {
+    session?.authSession ??
+      SupabaseTokenResponse(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiresIn: expiresIn,
+        expiresAt: expiresAt,
+        user: user
+      ).authSession
+  }
 }
 
 private struct SupabaseErrorResponse: Decodable {
@@ -536,13 +552,17 @@ private struct SupabaseErrorResponse: Decodable {
 
   enum CodingKeys: String, CodingKey {
     case message
+    case msg
+    case error
     case errorDescription = "error_description"
   }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     message = try container.decodeIfPresent(String.self, forKey: .message) ??
-      container.decodeIfPresent(String.self, forKey: .errorDescription)
+      container.decodeIfPresent(String.self, forKey: .msg) ??
+      container.decodeIfPresent(String.self, forKey: .errorDescription) ??
+      container.decodeIfPresent(String.self, forKey: .error)
   }
 }
 

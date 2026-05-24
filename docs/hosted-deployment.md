@@ -9,7 +9,10 @@ personal Mac mini server.
 2. Apply `supabase/migrations/*`.
 3. Confirm the private `email-attachments` bucket exists.
 4. Enable the Supabase Auth providers you want public users to sign in with.
-5. Copy these values for the API runtime:
+5. Run the optional local integration test before touching production:
+   `npm run test:postgres` with `EMAIL_TEST_POSTGRES_URL`,
+   `EMAIL_TEST_SUPABASE_URL`, and `EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY`.
+6. Copy these values for the API runtime:
    - project URL
    - publishable key
    - service-role key

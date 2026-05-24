@@ -39,3 +39,48 @@ export function resolveConfig(env = process.env) {
     }
   };
 }
+
+export function validateRuntimeConfig(config) {
+  const errors = [];
+
+  if (config.requireAuth) {
+    requireValue(errors, config.supabaseURL, "SUPABASE_URL is required when EMAIL_REQUIRE_AUTH=1.");
+    requireValue(
+      errors,
+      config.supabasePublishableKey,
+      "SUPABASE_PUBLISHABLE_KEY is required when EMAIL_REQUIRE_AUTH=1."
+    );
+  }
+
+  if (config.storage === "postgres") {
+    requireValue(errors, config.postgresURL, "EMAIL_POSTGRES_URL is required when EMAIL_STORAGE=postgres.");
+    requireValue(errors, config.supabaseURL, "SUPABASE_URL is required when EMAIL_STORAGE=postgres.");
+    requireValue(
+      errors,
+      config.supabaseServiceRoleKey,
+      "SUPABASE_SERVICE_ROLE_KEY is required when EMAIL_STORAGE=postgres."
+    );
+    if (config.secretStore !== "postgres") {
+      errors.push("EMAIL_SECRET_STORE=postgres is required when EMAIL_STORAGE=postgres.");
+    }
+  }
+
+  if (config.secretStore === "postgres") {
+    requireValue(errors, config.postgresURL, "EMAIL_POSTGRES_URL is required when EMAIL_SECRET_STORE=postgres.");
+    requireValue(
+      errors,
+      config.secretEncryptionKey,
+      "EMAIL_SECRET_ENCRYPTION_KEY is required when EMAIL_SECRET_STORE=postgres."
+    );
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Invalid runtime configuration:\n- ${errors.join("\n- ")}`);
+  }
+}
+
+function requireValue(errors, value, message) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    errors.push(message);
+  }
+}

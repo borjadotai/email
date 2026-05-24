@@ -1,4 +1,4 @@
-import { resolveConfig } from "./config.js";
+import { resolveConfig, validateRuntimeConfig } from "./config.js";
 import { RequestAuthenticator } from "./auth.js";
 import { createServer } from "./http.js";
 import { maybeEncryptedSecretStore } from "./encryption.js";
@@ -9,6 +9,7 @@ import { PostgresMailStore } from "./postgresStore.js";
 import { MailStore } from "./store.js";
 
 const config = resolveConfig();
+validateRuntimeConfig(config);
 const store = storeForRuntime(config);
 const baseURL = config.publicBaseURL ?? `http://${config.host}:${config.port}`;
 const secretStore = maybeEncryptedSecretStore(secretStoreForRuntime(config), config);
