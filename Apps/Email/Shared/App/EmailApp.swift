@@ -5,6 +5,7 @@ struct EmailApp: App {
   @State private var model = AppModel()
   #if os(macOS)
   @State private var localServer = LocalServerController()
+  @State private var softwareUpdateController = SoftwareUpdateController()
   #endif
 
   var body: some Scene {
@@ -18,6 +19,7 @@ struct EmailApp: App {
     }
     #if os(macOS)
     .commands {
+      SoftwareUpdateCommands(updater: softwareUpdateController)
       MailCommands(model: model)
     }
     #endif
@@ -40,6 +42,19 @@ struct EmailApp: App {
 }
 
 #if os(macOS)
+struct SoftwareUpdateCommands: Commands {
+  var updater: SoftwareUpdateController
+
+  var body: some Commands {
+    CommandGroup(after: .appInfo) {
+      Button("Check for Updates...") {
+        updater.checkForUpdates()
+      }
+      .disabled(!updater.canCheckForUpdates)
+    }
+  }
+}
+
 struct MailCommands: Commands {
   var model: AppModel
 

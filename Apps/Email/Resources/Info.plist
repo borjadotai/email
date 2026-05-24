@@ -11,5 +11,17 @@
   <string>Email connects to your local development mail server.</string>
   <key>EmailDefaultServerURL</key>
   <string>$(EMAIL_DEFAULT_SERVER_URL)</string>
+  <key>SUAllowsAutomaticUpdates</key>
+  <true/>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUFeedURL</key>
+  <string>https://github.com/borjadotai/email/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>olY/rYPqCREhD8c3bte+pUP62uMhXS1jMc4AQsTvSmU=</string>
+  <key>SUScheduledCheckInterval</key>
+  <integer>3600</integer>
 </dict>
 </plist>

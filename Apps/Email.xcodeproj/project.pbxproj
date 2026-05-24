@@ -11,6 +11,7 @@
 		100000000000000000000102 /* Models/MailModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000202 /* Models/MailModels.swift */; };
 		100000000000000000000103 /* Services/MailAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* Services/MailAPIClient.swift */; };
 		100000000000000000000120 /* Services/LocalServerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000212 /* Services/LocalServerController.swift */; };
+		100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* Services/SoftwareUpdateController.swift */; };
 		100000000000000000000104 /* Stores/AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000204 /* Stores/AppModel.swift */; };
 		100000000000000000000105 /* Support/Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000205 /* Support/Formatters.swift */; };
 		100000000000000000000106 /* Views/AvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000206 /* Views/AvatarView.swift */; };
@@ -23,6 +24,7 @@
 		10000000000000000000010D /* Views/AddAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020D /* Views/AddAccountView.swift */; };
 		10000000000000000000010E /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020E /* Views/SettingsView.swift */; };
 		10000000000000000000010F /* ../Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020F /* ../Resources/Assets.xcassets */; };
+		100000000000000000000121 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000901 /* Sparkle */; };
 		100000000000000000000111 /* App/EmailApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000201 /* App/EmailApp.swift */; };
 		100000000000000000000112 /* Models/MailModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000202 /* Models/MailModels.swift */; };
 		100000000000000000000113 /* Services/MailAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* Services/MailAPIClient.swift */; };
@@ -45,6 +47,7 @@
 		100000000000000000000202 /* Models/MailModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/MailModels.swift; sourceTree = "<group>"; };
 		100000000000000000000203 /* Services/MailAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/MailAPIClient.swift; sourceTree = "<group>"; };
 		100000000000000000000212 /* Services/LocalServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalServerController.swift; sourceTree = "<group>"; };
+		100000000000000000000213 /* Services/SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SoftwareUpdateController.swift; sourceTree = "<group>"; };
 		100000000000000000000204 /* Stores/AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stores/AppModel.swift; sourceTree = "<group>"; };
 		100000000000000000000205 /* Support/Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Support/Formatters.swift; sourceTree = "<group>"; };
 		100000000000000000000206 /* Views/AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AvatarView.swift; sourceTree = "<group>"; };
@@ -66,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				100000000000000000000121 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -111,6 +115,7 @@
 				100000000000000000000202 /* Models/MailModels.swift */,
 				100000000000000000000203 /* Services/MailAPIClient.swift */,
 				100000000000000000000212 /* Services/LocalServerController.swift */,
+				100000000000000000000213 /* Services/SoftwareUpdateController.swift */,
 				100000000000000000000204 /* Stores/AppModel.swift */,
 				100000000000000000000205 /* Support/Formatters.swift */,
 				100000000000000000000206 /* Views/AvatarView.swift */,
@@ -143,6 +148,9 @@
 			dependencies = (
 			);
 			name = EmailMac;
+			packageProductDependencies = (
+				100000000000000000000901 /* Sparkle */,
+			);
 			productName = Email;
 			productReference = 100000000000000000000210 /* Email.app */;
 			productType = "com.apple.product-type.application";
@@ -191,6 +199,9 @@
 				Base,
 			);
 			mainGroup = 100000000000000000000401;
+			packageReferences = (
+				100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			productRefGroup = 100000000000000000000403 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -229,6 +240,7 @@
 				100000000000000000000102 /* Models/MailModels.swift in Sources */,
 				100000000000000000000103 /* Services/MailAPIClient.swift in Sources */,
 				100000000000000000000120 /* Services/LocalServerController.swift in Sources */,
+				100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */,
 				100000000000000000000104 /* Stores/AppModel.swift in Sources */,
 				100000000000000000000105 /* Support/Formatters.swift in Sources */,
 				100000000000000000000106 /* Views/AvatarView.swift in Sources */,
@@ -265,6 +277,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		100000000000000000000901 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		100000000000000000000801 /* Debug */ = {

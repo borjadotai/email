@@ -89,17 +89,32 @@ if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
   npm ci --omit=dev
 fi
 
+XCODEBUILD_OVERRIDES=()
+if [[ -n "${EMAIL_RELEASE_VERSION:-}" ]]; then
+  XCODEBUILD_OVERRIDES+=(MARKETING_VERSION="$EMAIL_RELEASE_VERSION")
+fi
+if [[ -n "${EMAIL_RELEASE_BUILD:-}" ]]; then
+  XCODEBUILD_OVERRIDES+=(CURRENT_PROJECT_VERSION="$EMAIL_RELEASE_BUILD")
+fi
+
 mkdir -p "$DIST_DIR"
 rm -rf "$APP_BUNDLE" "$ZIP_PATH" "$DMG_PATH" "$DMG_STAGE"
 
-xcodebuild \
-  -project "$PROJECT" \
-  -scheme "$SCHEME" \
-  -configuration "$CONFIGURATION" \
-  -destination 'platform=macOS' \
-  -derivedDataPath "$DERIVED_DATA" \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+XCODEBUILD_COMMAND=(
+  xcodebuild
+  -project "$PROJECT"
+  -scheme "$SCHEME"
+  -configuration "$CONFIGURATION"
+  -destination 'platform=macOS'
+  -derivedDataPath "$DERIVED_DATA"
+  CODE_SIGNING_ALLOWED=NO
+)
+if [[ ${#XCODEBUILD_OVERRIDES[@]} -gt 0 ]]; then
+  XCODEBUILD_COMMAND+=("${XCODEBUILD_OVERRIDES[@]}")
+fi
+XCODEBUILD_COMMAND+=(build)
+
+"${XCODEBUILD_COMMAND[@]}"
 
 BUILT_APP="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
 if [[ ! -d "$BUILT_APP" ]]; then

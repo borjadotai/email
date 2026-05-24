@@ -25,6 +25,7 @@ jobs:
       EMAIL_RELEASE_ENV_BASE64: ${{ secrets.EMAIL_RELEASE_ENV_BASE64 }}
       MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
       MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
 
     steps:
       - name: Checkout
@@ -41,6 +42,20 @@ jobs:
 
       - name: Run server tests
         run: npm test
+
+      - name: Set release version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p 'require("./package.json").version')"
+          fi
+
+          echo "EMAIL_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "EMAIL_RELEASE_BUILD=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
 
       - name: Import Developer ID certificate
         shell: bash
@@ -99,8 +114,32 @@ jobs:
             npm run package:mac -- --unsigned --skip-notarization
           fi
 
+      - name: Download Sparkle tools
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fL --retry 3 -o "$RUNNER_TEMP/Sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/2.9.2/Sparkle-2.9.2.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle" --strip-components 1
+          echo "SPARKLE_SIGN_UPDATE=$RUNNER_TEMP/sparkle/bin/sign_update" >> "$GITHUB_ENV"
+
       - name: Write checksums
-        run: shasum -a 256 dist/Email-mac.dmg dist/Email-mac.zip > dist/checksums.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            ./script/create_sparkle_appcast.sh
+          fi
+
+          files=(dist/Email-mac.dmg dist/Email-mac.zip)
+          if [[ -f dist/appcast.xml ]]; then
+            files+=(dist/appcast.xml)
+          fi
+          shasum -a 256 "${files[@]}" > dist/checksums.txt
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -109,6 +148,7 @@ jobs:
           path: |
             dist/Email-mac.dmg
             dist/Email-mac.zip
+            dist/appcast.xml
             dist/checksums.txt
           if-no-files-found: error
           retention-days: 14
@@ -124,12 +164,14 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" \
               dist/Email-mac.dmg \
               dist/Email-mac.zip \
+              dist/appcast.xml \
               dist/checksums.txt \
               --clobber
           else
             gh release create "$GITHUB_REF_NAME" \
               dist/Email-mac.dmg \
               dist/Email-mac.zip \
+              dist/appcast.xml \
               dist/checksums.txt \
               --title "$GITHUB_REF_NAME" \
               --generate-notes

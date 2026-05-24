@@ -117,8 +117,17 @@ Tags starting with `v` create or update a GitHub Release and attach:
 ```text
 Email-mac.dmg
 Email-mac.zip
+appcast.xml
 checksums.txt
 ```
+
+The macOS app uses Sparkle 2 for updates. Its feed URL is:
+
+```text
+https://github.com/borjadotai/email/releases/latest/download/appcast.xml
+```
+
+Sparkle automatic checks and automatic installs are enabled by default. The app also adds a macOS menu item at Email -> Check for Updates....
 
 Unsigned artifacts are useful for private testing, but public downloads should be signed and notarized. Configure these GitHub repository secrets to enable that in the workflow:
 
@@ -129,6 +138,7 @@ DEVELOPER_ID_APPLICATION
 APPLE_ID
 APPLE_TEAM_ID
 APPLE_APP_SPECIFIC_PASSWORD
+SPARKLE_PRIVATE_KEY
 ```
 
 `MACOS_DEVELOPER_ID_CERTIFICATE_BASE64` is a base64-encoded `.p12` export of the Developer ID Application certificate. `DEVELOPER_ID_APPLICATION` should match the identity name, for example:
@@ -138,6 +148,8 @@ Developer ID Application: Your Name (TEAMID)
 ```
 
 Optionally set `EMAIL_RELEASE_ENV_BASE64` to a base64-encoded release env file if a private/internal build needs bundled provider configuration. Avoid putting personal secrets into public release builds.
+
+`SPARKLE_PRIVATE_KEY` is the exported private EdDSA key from Sparkle's `generate_keys` tool. The matching public key is embedded in the app as `SUPublicEDKey`.
 
 ## Server API
 
