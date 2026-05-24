@@ -2,22 +2,26 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
+import { RequestAuthenticator } from "../src/auth.js";
+import { createServer } from "../src/http.js";
 import { PostgresMailStore } from "../src/postgresStore.js";
 
 const integrationConfig = {
   postgresURL: process.env.EMAIL_TEST_POSTGRES_URL,
   supabaseURL: process.env.EMAIL_TEST_SUPABASE_URL,
+  publishableKey: process.env.EMAIL_TEST_SUPABASE_PUBLISHABLE_KEY,
   serviceRoleKey: process.env.EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY
 };
 
 const hasIntegrationConfig = Boolean(
   integrationConfig.postgresURL &&
   integrationConfig.supabaseURL &&
+  integrationConfig.publishableKey &&
   integrationConfig.serviceRoleKey
 );
 
 test("real Supabase Postgres store isolates tenants across search, records, push tokens, and attachments", {
-  skip: hasIntegrationConfig ? false : "Set EMAIL_TEST_POSTGRES_URL, EMAIL_TEST_SUPABASE_URL, and EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY."
+  skip: hasIntegrationConfig ? false : integrationSkipReason()
 }, async () => {
   const suffix = randomUUID();
   const alice = testUser("alice", suffix);
@@ -81,6 +85,94 @@ test("real Supabase Postgres store isolates tenants across search, records, push
   } finally {
     await cleanupStorage(store, uploadedPaths);
     await pool.query("DELETE FROM auth.users WHERE id = ANY($1::uuid[])", [[alice.id, bob.id]]);
+    await store.close();
+    await pool.end();
+  }
+});
+
+test("real hosted HTTP API verifies Supabase JWTs and scopes tenant routes", {
+  skip: hasIntegrationConfig ? false : integrationSkipReason()
+}, async () => {
+  const suffix = randomUUID();
+  const alice = testUser("http-alice", suffix);
+  const bob = testUser("http-bob", suffix);
+  const alicePassword = `P${randomUUID()}!1a`;
+  const bobPassword = `P${randomUUID()}!1a`;
+  const pool = new pg.Pool({ connectionString: integrationConfig.postgresURL });
+  const store = new PostgresMailStore({
+    connectionString: integrationConfig.postgresURL,
+    supabaseURL: integrationConfig.supabaseURL,
+    supabaseServiceRoleKey: integrationConfig.serviceRoleKey
+  });
+  const { server } = createServer({
+    store,
+    authenticator: new RequestAuthenticator({
+      requireAuth: true,
+      supabaseURL: integrationConfig.supabaseURL,
+      supabasePublishableKey: integrationConfig.publishableKey
+    })
+  });
+
+  try {
+    await createConfirmedAuthUser(alice, alicePassword);
+    await createConfirmedAuthUser(bob, bobPassword);
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+    const aliceToken = await passwordToken(alice.email, alicePassword);
+    const bobToken = await passwordToken(bob.email, bobPassword);
+
+    const unauthenticated = await fetch(`${baseURL}/api/accounts`);
+    assert.equal(unauthenticated.status, 401);
+
+    const aliceAccount = (await requestJSON(`${baseURL}/api/accounts`, {
+      method: "POST",
+      token: aliceToken,
+      body: sharedAccountInput()
+    })).account;
+    const bobAccount = (await requestJSON(`${baseURL}/api/accounts`, {
+      method: "POST",
+      token: bobToken,
+      body: sharedAccountInput()
+    })).account;
+    assert.notEqual(aliceAccount.id, bobAccount.id);
+
+    assert.deepEqual((await requestJSON(`${baseURL}/api/accounts`, { token: aliceToken })).accounts.map(account => account.id), [aliceAccount.id]);
+    assert.deepEqual((await requestJSON(`${baseURL}/api/accounts`, { token: bobToken })).accounts.map(account => account.id), [bobAccount.id]);
+
+    const crossTenantPatch = await fetch(`${baseURL}/api/accounts/${bobAccount.id}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${aliceToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ displayName: "Compromised" })
+    });
+    assert.equal(crossTenantPatch.status, 404);
+
+    const sent = (await requestJSON(`${baseURL}/api/messages/send`, {
+      method: "POST",
+      token: aliceToken,
+      body: {
+        accountId: aliceAccount.id,
+        to: "friend@example.com",
+        subject: "Hosted route proof",
+        bodyText: "hosted http searchable needle"
+      }
+    })).email;
+    assert.ok(sent.trackingId);
+
+    const search = await requestJSON(`${baseURL}/api/emails?q=hosted%20http%20searchable`, { token: aliceToken });
+    assert.deepEqual(search.emails.map(email => email.id), [sent.id]);
+    assert.deepEqual((await requestJSON(`${baseURL}/api/emails?q=hosted%20http%20searchable`, { token: bobToken })).emails, []);
+
+    const pixel = await fetch(`${baseURL}/api/track/open/${sent.trackingId}.gif`);
+    assert.equal(pixel.status, 200);
+    assert.equal(pixel.headers.get("content-type"), "image/gif");
+    const opened = (await requestJSON(`${baseURL}/api/emails/${sent.id}`, { token: aliceToken })).email;
+    assert.ok(opened.openedAt);
+  } finally {
+    await close(server);
+    await pool.query("DELETE FROM auth.users WHERE email = ANY($1::text[])", [[alice.email, bob.email]]);
     await store.close();
     await pool.end();
   }
@@ -178,4 +270,71 @@ async function seedAuthUser(pool, user) {
 async function cleanupStorage(store, paths) {
   if (!store.attachmentStorage || paths.length === 0) return;
   await store.attachmentStorage.remove(paths);
+}
+
+async function createConfirmedAuthUser(user, password) {
+  const response = await fetch(`${integrationConfig.supabaseURL}/auth/v1/admin/users`, {
+    method: "POST",
+    headers: {
+      apikey: integrationConfig.serviceRoleKey,
+      Authorization: `Bearer ${integrationConfig.serviceRoleKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      email: user.email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: user.displayName }
+    })
+  });
+  if (!response.ok) {
+    assert.fail(`Could not create confirmed auth user: ${response.status} ${await response.text()}`);
+  }
+}
+
+async function passwordToken(email, password) {
+  const response = await fetch(`${integrationConfig.supabaseURL}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: {
+      apikey: integrationConfig.publishableKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ email, password })
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    assert.fail(`Could not sign in test user: ${response.status} ${JSON.stringify(body)}`);
+  }
+  assert.ok(body.access_token);
+  return body.access_token;
+}
+
+async function requestJSON(url, { method = "GET", token, body } = {}) {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(body ? { "Content-Type": "application/json" } : {})
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!response.ok) {
+    assert.fail(`${method} ${url} failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
+function listen(server, port) {
+  return new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
+}
+
+function close(server) {
+  if (!server?.listening) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+  });
+}
+
+function integrationSkipReason() {
+  return "Set EMAIL_TEST_POSTGRES_URL, EMAIL_TEST_SUPABASE_URL, EMAIL_TEST_SUPABASE_PUBLISHABLE_KEY, and EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY.";
 }

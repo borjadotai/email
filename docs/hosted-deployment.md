@@ -11,7 +11,8 @@ personal Mac mini server.
 4. Enable the Supabase Auth providers you want public users to sign in with.
 5. Run the optional local integration test before touching production:
    `npm run test:postgres` with `EMAIL_TEST_POSTGRES_URL`,
-   `EMAIL_TEST_SUPABASE_URL`, and `EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY`.
+   `EMAIL_TEST_SUPABASE_URL`, `EMAIL_TEST_SUPABASE_PUBLISHABLE_KEY`, and
+   `EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY`.
 6. Copy these values for the API runtime:
    - project URL
    - publishable key

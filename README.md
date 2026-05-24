@@ -234,6 +234,7 @@ stack:
 ```sh
 EMAIL_TEST_POSTGRES_URL='postgresql://postgres:postgres@127.0.0.1:54322/postgres' \
 EMAIL_TEST_SUPABASE_URL='http://127.0.0.1:54321' \
+EMAIL_TEST_SUPABASE_PUBLISHABLE_KEY='local-publishable-key-from-npx-supabase-status-o-env' \
 EMAIL_TEST_SUPABASE_SERVICE_ROLE_KEY='local-service-role-key-from-npx-supabase-status-o-env' \
 npm run test:postgres
 ```
