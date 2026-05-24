@@ -30,6 +30,8 @@ backend that can serve multiple users and multiple client devices.
 - Fly.io runs the long-lived Node API and sync worker process because IMAP,
   provider polling, OAuth callbacks, APNs, and background sync are a better fit
   for a durable process than short serverless invocations.
+- Hosted background sync is controlled by `EMAIL_BACKGROUND_SYNC_INTERVAL_MS`
+  and syncs connected accounts under their owning Supabase user context.
 
 ## Device Storage Strategy
 
@@ -88,6 +90,8 @@ Required non-secret hosted config:
 - `SUPABASE_URL`
 - `SUPABASE_PUBLISHABLE_KEY`
 - `EMAIL_ATTACHMENT_BUCKET=email-attachments`
+- `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000`
+- `EMAIL_BACKGROUND_SYNC_LIMIT=50`
 
 `fly.toml.example` is configured for the hosted Postgres/Storage path and does
 not need a persistent Fly volume. The SQLite/file-secret path remains available

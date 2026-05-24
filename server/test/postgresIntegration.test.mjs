@@ -43,6 +43,17 @@ test("real Supabase Postgres store isolates tenants across search, records, push
     const aliceAccount = await aliceStore.createOrUpdateAccount(sharedAccountInput());
     const bobAccount = await bobStore.createOrUpdateAccount(sharedAccountInput());
     assert.notEqual(aliceAccount.id, bobAccount.id);
+    const syncableAccounts = await store.listSyncableAccounts({ limit: 10 });
+    assert.deepEqual(
+      syncableAccounts
+        .filter(account => account.id === aliceAccount.id || account.id === bobAccount.id)
+        .map(account => [account.id, account.user.id])
+        .sort(),
+      [
+        [aliceAccount.id, alice.id],
+        [bobAccount.id, bob.id]
+      ].sort()
+    );
 
     const aliceInbox = await aliceStore.mailboxForRole(aliceAccount.id, "inbox");
     const bobInbox = await bobStore.mailboxForRole(bobAccount.id, "inbox");

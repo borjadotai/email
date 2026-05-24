@@ -151,6 +151,37 @@ export class PostgresMailStore {
     return result.rows.map(mapAccountRow);
   }
 
+  async listSyncableAccounts({ staleBefore = null, limit = 100 } = {}) {
+    const args = [clampInt(limit, 1, 500, 100)];
+    let staleSQL = "";
+    if (staleBefore) {
+      args.push(dateString(staleBefore));
+      staleSQL = `AND (a.last_sync_at IS NULL OR a.last_sync_at <= $${args.length})`;
+    }
+    const result = await this.pool.query(`
+      SELECT a.id, a.provider, a.provider_account_email AS email,
+             a.display_name AS "displayName", a.avatar_url AS "avatarURL",
+             a.auth_type AS "authType", a.status, a.sync_history AS "syncHistory",
+             a.last_sync_at AS "lastSyncAt", a.provider_metadata AS "providerMetadata",
+             a.created_at AS "createdAt",
+             u.id AS "userId", u.primary_email AS "userEmail", u.display_name AS "userDisplayName"
+      FROM public.accounts a
+      JOIN public.app_users u ON u.id = a.user_id
+      WHERE a.status = 'connected'
+        ${staleSQL}
+      ORDER BY COALESCE(a.last_sync_at, '1970-01-01'::timestamptz) ASC, a.created_at ASC
+      LIMIT $1
+    `, args);
+    return result.rows.map(row => ({
+      ...mapAccountRow(row),
+      user: {
+        id: row.userId,
+        email: row.userEmail ? String(row.userEmail) : null,
+        displayName: row.userDisplayName
+      }
+    }));
+  }
+
   async getAccount(id) {
     const result = await this.pool.query(`
       SELECT id, provider, provider_account_email AS email, display_name AS "displayName",
@@ -1391,6 +1422,11 @@ function normalizeFutureDate(value, fallbackMs) {
     return new Date(Date.now() + fallbackMs);
   }
   return date;
+}
+
+function dateString(value) {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
 }
 
 function makeRFCMessageID(email) {

@@ -900,6 +900,49 @@ test("persists provider auth sessions for OAuth callbacks", () => {
   }
 });
 
+test("lists connected accounts eligible for hosted background sync", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const aliceStore = store.forUser({
+      id: "user-alice",
+      email: "alice@example.com",
+      displayName: "Alice"
+    });
+    const bobStore = store.forUser({
+      id: "user-bob",
+      email: "bob@example.com",
+      displayName: "Bob"
+    });
+    const aliceAccount = aliceStore.createAccount({
+      provider: "gmail",
+      email: "alice@gmail.com",
+      displayName: "Alice Gmail",
+      status: "connected"
+    });
+    bobStore.createAccount({
+      provider: "gmail",
+      email: "bob@gmail.com",
+      displayName: "Bob Gmail",
+      status: "needs_auth"
+    });
+
+    const syncable = store.listSyncableAccounts();
+
+    assert.deepEqual(syncable.map(account => account.id), [aliceAccount.id]);
+    assert.deepEqual(syncable[0].user, {
+      id: "user-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      isLocal: false
+    });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function testProviderEmail(overrides = {}) {
   return {
     id: overrides.id,

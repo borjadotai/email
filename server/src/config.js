@@ -6,6 +6,8 @@ export function resolveConfig(env = process.env) {
   const port = Number.parseInt(env.EMAIL_SERVER_PORT ?? "7331", 10);
   const dataDir = env.EMAIL_DATA_DIR ?? join(homedir(), "Library", "Application Support", "EmailApp");
   mkdirSync(dataDir, { recursive: true });
+  const backgroundSyncIntervalMs = Number.parseInt(env.EMAIL_BACKGROUND_SYNC_INTERVAL_MS ?? "0", 10);
+  const backgroundSyncLimit = Number.parseInt(env.EMAIL_BACKGROUND_SYNC_LIMIT ?? "50", 10);
 
   return {
     host: env.EMAIL_SERVER_HOST ?? "127.0.0.1",
@@ -25,6 +27,8 @@ export function resolveConfig(env = process.env) {
     postgresURL: env.EMAIL_POSTGRES_URL ?? env.DATABASE_URL ?? "",
     attachmentBucket: env.EMAIL_ATTACHMENT_BUCKET ?? "email-attachments",
     initialSyncLimit: Number.parseInt(env.EMAIL_INITIAL_SYNC_LIMIT ?? "500", 10),
+    backgroundSyncIntervalMs: Number.isFinite(backgroundSyncIntervalMs) ? backgroundSyncIntervalMs : 0,
+    backgroundSyncLimit: Number.isFinite(backgroundSyncLimit) ? backgroundSyncLimit : 50,
     seedDemo: env.EMAIL_SEED_DEMO === "1",
     publicBaseURL: env.EMAIL_PUBLIC_BASE_URL,
     storage: env.EMAIL_STORAGE ?? "sqlite",

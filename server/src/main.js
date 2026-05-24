@@ -1,5 +1,6 @@
 import { resolveConfig, validateRuntimeConfig } from "./config.js";
 import { RequestAuthenticator } from "./auth.js";
+import { BackgroundSyncService } from "./backgroundSync.js";
 import { createServer } from "./http.js";
 import { maybeEncryptedSecretStore } from "./encryption.js";
 import { ProviderService } from "./providerAdapters.js";
@@ -21,7 +22,7 @@ const providers = new ProviderService({
 });
 const pushNotifications = new PushNotificationService({ store, config });
 const authenticator = new RequestAuthenticator(config);
-const { server } = createServer({
+const { server, events } = createServer({
   store,
   providers,
   pushNotifications,
@@ -30,14 +31,24 @@ const { server } = createServer({
   port: config.port,
   publicBaseURL: config.publicBaseURL
 });
+const backgroundSync = new BackgroundSyncService({
+  store,
+  providers,
+  pushNotifications,
+  events,
+  intervalMs: config.backgroundSyncIntervalMs,
+  limit: config.backgroundSyncLimit
+});
 
 server.listen(config.port, config.host, () => {
   console.log(`Email server listening at http://${config.host}:${config.port}`);
   console.log(`Storage: ${store.storageName ?? "sqlite"} ${store.databasePath}`);
+  backgroundSync.start();
 });
 
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
+  backgroundSync.stop();
   server.close(async () => {
     store.close();
     await secretStore.close?.();

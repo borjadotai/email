@@ -39,7 +39,8 @@ fly secrets set \
 ```
 
 Set `EMAIL_PUBLIC_BASE_URL` to the final Fly HTTPS URL before configuring Google
-OAuth callbacks.
+OAuth callbacks. Set `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000` for a five-minute
+hosted sync cadence; leave it at `0` only for local/manual-sync deployments.
 
 ## 3. Google OAuth
 

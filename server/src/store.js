@@ -448,6 +448,41 @@ export class MailStore {
     }));
   }
 
+  listSyncableAccounts({ staleBefore = null, limit = 100 } = {}) {
+    const args = [];
+    let staleSQL = "";
+    if (staleBefore) {
+      staleSQL = "AND (a.last_sync_at IS NULL OR a.last_sync_at <= ?)";
+      args.push(dateString(staleBefore));
+    }
+    args.push(clampInt(limit, 1, 500, 100));
+    return this.db.prepare(`
+      SELECT a.id, a.provider, a.email, a.display_name AS displayName,
+             ${accountAvatarSelect("a")},
+             a.auth_type AS authType, a.status, a.sync_history AS syncHistory,
+             a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
+             a.created_at AS createdAt,
+             u.id AS userId, u.primary_email AS userEmail, u.display_name AS userDisplayName
+      FROM accounts a
+      JOIN account_user_links l ON l.account_id = a.id
+      JOIN app_users u ON u.id = l.user_id
+      WHERE a.status = 'connected'
+        ${staleSQL}
+      ORDER BY COALESCE(a.last_sync_at, '1970-01-01T00:00:00.000Z') ASC, a.created_at ASC
+      LIMIT ?
+    `).all(...args).map(row => ({
+      ...row,
+      syncHistory: Boolean(row.syncHistory),
+      providerMetadata: parseJSON(row.providerMetadataJSON, {}),
+      user: {
+        id: row.userId,
+        email: row.userEmail,
+        displayName: row.userDisplayName,
+        isLocal: row.userId === "local"
+      }
+    }));
+  }
+
   getProfile() {
     const user = this.ensureCurrentUser();
     return {
@@ -2046,6 +2081,11 @@ function normalizeFutureDate(value, fallbackMs) {
     return new Date(Date.now() + fallbackMs);
   }
   return date;
+}
+
+function dateString(value) {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
 }
 
 function parseJSON(value, fallback) {

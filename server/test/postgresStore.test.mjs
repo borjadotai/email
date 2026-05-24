@@ -50,6 +50,28 @@ test("Postgres store searches only the authenticated tenant", async () => {
   assert.equal(search.params[1], "invoice");
 });
 
+test("Postgres store lists connected accounts eligible for hosted background sync", async () => {
+  const pool = new FakePool();
+  const store = new PostgresMailStore({ pool });
+
+  const accounts = await store.listSyncableAccounts({
+    staleBefore: new Date("2026-05-24T09:00:00Z"),
+    limit: 20
+  });
+
+  assert.deepEqual(accounts.map(account => account.id), ["10000000-0000-4000-8000-000000000001"]);
+  assert.deepEqual(accounts[0].user, {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName
+  });
+  const query = pool.queries.find(item => /FROM public\.accounts a\s+JOIN public\.app_users/u.test(item.sql));
+  assert.ok(query);
+  assert.match(query.sql, /a\.status = 'connected'/u);
+  assert.match(query.sql, /a\.last_sync_at IS NULL OR a\.last_sync_at <= \$2/u);
+  assert.deepEqual(query.params, [20, "2026-05-24T09:00:00.000Z"]);
+});
+
 test("Postgres store records opens without authenticated context", async () => {
   const pool = new FakePool();
   const store = new PostgresMailStore({ pool });
@@ -211,6 +233,27 @@ class FakePool {
           lastSyncAt: null,
           providerMetadata: {},
           createdAt: new Date("2026-05-24T10:00:00Z")
+        }]
+      };
+    }
+
+    if (/FROM public\.accounts a\s+JOIN public\.app_users/u.test(sql)) {
+      return {
+        rows: [{
+          id: "10000000-0000-4000-8000-000000000001",
+          provider: "gmail",
+          email: "alice@gmail.com",
+          displayName: "Alice Gmail",
+          avatarURL: null,
+          authType: "gmail_oauth",
+          status: "connected",
+          syncHistory: true,
+          lastSyncAt: null,
+          providerMetadata: {},
+          createdAt: new Date("2026-05-24T10:00:00Z"),
+          userId: user.id,
+          userEmail: user.email,
+          userDisplayName: user.displayName
         }]
       };
     }
