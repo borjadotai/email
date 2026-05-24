@@ -86,6 +86,8 @@ struct SidebarView: View {
       }
     }
     .listStyle(.sidebar)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .clipped()
     .navigationTitle("Email")
     .toolbar {
       ToolbarItem {

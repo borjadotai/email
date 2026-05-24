@@ -37,8 +37,6 @@ struct EmailPreviewView: View {
     Group {
       if let email = currentSelectedEmail {
         selectedPreview(email)
-          .id(email.id)
-          .transition(.opacity)
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
           .background(.background)
           .onChange(of: email.id) { _, _ in
@@ -208,7 +206,6 @@ struct EmailPreviewView: View {
           }
       }
     }
-    .animation(.easeInOut(duration: 0.16), value: previewIdentity)
     .sheet(item: $attachmentBrowserContext) { context in
       AttachmentBrowserSheet(context: context)
         .environment(model)
@@ -220,10 +217,6 @@ struct EmailPreviewView: View {
     return email
   }
 
-  private var previewIdentity: String {
-    currentSelectedEmail?.id ?? model.selectedEmailID ?? "none"
-  }
-
   private var loadingPreview: some View {
     Color.clear
       .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -233,7 +226,6 @@ struct EmailPreviewView: View {
           .controlSize(.small)
           .opacity(0.45)
       }
-      .transition(.opacity)
   }
 
   @ViewBuilder
@@ -258,7 +250,12 @@ struct EmailPreviewView: View {
       Divider()
 
       conversationContent(selected: email)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .layoutPriority(1)
+        .clipped()
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .clipped()
   }
 
   #if os(iOS)

@@ -5,6 +5,7 @@ struct EmailListView: View {
   #if os(iOS)
   @State private var selectedFilter: InboxFilter = .all
   #endif
+  @State private var selectionTask: Task<Void, Never>?
   var onCompose: () -> Void
   var onSettings: () -> Void
   var onShowDetail: () -> Void
@@ -151,6 +152,8 @@ struct EmailListView: View {
           }
         }
         .listStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
         .animation(.snappy(duration: 0.24), value: model.emails.map(\.id))
         .mailPullToRefresh(model)
       }
@@ -172,9 +175,14 @@ struct EmailListView: View {
   }
 
   private func select(_ email: EmailSummary) {
+    guard model.selectedEmailID != email.id else {
+      onShowDetail()
+      return
+    }
     model.beginSelectingEmail(id: email.id)
     onShowDetail()
-    Task {
+    selectionTask?.cancel()
+    selectionTask = Task {
       await model.selectEmail(email)
     }
   }

@@ -1,9 +1,5 @@
 import SwiftUI
 
-#if os(macOS)
-import AppKit
-#endif
-
 enum AppSheet: Identifiable {
   case addAccount
   case compose
@@ -27,7 +23,6 @@ struct RootView: View {
   @State private var searchTask: Task<Void, Never>?
   @State private var mailPollingTask: Task<Void, Never>?
   @State private var mailPollingShouldNotify = false
-  @State private var macWindowTopInset: CGFloat = 0
   @State private var preferredCompactColumn: NavigationSplitViewColumn = .content
 
   var body: some View {
@@ -36,20 +31,19 @@ struct RootView: View {
     NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
       SidebarView(
         onAddAccount: { sheet = .addAccount },
-        onShowMessages: { preferredCompactColumn = .content }
+        onShowMessages: { setPreferredCompactColumn(.content) }
       )
     } content: {
       EmailListView(
         onCompose: { sheet = .compose },
         onSettings: { sheet = .settings },
-        onShowDetail: { preferredCompactColumn = .detail }
+        onShowDetail: { setPreferredCompactColumn(.detail) }
       )
       .mailListNavigationTitle(model.navigationTitle)
       .searchable(text: $model.searchText, isPresented: $model.isSearchPresented, prompt: "Search")
     } detail: {
       EmailPreviewView(onCompose: { sheet = .compose })
     }
-    .mailWindowTopContentGuard($macWindowTopInset)
     .task {
       if let prepareForBootstrap {
         await prepareForBootstrap()
@@ -75,7 +69,7 @@ struct RootView: View {
       sheet = .settings
     }
     .onChange(of: model.notificationNavigationRequestCount) { _, _ in
-      preferredCompactColumn = .detail
+      setPreferredCompactColumn(.detail)
     }
     .onChange(of: scenePhase) { _, newPhase in
       configureMailPolling(for: newPhase)
@@ -132,6 +126,14 @@ struct RootView: View {
         }
       }
     )
+  }
+
+  private func setPreferredCompactColumn(_ column: NavigationSplitViewColumn) {
+    #if os(iOS)
+    preferredCompactColumn = column
+    #else
+    _ = column
+    #endif
   }
 
   private func configureMailPolling(for phase: ScenePhase) {
@@ -224,21 +226,6 @@ private struct ArchiveUndoBanner: View {
 
 private extension View {
   @ViewBuilder
-  func mailWindowTopContentGuard(_ topInset: Binding<CGFloat>) -> some View {
-    #if os(macOS)
-    safeAreaInset(edge: .top, spacing: 0) {
-      Color.clear
-        .frame(height: max(0, topInset.wrappedValue))
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-    .background(MacWindowTopInsetReader(topInset: topInset))
-    #else
-    self
-    #endif
-  }
-
-  @ViewBuilder
   func mailListNavigationTitle(_ title: String) -> some View {
     #if os(iOS)
     navigationTitle("")
@@ -259,68 +246,3 @@ private extension View {
     #endif
   }
 }
-
-#if os(macOS)
-private struct MacWindowTopInsetReader: NSViewRepresentable {
-  @Binding var topInset: CGFloat
-
-  func makeNSView(context: Context) -> NSView {
-    let view = WindowTopInsetProbeView(frame: .zero)
-    view.onInsetChange = updateTopInset
-    return view
-  }
-
-  func updateNSView(_ view: NSView, context: Context) {
-    guard let view = view as? WindowTopInsetProbeView else { return }
-    view.onInsetChange = updateTopInset
-    view.publishInset()
-  }
-
-  private func updateTopInset(_ newValue: CGFloat) {
-    DispatchQueue.main.async {
-      let normalized = max(0, newValue)
-      guard abs(topInset - normalized) > 0.5 else { return }
-      topInset = normalized
-    }
-  }
-}
-
-private final class WindowTopInsetProbeView: NSView {
-  var onInsetChange: ((CGFloat) -> Void)?
-  private var contentLayoutObservation: NSKeyValueObservation?
-
-  override func viewDidMoveToWindow() {
-    super.viewDidMoveToWindow()
-    contentLayoutObservation = window?.observe(\.contentLayoutRect, options: [.initial, .new]) { [weak self] _, _ in
-      DispatchQueue.main.async {
-        self?.publishInset()
-      }
-    }
-    publishInset()
-  }
-
-  override func setFrameSize(_ newSize: NSSize) {
-    super.setFrameSize(newSize)
-    publishInset()
-  }
-
-  func publishInset() {
-    DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      onInsetChange?(measuredTopInset)
-    }
-  }
-
-  private var measuredTopInset: CGFloat {
-    let safeAreaTop = safeAreaInsets.top
-
-    guard let window, let contentView = window.contentView else {
-      return safeAreaTop
-    }
-
-    let layoutRect = contentView.convert(window.contentLayoutRect, from: nil)
-    let layoutTopInset = contentView.bounds.maxY - layoutRect.maxY
-    return max(safeAreaTop, layoutTopInset, 0)
-  }
-}
-#endif
