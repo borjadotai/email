@@ -126,17 +126,27 @@ fi
 
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-${EMAIL_CODESIGN_IDENTITY:-}}"
 if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
-  echo "Signing with $SIGN_IDENTITY"
-  while IFS= read -r candidate; do
-    if /usr/bin/file "$candidate" | /usr/bin/grep -q 'Mach-O'; then
-      /usr/bin/codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$candidate"
-    fi
-  done < <(/usr/bin/find "$SERVER_BUNDLE" -type f -print)
-
-  /usr/bin/codesign --force --timestamp --options runtime --deep --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
-  /usr/bin/codesign --verify --strict --deep --verbose=2 "$APP_BUNDLE"
+  SIGNING_DESCRIPTION="$SIGN_IDENTITY"
+  CODESIGN_ARGS=(--force --timestamp --options runtime --sign "$SIGN_IDENTITY")
 else
-  echo "Creating unsigned artifacts. Set DEVELOPER_ID_APPLICATION for public distribution."
+  SIGNING_DESCRIPTION="ad-hoc local signature"
+  CODESIGN_ARGS=(--force --timestamp=none --options runtime --sign -)
+fi
+
+echo "Signing final bundle with $SIGNING_DESCRIPTION"
+while IFS= read -r candidate; do
+  if /usr/bin/file "$candidate" | /usr/bin/grep -q 'Mach-O'; then
+    /usr/bin/codesign "${CODESIGN_ARGS[@]}" "$candidate"
+  fi
+done < <(/usr/bin/find "$SERVER_BUNDLE" -type f -print)
+
+/usr/bin/codesign "${CODESIGN_ARGS[@]}" --deep "$APP_BUNDLE"
+/usr/bin/codesign --verify --strict --deep --verbose=2 "$APP_BUNDLE"
+
+if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
+  echo "Developer ID signing complete."
+else
+  echo "Creating ad-hoc signed artifacts. Set DEVELOPER_ID_APPLICATION for public distribution."
 fi
 
 (cd "$DIST_DIR" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_NAME.app" "$ZIP_PATH")
