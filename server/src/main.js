@@ -5,13 +5,11 @@ import { maybeEncryptedSecretStore } from "./encryption.js";
 import { ProviderService } from "./providerAdapters.js";
 import { PushNotificationService } from "./pushNotifications.js";
 import { FileSecretStore, KeychainSecretStore, PostgresSecretStore } from "./secretStore.js";
+import { PostgresMailStore } from "./postgresStore.js";
 import { MailStore } from "./store.js";
 
 const config = resolveConfig();
-const store = new MailStore({
-  databasePath: config.databasePath,
-  seedDemo: config.seedDemo
-});
+const store = storeForRuntime(config);
 const baseURL = config.publicBaseURL ?? `http://${config.host}:${config.port}`;
 const secretStore = maybeEncryptedSecretStore(secretStoreForRuntime(config), config);
 const providers = new ProviderService({
@@ -34,7 +32,7 @@ const { server } = createServer({
 
 server.listen(config.port, config.host, () => {
   console.log(`Email server listening at http://${config.host}:${config.port}`);
-  console.log(`SQLite database: ${config.databasePath}`);
+  console.log(`Storage: ${store.storageName ?? "sqlite"} ${store.databasePath}`);
 });
 
 function shutdown(signal) {
@@ -64,4 +62,17 @@ function secretStoreForRuntime(config) {
     return new KeychainSecretStore();
   }
   throw new Error(`Unsupported EMAIL_SECRET_STORE: ${requested}`);
+}
+
+function storeForRuntime(config) {
+  if (config.storage === "postgres") {
+    return new PostgresMailStore({ connectionString: config.postgresURL });
+  }
+  if (config.storage === "sqlite") {
+    return new MailStore({
+      databasePath: config.databasePath,
+      seedDemo: config.seedDemo
+    });
+  }
+  throw new Error(`Unsupported EMAIL_STORAGE: ${config.storage}`);
 }

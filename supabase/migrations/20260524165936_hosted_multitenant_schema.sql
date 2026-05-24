@@ -40,7 +40,7 @@ create table public.accounts (
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   unique (id, user_id),
-  unique (provider, provider_account_email)
+  unique (user_id, provider, provider_account_email)
 );
 
 create table public.mailboxes (
@@ -494,8 +494,6 @@ on conflict (id) do nothing;
 insert into storage.buckets (id, name, public)
 values ('email-attachments', 'email-attachments', false)
 on conflict (id) do update set public = false;
-
-alter table storage.objects enable row level security;
 
 create policy "users can read own email attachment objects"
   on storage.objects for select to authenticated
