@@ -100,4 +100,5 @@ Required non-secret hosted config:
 a persistent Fly volume. `fly.toml.example` remains as a template for alternate
 app names or projects. The SQLite/file-secret path remains available for
 personal self-hosting. The rollout checklist is in
-[hosted-deployment.md](hosted-deployment.md).
+[hosted-deployment.md](hosted-deployment.md), and the platform decision/TODO is
+tracked in [hosting-platform-todo.md](hosting-platform-todo.md).
