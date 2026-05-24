@@ -43,11 +43,15 @@ test("hosted Supabase migration keeps provider secrets out of exposed schemas", 
   assert.match(migration, /create schema if not exists "email_private"/u);
   assert.match(migration, /create table email_private\.provider_secrets/u);
   assert.match(migration, /create table email_private\.provider_auth_sessions/u);
+  assert.match(migration, /create table if not exists email_private\.api_rate_limits/u);
   assert.match(migration, /alter table email_private\.provider_auth_sessions enable row level security/u);
+  assert.match(migration, /alter table email_private\.api_rate_limits enable row level security/u);
   assert.match(migration, /on email_private\.provider_auth_sessions\s+for all to service_role/u);
+  assert.match(migration, /on email_private\.api_rate_limits\s+for all to service_role/u);
   assert.match(migration, /revoke all on schema "email_private" from anon, authenticated/u);
   assert.match(migration, /revoke all on email_private\.provider_secrets from anon, authenticated/u);
   assert.match(migration, /revoke all on email_private\.provider_auth_sessions from anon, authenticated/u);
+  assert.match(migration, /revoke all on email_private\.api_rate_limits from anon, authenticated/u);
   assert.doesNotMatch(
     migration,
     /grant select, insert, update, delete on email_private\.provider_secrets to authenticated/u
@@ -55,6 +59,10 @@ test("hosted Supabase migration keeps provider secrets out of exposed schemas", 
   assert.doesNotMatch(
     migration,
     /grant .* on email_private\.provider_auth_sessions to authenticated/u
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant .* on email_private\.api_rate_limits to authenticated/u
   );
 });
 

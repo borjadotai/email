@@ -234,6 +234,16 @@ export class MailStore {
         expires_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS api_rate_limits (
+        scope TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        window_start TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0 CHECK (count >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(scope, subject, window_start)
+      );
+
       CREATE VIRTUAL TABLE IF NOT EXISTS email_fts USING fts5(
         email_id UNINDEXED,
         account_id UNINDEXED,
@@ -260,6 +270,8 @@ export class MailStore {
         ON provider_auth_sessions(user_id, provider, created_at);
       CREATE INDEX IF NOT EXISTS idx_provider_auth_sessions_expires
         ON provider_auth_sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_api_rate_limits_window
+        ON api_rate_limits(window_start);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
         ON emails(account_id, provider_uid)
         WHERE provider_uid IS NOT NULL;
@@ -533,6 +545,44 @@ export class MailStore {
       WHERE id = ? AND sync_lease_owner = ?
     `).run(id, leaseOwner);
     return result.changes === 1;
+  }
+
+  consumeRateLimit(input = {}) {
+    const scope = requiredString(input.scope, "scope");
+    const subject = requiredString(input.subject, "subject");
+    const limit = clampInt(input.limit, 1, 1_000_000, 1);
+    const windowMs = clampInt(input.windowMs, 1_000, 24 * 60 * 60 * 1000, 60_000);
+    const now = normalizeDate(input.now, new Date());
+    const windowStartMs = Math.floor(now.getTime() / windowMs) * windowMs;
+    const windowStart = new Date(windowStartMs).toISOString();
+    const resetAt = new Date(windowStartMs + windowMs).toISOString();
+    const nowISO = now.toISOString();
+
+    return this.transaction(() => {
+      this.db.prepare("DELETE FROM api_rate_limits WHERE window_start < ?").run(windowStart);
+      const row = this.db.prepare(`
+        SELECT count FROM api_rate_limits
+        WHERE scope = ? AND subject = ? AND window_start = ?
+      `).get(scope, subject, windowStart);
+      if (!row) {
+        this.db.prepare(`
+          INSERT INTO api_rate_limits (scope, subject, window_start, count, created_at, updated_at)
+          VALUES (?, ?, ?, 1, ?, ?)
+        `).run(scope, subject, windowStart, nowISO, nowISO);
+        return rateLimitResult({ allowed: true, count: 1, limit, resetAt, now });
+      }
+      const currentCount = Number(row.count ?? 0);
+      if (currentCount >= limit) {
+        return rateLimitResult({ allowed: false, count: currentCount, limit, resetAt, now });
+      }
+      const nextCount = currentCount + 1;
+      this.db.prepare(`
+        UPDATE api_rate_limits
+        SET count = ?, updated_at = ?
+        WHERE scope = ? AND subject = ? AND window_start = ?
+      `).run(nextCount, nowISO, scope, subject, windowStart);
+      return rateLimitResult({ allowed: true, count: nextCount, limit, resetAt, now });
+    });
   }
 
   getProfile() {
@@ -2133,6 +2183,22 @@ function normalizeFutureDate(value, fallbackMs) {
     return new Date(Date.now() + fallbackMs);
   }
   return date;
+}
+
+function normalizeDate(value, fallback) {
+  const date = value instanceof Date ? value : new Date(value ?? fallback);
+  return Number.isNaN(date.getTime()) ? fallback : date;
+}
+
+function rateLimitResult({ allowed, count, limit, resetAt, now }) {
+  const resetTime = Date.parse(resetAt);
+  return {
+    allowed,
+    limit,
+    remaining: Math.max(0, limit - count),
+    resetAt,
+    retryAfterMs: Math.max(0, resetTime - now.getTime())
+  };
 }
 
 function dateString(value) {

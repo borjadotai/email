@@ -94,6 +94,45 @@ test("Postgres store claims and releases account sync leases atomically", async 
   assert.deepEqual(release.params, ["account-1", "worker-a"]);
 });
 
+test("Postgres store consumes API rate limits atomically", async () => {
+  const pool = new FakePool();
+  const store = new PostgresMailStore({ pool });
+
+  const result = await store.consumeRateLimit({
+    scope: "send_message",
+    subject: `user:${user.id}`,
+    limit: 3,
+    windowMs: 60_000,
+    now: new Date("2026-05-24T10:00:05Z")
+  });
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.remaining, 2);
+  assert.equal(result.resetAt, "2026-05-24T10:01:00.000Z");
+  const query = pool.queries.find(item => /INSERT INTO email_private\.api_rate_limits/u.test(item.sql));
+  assert.ok(query);
+  assert.match(query.sql, /ON CONFLICT \(scope, subject, window_start\)/u);
+  assert.match(query.sql, /email_private\.api_rate_limits\.count < \$4/u);
+  assert.match(query.sql, /DELETE FROM email_private\.api_rate_limits/u);
+  assert.deepEqual(query.params, [
+    "send_message",
+    `user:${user.id}`,
+    "2026-05-24T10:00:00.000Z",
+    3
+  ]);
+
+  const limitedStore = new PostgresMailStore({ pool: new FakePool({ rateLimitExceeded: true }) });
+  const limited = await limitedStore.consumeRateLimit({
+    scope: "send_message",
+    subject: `user:${user.id}`,
+    limit: 3,
+    windowMs: 60_000,
+    now: new Date("2026-05-24T10:00:06Z")
+  });
+  assert.equal(limited.allowed, false);
+  assert.equal(limited.remaining, 0);
+});
+
 test("Postgres store records opens without authenticated context", async () => {
   const pool = new FakePool();
   const store = new PostgresMailStore({ pool });
@@ -217,9 +256,10 @@ test("Postgres store persists provider auth sessions in the private schema", asy
 class FakePool {
   queries = [];
 
-  constructor({ bucketPublic = false, missingRelations = [] } = {}) {
+  constructor({ bucketPublic = false, missingRelations = [], rateLimitExceeded = false } = {}) {
     this.bucketPublic = bucketPublic;
     this.missingRelations = new Set(missingRelations);
+    this.rateLimitExceeded = rateLimitExceeded;
   }
 
   async connect() {
@@ -238,6 +278,12 @@ class FakePool {
 
     if (/SELECT 1 AS ok/u.test(sql)) {
       return { rows: [{ ok: 1 }], rowCount: 1 };
+    }
+
+    if (/INSERT INTO email_private\.api_rate_limits/u.test(sql)) {
+      return this.rateLimitExceeded
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ count: 1 }], rowCount: 1 };
     }
 
     if (/to_regclass\(relation_name\)/u.test(sql)) {

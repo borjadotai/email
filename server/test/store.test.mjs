@@ -950,6 +950,55 @@ test("lists connected accounts eligible for hosted background sync", () => {
   }
 });
 
+test("persists fixed-window API rate limits locally", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const first = store.consumeRateLimit({
+      scope: "manual_sync",
+      subject: "user:local",
+      limit: 2,
+      windowMs: 60_000,
+      now: new Date("2026-05-24T10:00:01Z")
+    });
+    const second = store.consumeRateLimit({
+      scope: "manual_sync",
+      subject: "user:local",
+      limit: 2,
+      windowMs: 60_000,
+      now: new Date("2026-05-24T10:00:02Z")
+    });
+    const limited = store.consumeRateLimit({
+      scope: "manual_sync",
+      subject: "user:local",
+      limit: 2,
+      windowMs: 60_000,
+      now: new Date("2026-05-24T10:00:03Z")
+    });
+    const reset = store.consumeRateLimit({
+      scope: "manual_sync",
+      subject: "user:local",
+      limit: 2,
+      windowMs: 60_000,
+      now: new Date("2026-05-24T10:01:00Z")
+    });
+
+    assert.deepEqual(
+      [first.allowed, first.remaining, second.allowed, second.remaining],
+      [true, 1, true, 0]
+    );
+    assert.equal(limited.allowed, false);
+    assert.equal(limited.remaining, 0);
+    assert.equal(limited.resetAt, "2026-05-24T10:01:00.000Z");
+    assert.equal(reset.allowed, true);
+    assert.equal(reset.remaining, 1);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function testProviderEmail(overrides = {}) {
   return {
     id: overrides.id,

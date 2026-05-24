@@ -239,6 +239,44 @@ export class PostgresMailStore {
     return result.rowCount === 1;
   }
 
+  async consumeRateLimit(input = {}) {
+    const scope = requiredString(input.scope, "scope");
+    const subject = requiredString(input.subject, "subject");
+    const limit = clampInt(input.limit, 1, 1_000_000, 1);
+    const windowMs = clampInt(input.windowMs, 1_000, 24 * 60 * 60 * 1000, 60_000);
+    const now = normalizeDate(input.now, new Date());
+    const windowStartMs = Math.floor(now.getTime() / windowMs) * windowMs;
+    const windowStart = new Date(windowStartMs).toISOString();
+    const resetAt = new Date(windowStartMs + windowMs).toISOString();
+    const result = await this.pool.query(`
+      WITH cleanup AS (
+        DELETE FROM email_private.api_rate_limits
+        WHERE window_start < $3::timestamptz
+      ),
+      consumed AS (
+        INSERT INTO email_private.api_rate_limits (
+          scope, subject, window_start, count, created_at, updated_at
+        )
+        VALUES ($1, $2, $3::timestamptz, 1, timezone('utc', now()), timezone('utc', now()))
+        ON CONFLICT (scope, subject, window_start)
+        DO UPDATE SET
+          count = email_private.api_rate_limits.count + 1,
+          updated_at = timezone('utc', now())
+        WHERE email_private.api_rate_limits.count < $4
+        RETURNING count
+      )
+      SELECT count FROM consumed
+    `, [scope, subject, windowStart, limit]);
+    const count = Number(result.rows[0]?.count ?? limit);
+    return rateLimitResult({
+      allowed: result.rowCount === 1 && result.rows.length === 1,
+      count,
+      limit,
+      resetAt,
+      now
+    });
+  }
+
   async getAccount(id) {
     const result = await this.pool.query(`
       SELECT id, provider, provider_account_email AS email, display_name AS "displayName",
@@ -1248,6 +1286,7 @@ export class PostgresMailStore {
       "public.email_attachments",
       "email_private.provider_secrets",
       "email_private.provider_auth_sessions",
+      "email_private.api_rate_limits",
       "storage.buckets"
     ];
     const result = await this.pool.query(`
@@ -1521,6 +1560,22 @@ function normalizeFutureDate(value, fallbackMs) {
     return new Date(Date.now() + fallbackMs);
   }
   return date;
+}
+
+function normalizeDate(value, fallback) {
+  const date = value instanceof Date ? value : new Date(value ?? fallback);
+  return Number.isNaN(date.getTime()) ? fallback : date;
+}
+
+function rateLimitResult({ allowed, count, limit, resetAt, now }) {
+  const resetTime = Date.parse(resetAt);
+  return {
+    allowed,
+    limit,
+    remaining: Math.max(0, limit - count),
+    resetAt,
+    retryAfterMs: Math.max(0, resetTime - now.getTime())
+  };
 }
 
 function dateString(value) {

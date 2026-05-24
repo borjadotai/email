@@ -9,6 +9,7 @@ export function resolveConfig(env = process.env) {
   const backgroundSyncIntervalMs = Number.parseInt(env.EMAIL_BACKGROUND_SYNC_INTERVAL_MS ?? "0", 10);
   const backgroundSyncLimit = Number.parseInt(env.EMAIL_BACKGROUND_SYNC_LIMIT ?? "50", 10);
   const backgroundSyncLeaseTtlMs = Number.parseInt(env.EMAIL_SYNC_LEASE_TTL_MS ?? "300000", 10);
+  const rateLimits = resolveRateLimits(env);
 
   return {
     host: env.EMAIL_SERVER_HOST ?? "127.0.0.1",
@@ -31,6 +32,7 @@ export function resolveConfig(env = process.env) {
     backgroundSyncIntervalMs: Number.isFinite(backgroundSyncIntervalMs) ? backgroundSyncIntervalMs : 0,
     backgroundSyncLimit: Number.isFinite(backgroundSyncLimit) ? backgroundSyncLimit : 50,
     backgroundSyncLeaseTtlMs: Number.isFinite(backgroundSyncLeaseTtlMs) ? backgroundSyncLeaseTtlMs : 300_000,
+    rateLimits,
     seedDemo: env.EMAIL_SEED_DEMO === "1",
     publicBaseURL: env.EMAIL_PUBLIC_BASE_URL,
     storage: env.EMAIL_STORAGE ?? "sqlite",
@@ -43,6 +45,27 @@ export function resolveConfig(env = process.env) {
       iosTopic: env.APNS_IOS_TOPIC ?? "com.borjadotai.email.ios",
       macosTopic: env.APNS_MACOS_TOPIC ?? "com.borjadotai.email.mac"
     }
+  };
+}
+
+function resolveRateLimits(env) {
+  return {
+    enabled: env.EMAIL_RATE_LIMIT_ENABLED !== "0",
+    gmailStart: rateLimitRule(env, "GMAIL_START", 10, 15 * 60 * 1000),
+    gmailCallback: rateLimitRule(env, "GMAIL_CALLBACK", 60, 15 * 60 * 1000),
+    icloudConnect: rateLimitRule(env, "ICLOUD_CONNECT", 5, 60 * 60 * 1000),
+    manualSync: rateLimitRule(env, "MANUAL_SYNC", 20, 15 * 60 * 1000),
+    sendMessage: rateLimitRule(env, "SEND_MESSAGE", 120, 60 * 60 * 1000),
+    attachmentDownload: rateLimitRule(env, "ATTACHMENT_DOWNLOAD", 300, 15 * 60 * 1000)
+  };
+}
+
+function rateLimitRule(env, name, defaultLimit, defaultWindowMs) {
+  const limit = Number.parseInt(env[`EMAIL_RATE_LIMIT_${name}_LIMIT`] ?? String(defaultLimit), 10);
+  const windowMs = Number.parseInt(env[`EMAIL_RATE_LIMIT_${name}_WINDOW_MS`] ?? String(defaultWindowMs), 10);
+  return {
+    limit: Number.isFinite(limit) ? Math.max(1, limit) : defaultLimit,
+    windowMs: Number.isFinite(windowMs) ? Math.max(1_000, windowMs) : defaultWindowMs
   };
 }
 

@@ -102,6 +102,7 @@ Required non-secret hosted config:
 - `EMAIL_ATTACHMENT_BUCKET=email-attachments`
 - `EMAIL_BACKGROUND_SYNC_INTERVAL_MS=300000`
 - `EMAIL_BACKGROUND_SYNC_LIMIT=50`
+- `EMAIL_RATE_LIMIT_ENABLED=1`
 
 `fly.toml` is configured for the hosted Postgres/Storage path and does not need
 a persistent Fly volume. `fly.toml.example` remains as a template for alternate
@@ -109,3 +110,8 @@ app names or projects. The SQLite/file-secret path remains available for
 personal self-hosting. The rollout checklist is in
 [hosted-deployment.md](hosted-deployment.md), and the platform decision/TODO is
 tracked in [hosting-platform-todo.md](hosting-platform-todo.md).
+
+Rate limits are persisted in `email_private.api_rate_limits` so they apply
+across Fly machines. Defaults cover Gmail OAuth start/callback, iCloud connect,
+manual sync, sending, and attachment downloads; the `EMAIL_RATE_LIMIT_*` env vars
+in [.env.example](../.env.example) override the default limits and windows.

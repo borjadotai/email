@@ -202,6 +202,53 @@ test("manual account sync uses the shared account lease", async () => {
   }
 });
 
+test("manual account sync is rate limited before provider sync", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  const providers = new FakeSyncProviders();
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    server = createServer({
+      store,
+      providers,
+      rateLimits: {
+        manualSync: { limit: 1, windowMs: 60_000 }
+      }
+    }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    await requestJSON(`${baseURL}/api/accounts/${account.id}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const limited = await fetch(`${baseURL}/api/accounts/${account.id}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const body = await limited.json();
+
+    assert.equal(limited.status, 429);
+    assert.equal(body.error.status, 429);
+    assert.equal(limited.headers.get("x-ratelimit-limit"), "1");
+    assert.equal(limited.headers.get("x-ratelimit-remaining"), "0");
+    assert.ok(limited.headers.get("retry-after"));
+    assert.equal(providers.synced.length, 1);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("authenticated API requests are scoped to the bearer user", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

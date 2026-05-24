@@ -143,7 +143,7 @@ Current agent experience:
   [hosted-deployment.md](hosted-deployment.md).
 - [x] Add per-account sync leases before scaling Fly above one running machine.
   Without leases, multiple workers could sync the same account concurrently.
-- [ ] Add rate limits for auth-sensitive and provider-expensive endpoints:
+- [x] Add rate limits for auth-sensitive and provider-expensive endpoints:
   Gmail start, iCloud connect, manual sync, send, and attachment download.
 - [ ] Add operational logging for sync duration, imported count, provider errors,
   token refresh failures, and attachment storage failures.

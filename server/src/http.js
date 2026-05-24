@@ -4,14 +4,43 @@ import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 const manualSyncLeaseTtlMs = 15 * 60 * 1000;
+const defaultRateLimits = {
+  enabled: true,
+  gmailStart: { limit: 10, windowMs: 15 * 60 * 1000 },
+  gmailCallback: { limit: 60, windowMs: 15 * 60 * 1000 },
+  icloudConnect: { limit: 5, windowMs: 60 * 60 * 1000 },
+  manualSync: { limit: 20, windowMs: 15 * 60 * 1000 },
+  sendMessage: { limit: 120, windowMs: 60 * 60 * 1000 },
+  attachmentDownload: { limit: 300, windowMs: 15 * 60 * 1000 }
+};
 
-export function createServer({ store, providers, pushNotifications, authenticator, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
+export function createServer({
+  store,
+  providers,
+  pushNotifications,
+  authenticator,
+  host = "127.0.0.1",
+  port = 7331,
+  publicBaseURL,
+  rateLimits
+} = {}) {
   const events = new EventHub();
   const baseURL = publicBaseURL ?? `http://${host}:${port}`;
+  const normalizedRateLimits = normalizeRateLimits(rateLimits);
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, providers, pushNotifications, authenticator, events, baseURL });
+      await route({
+        req,
+        res,
+        store,
+        providers,
+        pushNotifications,
+        authenticator,
+        events,
+        baseURL,
+        rateLimits: normalizedRateLimits
+      });
     } catch (error) {
       const status = error.status ?? 500;
       console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
@@ -20,7 +49,7 @@ export function createServer({ store, providers, pushNotifications, authenticato
           message: status === 500 ? "Internal server error." : error.message,
           status
         }
-      });
+      }, error.headers);
       if (status === 500) {
         console.error(error);
       }
@@ -30,7 +59,7 @@ export function createServer({ store, providers, pushNotifications, authenticato
   return { server, events };
 }
 
-async function route({ req, res, store, providers, pushNotifications, authenticator, events, baseURL }) {
+async function route({ req, res, store, providers, pushNotifications, authenticator, events, baseURL, rateLimits }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
 
@@ -65,6 +94,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
 
   if (req.method === "GET" && path === "/api/auth/gmail/callback") {
     requireProviders(providers);
+    await enforceRateLimit({
+      store,
+      rule: rateLimits.gmailCallback,
+      scope: "gmail_callback",
+      subject: clientSubject(req)
+    });
     const result = await providers.completeGmailAuth(Object.fromEntries(url.searchParams.entries()));
     events.emit("accounts.changed", { accountId: result.account.id }, result.userId);
     syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit, user: result.user });
@@ -124,6 +159,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
 
   if (req.method === "POST" && path === "/api/auth/gmail/start") {
     requireProviders(requestProviders);
+    await enforceRateLimit({
+      store: requestStore,
+      rule: rateLimits.gmailStart,
+      scope: "gmail_start",
+      subject: userSubject(user)
+    });
     console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);
     sendJSON(res, 200, await requestProviders.startGmailAuth(await readJSON(req), user));
     return;
@@ -131,6 +172,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
 
   if (req.method === "POST" && path === "/api/auth/icloud/connect") {
     requireProviders(requestProviders);
+    await enforceRateLimit({
+      store: requestStore,
+      rule: rateLimits.icloudConnect,
+      scope: "icloud_connect",
+      subject: userSubject(user)
+    });
     const body = await readJSON(req);
     console.log(`${new Date().toISOString()} POST /api/auth/icloud/connect email=${redactEmail(body.email)}`);
     const result = await requestProviders.connectICloud(body);
@@ -164,6 +211,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
     const accountId = accountSyncMatch[1];
     const account = await requestStore.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
+    await enforceRateLimit({
+      store: requestStore,
+      rule: rateLimits.manualSync,
+      scope: "manual_sync",
+      subject: userSubject(user)
+    });
     const leaseOwner = `manual:${user.id}`;
     let claimed = false;
     const body = await readJSON(req);
@@ -242,6 +295,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
   if (attachmentDownloadMatch && req.method === "GET") {
     const email = await requestStore.getEmail(attachmentDownloadMatch[1]);
     if (!email) throw httpError(404, "Email not found.");
+    await enforceRateLimit({
+      store: requestStore,
+      rule: rateLimits.attachmentDownload,
+      scope: "attachment_download",
+      subject: userSubject(user)
+    });
     let attachment = await requestStore.getAttachment(email.id, attachmentDownloadMatch[2]);
     if (!attachment?.data && requestProviders) {
       await requestProviders.ensureEmailAttachments(email);
@@ -318,6 +377,12 @@ async function route({ req, res, store, providers, pushNotifications, authentica
   }
 
   if (req.method === "POST" && path === "/api/messages/send") {
+    await enforceRateLimit({
+      store: requestStore,
+      rule: rateLimits.sendMessage,
+      scope: "send_message",
+      subject: userSubject(user)
+    });
     const body = await readJSON(req);
     const email = await requestStore.sendMessage(body);
     if (requestProviders) {
@@ -347,12 +412,77 @@ async function route({ req, res, store, providers, pushNotifications, authentica
   throw httpError(404, "Route not found.");
 }
 
-function sendJSON(res, status, payload) {
+async function enforceRateLimit({ store, rule, scope, subject }) {
+  if (!rule?.enabled || typeof store?.consumeRateLimit !== "function") return null;
+  const result = await store.consumeRateLimit({
+    scope,
+    subject,
+    limit: rule.limit,
+    windowMs: rule.windowMs
+  });
+  if (result.allowed) return result;
+  const error = httpError(429, "Too many requests. Try again later.");
+  error.headers = rateLimitHeaders(result);
+  throw error;
+}
+
+function rateLimitHeaders(result) {
+  const retryAfterSeconds = Math.max(1, Math.ceil((result.retryAfterMs ?? 0) / 1000));
+  return {
+    "Retry-After": String(retryAfterSeconds),
+    "X-RateLimit-Limit": String(result.limit),
+    "X-RateLimit-Remaining": String(result.remaining),
+    "X-RateLimit-Reset": result.resetAt
+  };
+}
+
+function normalizeRateLimits(rateLimits = {}) {
+  const enabled = rateLimits.enabled !== false;
+  return Object.fromEntries(Object.entries(defaultRateLimits).map(([key, defaultValue]) => {
+    if (key === "enabled") return [key, enabled];
+    const value = rateLimits[key] ?? {};
+    return [key, {
+      enabled,
+      limit: positiveInt(value.limit, defaultValue.limit),
+      windowMs: positiveInt(value.windowMs, defaultValue.windowMs)
+    }];
+  }));
+}
+
+function positiveInt(value, fallback) {
+  const number = Number.parseInt(value ?? fallback, 10);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function userSubject(user) {
+  return `user:${user.id}`;
+}
+
+function clientSubject(req) {
+  return `ip:${clientAddress(req)}`;
+}
+
+function clientAddress(req) {
+  const headers = [
+    req.headers["fly-client-ip"],
+    req.headers["cf-connecting-ip"],
+    req.headers["x-forwarded-for"]
+  ];
+  for (const header of headers) {
+    const value = Array.isArray(header) ? header[0] : header;
+    const first = value?.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function sendJSON(res, status, payload, headers = {}) {
   const body = Buffer.from(JSON.stringify(payload, null, 2));
   sendCORS(res);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": body.length
+    "Content-Length": body.length,
+    ...headers
   });
   res.end(body);
 }

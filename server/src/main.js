@@ -29,7 +29,8 @@ const { server, events } = createServer({
   authenticator,
   host: config.host,
   port: config.port,
-  publicBaseURL: config.publicBaseURL
+  publicBaseURL: config.publicBaseURL,
+  rateLimits: config.rateLimits
 });
 const backgroundSync = new BackgroundSyncService({
   store,
