@@ -6,10 +6,13 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
   @State private var selectedTab: SettingsTab = .general
+  #if os(macOS)
+  var softwareUpdateController: SoftwareUpdateController? = nil
+  #endif
 
   var body: some View {
     TabView(selection: $selectedTab) {
-      GeneralSettingsPane()
+      generalSettingsPane
         .tabItem {
           Label("General", systemImage: "gearshape")
         }
@@ -29,6 +32,14 @@ struct SettingsView: View {
     }
     .navigationTitle("Settings")
   }
+
+  private var generalSettingsPane: some View {
+    #if os(macOS)
+    GeneralSettingsPane(softwareUpdateController: softwareUpdateController)
+    #else
+    GeneralSettingsPane()
+    #endif
+  }
 }
 
 private enum SettingsTab: String {
@@ -39,6 +50,9 @@ private enum SettingsTab: String {
 
 private struct GeneralSettingsPane: View {
   @Environment(AppModel.self) private var model
+  #if os(macOS)
+  var softwareUpdateController: SoftwareUpdateController?
+  #endif
 
   var body: some View {
     @Bindable var model = model
@@ -53,6 +67,23 @@ private struct GeneralSettingsPane: View {
         }
         .pickerStyle(.segmented)
       }
+
+      #if os(macOS)
+      Section("Updates") {
+        LabeledContent("Version", value: appVersionText)
+
+        Button {
+          softwareUpdateController?.checkForUpdates()
+        } label: {
+          Label("Check for Updates", systemImage: "arrow.down.circle")
+        }
+        .disabled(softwareUpdateController?.canCheckForUpdates != true)
+
+        Text("Email checks for updates automatically. Use this to check now and install an available update.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      #endif
 
       Section("Archive") {
         Stepper(value: $model.archiveUndoDurationSeconds, in: model.archiveUndoDurationRange) {
@@ -132,6 +163,19 @@ private struct GeneralSettingsPane: View {
     }
     .formStyle(.grouped)
   }
+
+  #if os(macOS)
+  private var appVersionText: String {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+
+    if let build, !build.isEmpty {
+      return "\(version) (\(build))"
+    }
+
+    return version
+  }
+  #endif
 }
 
 private struct AccountsSettingsPane: View {

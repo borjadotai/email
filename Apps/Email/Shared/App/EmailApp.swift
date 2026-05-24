@@ -26,7 +26,7 @@ struct EmailApp: App {
 
     #if os(macOS)
     Settings {
-      SettingsView()
+      SettingsView(softwareUpdateController: softwareUpdateController)
         .environment(model)
         .preferredColorScheme(model.colorScheme)
         .frame(width: 580, height: 560)
