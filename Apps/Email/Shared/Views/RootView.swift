@@ -1,5 +1,9 @@
 import SwiftUI
 
+#if os(macOS)
+import AppKit
+#endif
+
 enum AppSheet: Identifiable {
   case addAccount
   case compose
@@ -44,6 +48,7 @@ struct RootView: View {
     } detail: {
       EmailPreviewView(onCompose: { sheet = .compose })
     }
+    .mailWindowToolbarLayout()
     .task {
       if let prepareForBootstrap {
         await prepareForBootstrap()
@@ -218,6 +223,15 @@ private struct ArchiveUndoBanner: View {
 
 private extension View {
   @ViewBuilder
+  func mailWindowToolbarLayout() -> some View {
+    #if os(macOS)
+    background(MacWindowToolbarLayoutConfigurator())
+    #else
+    self
+    #endif
+  }
+
+  @ViewBuilder
   func mailListNavigationTitle(_ title: String) -> some View {
     #if os(iOS)
     navigationTitle("")
@@ -238,3 +252,27 @@ private extension View {
     #endif
   }
 }
+
+#if os(macOS)
+private struct MacWindowToolbarLayoutConfigurator: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView(frame: .zero)
+    configureWhenAttached(view)
+    return view
+  }
+
+  func updateNSView(_ view: NSView, context: Context) {
+    configureWhenAttached(view)
+  }
+
+  private func configureWhenAttached(_ view: NSView) {
+    DispatchQueue.main.async {
+      guard let window = view.window else { return }
+      window.styleMask.remove(.fullSizeContentView)
+      window.titlebarAppearsTransparent = false
+      window.titleVisibility = .hidden
+      window.toolbarStyle = .unified
+    }
+  }
+}
+#endif

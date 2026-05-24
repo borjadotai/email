@@ -1621,13 +1621,30 @@ private enum HTMLMailDocument {
   private static func style(prefersMobileLayout: Bool) -> String {
     """
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="light only">
-  <meta name="supported-color-schemes" content="light">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
   <style>
-    :root { color-scheme: light only; supported-color-schemes: light; }
+    :root {
+      color-scheme: light dark;
+      supported-color-schemes: light dark;
+      --mail-bg: #ffffff;
+      --mail-fg: #1d1d1f;
+      --mail-muted: #5f6368;
+      --mail-link: #0b57d0;
+      --mail-border: rgba(60, 64, 67, 0.24);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --mail-bg: #1f1f1f;
+        --mail-fg: #f5f5f7;
+        --mail-muted: rgba(245, 245, 247, 0.72);
+        --mail-link: #8ab4f8;
+        --mail-border: rgba(245, 245, 247, 0.22);
+      }
+    }
     html {
-      background: #ffffff;
-      color: #1d1d1f;
+      background: var(--mail-bg);
+      color: var(--mail-fg);
     }
     html, body {
       width: 100% !important;
@@ -1641,7 +1658,7 @@ private enum HTMLMailDocument {
     }
     body {
       background: transparent;
-      color: inherit;
+      color: var(--mail-fg);
       box-sizing: border-box;
       line-height: 1.48;
     }
@@ -1676,10 +1693,44 @@ private enum HTMLMailDocument {
     blockquote {
       margin-left: 0;
       padding-left: 12px;
-      border-left: 3px solid rgba(128, 128, 128, 0.35);
-      color: color-mix(in srgb, CanvasText 72%, transparent);
+      border-left: 3px solid var(--mail-border);
+      color: var(--mail-muted);
     }
-    a { color: -webkit-link; }
+    a { color: var(--mail-link); }
+    @media (prefers-color-scheme: dark) {
+      body,
+      body :not(img):not(video):not(canvas):not(svg):not(path):not([fill]) {
+        color: var(--mail-fg) !important;
+      }
+      body,
+      body div,
+      body section,
+      body article,
+      body main,
+      body header,
+      body footer,
+      body table,
+      body tbody,
+      body thead,
+      body tfoot,
+      body tr,
+      body td,
+      body th,
+      body p,
+      body span {
+        background-color: transparent !important;
+      }
+      body a,
+      body a * {
+        color: var(--mail-link) !important;
+      }
+      body [style*="border"],
+      body table,
+      body td,
+      body th {
+        border-color: var(--mail-border) !important;
+      }
+    }
     \(prefersMobileLayout ? mobileLayoutStyle : "")
   </style>
   """
@@ -1879,20 +1930,16 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
   webView.navigationDelegate = coordinator
 
   #if os(iOS)
-  webView.isOpaque = true
-  webView.overrideUserInterfaceStyle = .light
-  webView.backgroundColor = .white
-  webView.scrollView.backgroundColor = .white
+  webView.isOpaque = false
+  webView.backgroundColor = .clear
+  webView.scrollView.backgroundColor = .clear
   webView.scrollView.contentInset = .zero
   webView.scrollView.scrollIndicatorInsets = .zero
   webView.scrollView.contentInsetAdjustmentBehavior = .never
   webView.scrollView.isScrollEnabled = true
   webView.scrollView.bounces = true
   #elseif os(macOS)
-  webView.appearance = NSAppearance(named: .aqua)
-  webView.wantsLayer = true
-  webView.layer?.backgroundColor = NSColor.white.cgColor
-  webView.setValue(true, forKey: "drawsBackground")
+  webView.setValue(false, forKey: "drawsBackground")
   #endif
 
   return webView
