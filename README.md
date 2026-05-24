@@ -69,13 +69,15 @@ dist/Email-mac.zip
 dist/Email-mac.dmg
 ```
 
-The packaged app bundles the local Node server under `Email.app/Contents/Resources/Server` and starts it automatically on `127.0.0.1:7331` when a dev server is not already running. To include release-only provider config, pass an env file explicitly:
+The packaged app bundles the local Node server under `Email.app/Contents/Resources/Server` for local/internal runs. If its configured server URL is loopback, it starts that bundled server automatically on `127.0.0.1:7331` when a dev server is not already running.
+
+Provider secrets should not be bundled into the app. For builds that should use a shared backend, bake only the backend URL into the app:
 
 ```sh
-EMAIL_RELEASE_ENV_FILE=.env.production npm run package:mac
+EMAIL_RELEASE_SERVER_URL=http://space:7331 npm run package:mac
 ```
 
-Do not copy local personal secrets into public builds. Public direct-download distribution requires Developer ID signing and notarization:
+Run the backend separately with the provider secrets in its server environment. Public direct-download distribution requires Developer ID signing and notarization:
 
 ```sh
 DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
@@ -147,7 +149,7 @@ SPARKLE_PRIVATE_KEY
 Developer ID Application: Your Name (TEAMID)
 ```
 
-Optionally set `EMAIL_RELEASE_ENV_BASE64` to a base64-encoded release env file if a private/internal build needs bundled provider configuration. Avoid putting personal secrets into public release builds.
+Optionally set the GitHub repository variable `EMAIL_RELEASE_SERVER_URL` to the backend endpoint that release builds should use by default. Do not store provider secrets in release build variables or bundle them into the app.
 
 `SPARKLE_PRIVATE_KEY` is the exported private EdDSA key from Sparkle's `generate_keys` tool. The matching public key is embedded in the app as `SUPublicEDKey`.
 

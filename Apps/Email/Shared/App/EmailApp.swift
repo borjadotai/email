@@ -36,7 +36,9 @@ struct EmailApp: App {
 
   private func prepareForBootstrap() async {
     #if os(macOS)
-    await localServer.startIfAvailable()
+    if model.shouldStartBundledServer {
+      await localServer.startIfAvailable()
+    }
     #endif
   }
 }

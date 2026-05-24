@@ -78,12 +78,10 @@ final class AppModel {
 
   init() {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
-    #if os(iOS)
     if Defaults.isLoopbackURL(initialServerURL), !Defaults.isLoopbackURL(Defaults.defaultServerURL) {
       initialServerURL = Defaults.defaultServerURL
       UserDefaults.standard.set(initialServerURL, forKey: Defaults.serverURL)
     }
-    #endif
     serverURLString = initialServerURL
     let rawTheme = UserDefaults.standard.string(forKey: Defaults.theme) ?? ThemePreference.system.rawValue
     themePreference = ThemePreference(rawValue: rawTheme) ?? .system
@@ -121,6 +119,10 @@ final class AppModel {
   var apiClient: MailAPIClient {
     let fallback = URL(string: Defaults.defaultServerURL) ?? URL(string: "http://127.0.0.1:7331")!
     return MailAPIClient(baseURL: URL(string: serverURLString) ?? fallback)
+  }
+
+  var shouldStartBundledServer: Bool {
+    Defaults.isLoopbackURL(serverURLString)
   }
 
   func bootstrap() async {

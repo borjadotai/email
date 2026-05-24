@@ -37,7 +37,7 @@ Environment:
   APPLE_ID                   Apple ID fallback for notarytool.
   APPLE_TEAM_ID              Team ID fallback for notarytool.
   APPLE_APP_SPECIFIC_PASSWORD
-  EMAIL_RELEASE_ENV_FILE     Optional .env file copied into the bundled server.
+  EMAIL_RELEASE_SERVER_URL   API endpoint baked into the app's default settings.
   NODE_BIN                   Optional Node 24+ binary to bundle.
 EOF
       exit 0
@@ -96,6 +96,9 @@ fi
 if [[ -n "${EMAIL_RELEASE_BUILD:-}" ]]; then
   XCODEBUILD_OVERRIDES+=(CURRENT_PROJECT_VERSION="$EMAIL_RELEASE_BUILD")
 fi
+if [[ -n "${EMAIL_RELEASE_SERVER_URL:-}" ]]; then
+  XCODEBUILD_OVERRIDES+=(EMAIL_DEFAULT_SERVER_URL="$EMAIL_RELEASE_SERVER_URL")
+fi
 
 mkdir -p "$DIST_DIR"
 rm -rf "$APP_BUNDLE" "$ZIP_PATH" "$DMG_PATH" "$DMG_STAGE"
@@ -130,14 +133,6 @@ mkdir -p "$SERVER_BUNDLE/server"
 /usr/bin/ditto "$ROOT_DIR/package-lock.json" "$SERVER_BUNDLE/package-lock.json"
 /usr/bin/ditto "$NODE_SOURCE" "$SERVER_BUNDLE/node"
 chmod 755 "$SERVER_BUNDLE/node"
-
-if [[ -n "${EMAIL_RELEASE_ENV_FILE:-}" ]]; then
-  if [[ ! -f "$EMAIL_RELEASE_ENV_FILE" ]]; then
-    echo "EMAIL_RELEASE_ENV_FILE does not exist: $EMAIL_RELEASE_ENV_FILE" >&2
-    exit 1
-  fi
-  /usr/bin/install -m 600 "$EMAIL_RELEASE_ENV_FILE" "$SERVER_BUNDLE/.env"
-fi
 
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-${EMAIL_CODESIGN_IDENTITY:-}}"
 if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
