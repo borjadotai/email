@@ -172,6 +172,14 @@ struct EmailListView: View {
           .onMoveCommand { direction in
             selectEmail(for: direction)
           }
+          .onKeyPress(.upArrow) {
+            selectAdjacentEmail(offset: -1)
+            return .handled
+          }
+          .onKeyPress(.downArrow) {
+            selectAdjacentEmail(offset: 1)
+            return .handled
+          }
           .onChange(of: model.selectedEmailID) { _, selectedEmailID in
             guard let selectedEmailID else { return }
             withAnimation(.snappy(duration: 0.18)) {
@@ -187,6 +195,10 @@ struct EmailListView: View {
   #endif
 
   private func select(_ email: EmailSummary) {
+    #if os(macOS)
+    isMessageListFocused = true
+    #endif
+
     guard model.selectedEmailID != email.id else {
       onShowDetail()
       return

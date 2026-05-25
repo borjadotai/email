@@ -401,6 +401,7 @@ struct EmailPreviewView: View {
         }
       }
       .environment(model)
+      .padding(.bottom, 12)
       .transition(.move(edge: .top).combined(with: .opacity))
     } else {
       Button {
@@ -828,10 +829,16 @@ private struct InlineReplyComposer: View {
 
         Spacer(minLength: 12)
 
-        Toggle("Track opens", isOn: $trackOpens)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .help("Track opens")
+        HStack(spacing: 8) {
+          Text("Track opens")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.secondary)
+
+          Toggle("Track opens", isOn: $trackOpens)
+            .toggleStyle(.switch)
+            .labelsHidden()
+        }
+        .help("Track opens")
       }
 
       ComposerEditor(
@@ -867,10 +874,11 @@ private struct InlineReplyComposer: View {
       }
     }
     .padding(16)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .padding(.bottom, 8)
+    .background(ComposerSurface.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(.quaternary, lineWidth: 0.5)
+        .stroke(ComposerSurface.borderColor, lineWidth: 0.5)
     }
   }
 

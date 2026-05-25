@@ -108,7 +108,11 @@ struct ComposeView: View {
           )
           .frame(minHeight: 340)
           .padding(20)
-          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .background(ComposerSurface.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .stroke(ComposerSurface.borderColor, lineWidth: 0.5)
+          }
 
           HStack {
             Text("Track opens")
@@ -450,13 +454,6 @@ struct ComposerEditor: View {
 
   private var editorToolbar: some View {
     HStack(spacing: 8) {
-      #if os(macOS)
-      Text("Editor mode")
-        .font(.headline)
-        .foregroundStyle(.secondary)
-        .frame(width: 108, alignment: .leading)
-      #endif
-
       Picker("Editor mode", selection: $mode) {
         ForEach(ComposerEditorMode.allCases) { mode in
           Text(mode.title).tag(mode)
@@ -486,7 +483,7 @@ struct ComposerEditor: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 8)
-    .background(.thinMaterial)
+    .background(ComposerSurface.toolbarBackground)
   }
 
   private func editorButton(_ title: String, systemImage: String, command: ComposerEditorCommandKind) -> some View {
@@ -680,6 +677,28 @@ private extension RichTextWebEditor {
       }
       return "\(json)[0]"
     }
+  }
+}
+
+enum ComposerSurface {
+  static var cardBackground: Color {
+    #if os(macOS)
+    Color(nsColor: .controlBackgroundColor)
+    #else
+    Color(uiColor: .secondarySystemGroupedBackground)
+    #endif
+  }
+
+  static var toolbarBackground: Color {
+    #if os(macOS)
+    Color(nsColor: .windowBackgroundColor).opacity(0.72)
+    #else
+    Color(uiColor: .secondarySystemGroupedBackground)
+    #endif
+  }
+
+  static var borderColor: Color {
+    Color.secondary.opacity(0.18)
   }
 }
 
