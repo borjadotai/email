@@ -140,10 +140,14 @@ struct EmailListView: View {
       } else {
         ScrollViewReader { proxy in
           List {
-            ForEach(model.emails) { email in
-              EmailRow(email: email)
+            ForEach(Array(model.emails.enumerated()), id: \.element.id) { index, email in
+              EmailRow(
+                email: email,
+                showsSeparator: index < model.emails.count - 1
+              )
                 .id(email.id)
-                .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 14))
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                .listRowSeparator(.hidden)
                 .listRowBackground(model.selectedEmailID == email.id ? Color.mailSelectionBackground : Color.clear)
                 .contentShape(Rectangle())
                 .accessibilityAddTraits(model.selectedEmailID == email.id ? .isSelected : [])
@@ -319,68 +323,77 @@ private extension View {
 
 private struct EmailRow: View {
   var email: EmailSummary
+  var showsSeparator = true
 
   var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      AvatarView(
-        name: email.senderName,
-        email: email.senderEmail,
-        urlString: email.senderAvatarURL,
-        size: 34,
-        prefersLogo: true
-      )
+    VStack(spacing: 0) {
+      HStack(alignment: .top, spacing: 12) {
+        AvatarView(
+          name: email.senderName,
+          email: email.senderEmail,
+          urlString: email.senderAvatarURL,
+          size: 34,
+          prefersLogo: true
+        )
 
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-          Text(email.senderName)
-            .font(.subheadline.weight(email.isRead ? .regular : .semibold))
-            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 5) {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(email.senderName)
+              .font(.subheadline.weight(email.isRead ? .regular : .semibold))
+              .lineLimit(1)
 
-          Spacer(minLength: 8)
+            Spacer(minLength: 8)
 
-          Text(MailDateFormatter.listTimestamp(email.receivedAt))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-            .lineLimit(1)
-        }
-
-        HStack(spacing: 6) {
-          if !email.isRead {
-            Circle()
-              .fill(Color.accentColor)
-              .frame(width: 7, height: 7)
-          }
-
-          Text(email.subject)
-            .font(.subheadline.weight(email.isRead ? .regular : .semibold))
-            .lineLimit(1)
-
-          if email.isStarred {
-            Image(systemName: "star.fill")
+            Text(MailDateFormatter.listTimestamp(email.receivedAt))
               .font(.caption)
-              .foregroundStyle(.yellow)
+              .foregroundStyle(.secondary)
+              .monospacedDigit()
+              .lineLimit(1)
           }
-        }
 
-        Text(email.snippet.mailPreviewText)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
+          HStack(spacing: 6) {
+            if !email.isRead {
+              Circle()
+                .fill(Color.accentColor)
+                .frame(width: 7, height: 7)
+            }
 
-        if !email.labels.isEmpty {
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-              ForEach(email.labels) { label in
-                LabelChip(label: label)
-              }
+            Text(email.subject)
+              .font(.subheadline.weight(email.isRead ? .regular : .semibold))
+              .lineLimit(1)
+
+            if email.isStarred {
+              Image(systemName: "star.fill")
+                .font(.caption)
+                .foregroundStyle(.yellow)
             }
           }
-          .scrollDisabled(true)
+
+          Text(email.snippet.mailPreviewText)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+
+          if !email.labels.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+              HStack(spacing: 4) {
+                ForEach(email.labels) { label in
+                  LabelChip(label: label)
+                }
+              }
+            }
+            .scrollDisabled(true)
+          }
         }
       }
+      .padding(.leading, 18)
+      .padding(.trailing, 14)
+      .padding(.vertical, 10)
+
+      if showsSeparator {
+        Divider()
+      }
     }
-    .padding(.vertical, 10)
   }
 }
 

@@ -22,6 +22,14 @@ struct ComposeView: View {
   @State private var editorMode: ComposerEditorMode = .write
 
   var body: some View {
+    #if os(macOS)
+    macOSBody
+    #else
+    iOSBody
+    #endif
+  }
+
+  private var iOSBody: some View {
     NavigationStack {
       Form {
         Section {
@@ -61,22 +69,7 @@ struct ComposeView: View {
         ToolbarItem(placement: .confirmationAction) {
           Button("Send") {
             Task {
-              let request = SendMessageRequest(
-                accountId: accountId,
-                to: to,
-                cc: cc,
-                bcc: bcc,
-                subject: subject,
-                bodyText: outgoingBodyText,
-                bodyHTML: outgoingBodyHTML,
-                trackOpens: trackOpens,
-                replyToEmailID: model.composeDraft?.replyToEmailID
-              )
-              let sent = await model.send(request)
-              if sent {
-                model.composeDraft = nil
-                dismiss()
-              }
+              await sendAndDismiss()
             }
           }
           .disabled(accountId.isEmpty || to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending)
@@ -89,15 +82,124 @@ struct ComposeView: View {
     #endif
   }
 
-  private var recipientFields: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        TextField("To", text: $to)
-          #if os(iOS)
-          .textInputAutocapitalization(.never)
-          .keyboardType(.emailAddress)
-          #endif
+  #if os(macOS)
+  private var macOSBody: some View {
+    VStack(spacing: 0) {
+      HStack {
+        Text("New Message")
+          .font(.title2.weight(.semibold))
+        Spacer()
+      }
+      .padding(.horizontal, 40)
+      .padding(.top, 28)
+      .padding(.bottom, 24)
 
+      Divider()
+
+      ScrollView {
+        VStack(spacing: 20) {
+          macOSAddressCard
+
+          ComposerEditor(
+            mode: $editorMode,
+            bodyHTML: $bodyHTML,
+            bodyText: $bodyText,
+            rawHTML: $rawHTML
+          )
+          .frame(minHeight: 340)
+          .padding(20)
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+          HStack {
+            Text("Track opens")
+              .font(.headline)
+            Spacer()
+            Toggle("Track opens", isOn: $trackOpens)
+              .labelsHidden()
+          }
+          .padding(.horizontal, 20)
+          .padding(.vertical, 14)
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 28)
+      }
+
+      Divider()
+
+      HStack(spacing: 12) {
+        Spacer()
+        Button("Cancel") {
+          dismiss()
+        }
+        .keyboardShortcut(.cancelAction)
+
+        Button("Send") {
+          Task {
+            await sendAndDismiss()
+          }
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(accountId.isEmpty || to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending)
+      }
+      .padding(.horizontal, 40)
+      .padding(.vertical, 18)
+    }
+    .frame(minWidth: 760, minHeight: 690)
+    .onAppear(perform: loadInitialState)
+  }
+
+  private var macOSAddressCard: some View {
+    VStack(spacing: 0) {
+      macOSAccountRow
+      Divider()
+      macOSRecipientRow
+
+      if showCarbonCopyFields || !cc.isEmpty || !bcc.isEmpty {
+        Divider()
+        macOSFieldRow(label: "Cc") {
+          TextField("", text: $cc)
+            .textFieldStyle(.plain)
+        }
+        Divider()
+        macOSFieldRow(label: "Bcc") {
+          TextField("", text: $bcc)
+            .textFieldStyle(.plain)
+        }
+      }
+
+      Divider()
+      macOSFieldRow(label: "Subject") {
+        TextField("", text: $subject)
+          .textFieldStyle(.plain)
+      }
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 8)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var macOSAccountRow: some View {
+    macOSFieldRow(label: "From") {
+      Picker("", selection: $accountId) {
+        ForEach(model.accounts) { account in
+          Text(account.email)
+            .tag(account.id)
+        }
+      }
+      .labelsHidden()
+      .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+  }
+
+  private var macOSRecipientRow: some View {
+    HStack(spacing: 8) {
+      Text("To")
+        .font(.headline)
+        .foregroundStyle(.secondary)
+        .frame(width: 64, alignment: .leading)
+
+      if shouldShowCarbonCopyToggle {
         Button {
           withAnimation(.snappy(duration: 0.18)) {
             showCarbonCopyFields.toggle()
@@ -106,11 +208,61 @@ struct ComposeView: View {
           Text("Cc/Bcc")
             .font(.caption.weight(.medium))
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .opacity(shouldShowCarbonCopyToggle ? 1 : 0)
-        .allowsHitTesting(shouldShowCarbonCopyToggle)
         .accessibilityLabel(showCarbonCopyFields ? "Hide Cc and Bcc" : "Show Cc and Bcc")
+        .transition(.opacity.combined(with: .move(edge: .leading)))
+      }
+
+      TextField("", text: $to)
+        .textFieldStyle(.plain)
+        .frame(maxWidth: .infinity)
+    }
+    .padding(.vertical, 13)
+    .onHover { isHovering in
+      withAnimation(.snappy(duration: 0.16)) {
+        isShowingCarbonCopyHover = isHovering
+      }
+    }
+  }
+
+  private func macOSFieldRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
+    HStack(spacing: 12) {
+      Text(label)
+        .font(.headline)
+        .foregroundStyle(.secondary)
+        .frame(width: 64, alignment: .leading)
+
+      content()
+        .font(.headline)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.vertical, 13)
+  }
+  #endif
+
+  private var recipientFields: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
+        if shouldShowCarbonCopyToggle {
+          Button {
+            withAnimation(.snappy(duration: 0.18)) {
+              showCarbonCopyFields.toggle()
+            }
+          } label: {
+            Text("Cc/Bcc")
+              .font(.caption.weight(.medium))
+          }
+          .buttonStyle(.borderless)
+          .foregroundStyle(.secondary)
+          .accessibilityLabel(showCarbonCopyFields ? "Hide Cc and Bcc" : "Show Cc and Bcc")
+        }
+
+        TextField("To", text: $to)
+          #if os(iOS)
+          .textInputAutocapitalization(.never)
+          .keyboardType(.emailAddress)
+          #endif
       }
       #if os(macOS)
       .onHover { isHovering in
@@ -180,9 +332,28 @@ struct ComposeView: View {
       accountId = model.selectedAccountID ?? model.accounts.first?.id ?? ""
     }
   }
+
+  private func sendAndDismiss() async {
+    let request = SendMessageRequest(
+      accountId: accountId,
+      to: to,
+      cc: cc,
+      bcc: bcc,
+      subject: subject,
+      bodyText: outgoingBodyText,
+      bodyHTML: outgoingBodyHTML,
+      trackOpens: trackOpens,
+      replyToEmailID: model.composeDraft?.replyToEmailID
+    )
+    let sent = await model.send(request)
+    if sent {
+      model.composeDraft = nil
+      dismiss()
+    }
+  }
 }
 
-private enum ComposerEditorMode: String, CaseIterable, Identifiable {
+enum ComposerEditorMode: String, CaseIterable, Identifiable {
   case write
   case html
 
@@ -230,7 +401,7 @@ private struct ComposerEditorCommand: Equatable {
   var kind: ComposerEditorCommandKind
 }
 
-private struct ComposerEditor: View {
+struct ComposerEditor: View {
   @Binding var mode: ComposerEditorMode
   @Binding var bodyHTML: String
   @Binding var bodyText: String
@@ -278,12 +449,20 @@ private struct ComposerEditor: View {
   }
 
   private var editorToolbar: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: 8) {
+      #if os(macOS)
+      Text("Editor mode")
+        .font(.headline)
+        .foregroundStyle(.secondary)
+        .frame(width: 108, alignment: .leading)
+      #endif
+
       Picker("Editor mode", selection: $mode) {
         ForEach(ComposerEditorMode.allCases) { mode in
           Text(mode.title).tag(mode)
         }
       }
+      .labelsHidden()
       .pickerStyle(.segmented)
       .frame(width: 136)
 

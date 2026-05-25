@@ -27,42 +27,6 @@ struct SidebarView: View {
         }
       }
 
-      if activeSidebarAccountID == nil {
-        Section("Global Labels") {
-          ForEach(visibleGlobalLabels) { label in
-            SidebarButton(
-              title: label.name,
-              subtitle: "Global",
-              systemImage: label.systemImage,
-              tint: label.swiftUIColor,
-              isSelected: model.selectedLabelID == label.id
-            ) {
-              onShowMessages()
-              Task {
-                await model.selectLabel(label)
-              }
-            }
-            .contextMenu {
-              if !label.isSystem {
-                Button("Edit Label") {
-                  labelEditor = .edit(label)
-                }
-              }
-            }
-          }
-
-          SidebarButton(
-            title: "New Label",
-            subtitle: nil,
-            systemImage: "plus.circle",
-            tint: .secondary,
-            isSelected: false
-          ) {
-            labelEditor = .create
-          }
-        }
-      }
-
       if !model.accounts.isEmpty {
         Section("Accounts") {
           ForEach(model.accounts) { account in
@@ -81,6 +45,42 @@ struct SidebarView: View {
                 await model.selectAccount(account)
               }
             }
+          }
+        }
+      }
+
+      if activeSidebarAccountID == nil {
+        Section("Filters") {
+          ForEach(visibleGlobalLabels) { label in
+            SidebarButton(
+              title: label.name,
+              subtitle: "Global",
+              systemImage: label.systemImage,
+              tint: label.swiftUIColor,
+              isSelected: model.selectedLabelID == label.id
+            ) {
+              onShowMessages()
+              Task {
+                await model.selectLabel(label)
+              }
+            }
+            .contextMenu {
+              if !label.isSystem {
+                Button("Edit Filter") {
+                  labelEditor = .edit(label)
+                }
+              }
+            }
+          }
+
+          SidebarButton(
+            title: "New Filter",
+            subtitle: nil,
+            systemImage: "plus.circle",
+            tint: .secondary,
+            isSelected: false
+          ) {
+            labelEditor = .create
           }
         }
       }
@@ -233,7 +233,7 @@ private struct GlobalLabelEditorSheet: View {
   var body: some View {
     NavigationStack {
       Form {
-        Section("Label") {
+        Section("Filter") {
           TextField("Name", text: $name)
         }
 
@@ -273,7 +273,7 @@ private struct GlobalLabelEditorSheet: View {
           .padding(.vertical, 4)
         }
       }
-      .navigationTitle(context.label == nil ? "New Label" : "Edit Label")
+      .navigationTitle(context.label == nil ? "New Filter" : "Edit Filter")
       #if os(iOS)
       .navigationBarTitleDisplayMode(.inline)
       #endif

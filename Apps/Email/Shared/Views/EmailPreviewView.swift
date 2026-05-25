@@ -32,6 +32,7 @@ struct EmailPreviewView: View {
   @State private var revealedSenderEmailID: String?
   @State private var revealedAddressListID: String?
   @State private var bodyContentHeight: CGFloat = 1
+  @State private var inlineReplyEmailID: String?
   var onCompose: () -> Void
 
   var body: some View {
@@ -46,6 +47,7 @@ struct EmailPreviewView: View {
             revealedSenderEmailID = nil
             revealedAddressListID = nil
             bodyContentHeight = 1
+            inlineReplyEmailID = nil
           }
           .onChange(of: previewMode) { _, _ in
             bodyContentHeight = 1
@@ -68,7 +70,7 @@ struct EmailPreviewView: View {
               #endif
 
               Button {
-                model.requestReply(to: email)
+                startReply(to: email)
               } label: {
                 Label("Reply", systemImage: "arrowshape.turn.up.left")
               }
@@ -299,13 +301,22 @@ struct EmailPreviewView: View {
     let messages = model.conversationEmails.isEmpty ? [email] : model.conversationEmails
 
     if messages.count <= 1 {
-      bodyContent(email)
-    } else {
       ScrollView {
-        conversationStack(selected: email, messages: messages)
+        VStack(alignment: .leading, spacing: 16) {
+          bodyContent(email, allowsInternalScroll: false)
+
+          replyArea(for: email)
+        }
         .padding(.horizontal, 28)
         .padding(.vertical, 20)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+      }
+    } else {
+      ScrollView {
+        conversationStack(selected: email, messages: messages)
+          .padding(.horizontal, 28)
+          .padding(.vertical, 20)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
       }
       .animation(.snappy(duration: 0.24), value: messages.map(\.id))
       .animation(.snappy(duration: 0.24), value: expandedMessageIDs)
@@ -333,6 +344,7 @@ struct EmailPreviewView: View {
           email: message,
           isExpanded: expandedMessageIDs.contains(message.id),
           isSelected: message.id == email.id,
+          isReplying: inlineReplyEmailID == message.id,
           previewMode: previewMode,
           onToggle: {
             withAnimation(.snappy(duration: 0.24)) {
@@ -344,7 +356,7 @@ struct EmailPreviewView: View {
             }
           },
           onReply: {
-            model.requestReply(to: message)
+            startReply(to: message)
           }
         )
         .transition(.asymmetric(
@@ -352,11 +364,53 @@ struct EmailPreviewView: View {
           removal: .opacity
         ))
 
+        if inlineReplyEmailID == message.id {
+          replyArea(for: message)
+            .padding(.leading, 12)
+            .padding(.bottom, 18)
+        }
+
         if index < messages.count - 1 {
           Divider()
             .frame(maxWidth: .infinity)
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private func replyArea(for email: EmailDetail) -> some View {
+    if inlineReplyEmailID == email.id {
+      InlineReplyComposer(email: email) {
+        withAnimation(.snappy(duration: 0.22)) {
+          inlineReplyEmailID = nil
+        }
+      }
+      .environment(model)
+      .transition(.move(edge: .top).combined(with: .opacity))
+    } else {
+      Button {
+        startReply(to: email)
+      } label: {
+        Label("Reply", systemImage: "arrowshape.turn.up.left")
+      }
+      .buttonStyle(.bordered)
+      .padding(.top, 2)
+    }
+  }
+
+  private func startReply(to email: EmailDetail) {
+    #if os(iOS)
+    model.requestReply(to: email)
+    #else
+    openInlineReply(for: email)
+    #endif
+  }
+
+  private func openInlineReply(for email: EmailDetail) {
+    withAnimation(.snappy(duration: 0.22)) {
+      expandedMessageIDs.insert(email.id)
+      inlineReplyEmailID = email.id
     }
   }
 
@@ -599,7 +653,14 @@ struct EmailPreviewView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .clipped()
         #else
-        EmptyView()
+        EmailHTMLPreview(
+          html: renderedHTML(for: email),
+          isScrollEnabled: false,
+          contentHeight: $bodyContentHeight
+        )
+        .frame(height: max(resolvedBodyContentHeight(for: email), 120), alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .clipped()
         #endif
       }
     case .raw:
@@ -715,6 +776,114 @@ private struct AttachmentHeaderButton: View {
     .buttonStyle(.plain)
     .help(count == 1 ? "Show attachment" : "Show attachments")
     .accessibilityLabel(count == 1 ? "Show 1 attachment" : "Show \(count) attachments")
+  }
+}
+
+private struct InlineReplyComposer: View {
+  @Environment(AppModel.self) private var model
+  var email: EmailDetail
+  var onCancel: () -> Void
+
+  @State private var editorMode: ComposerEditorMode = .write
+  @State private var bodyHTML = ""
+  @State private var bodyText = ""
+  @State private var rawHTML = ""
+  @State private var trackOpens = true
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Label("Reply to \(email.senderName)", systemImage: "arrowshape.turn.up.left")
+          .font(.headline)
+          .lineLimit(1)
+
+        Spacer(minLength: 12)
+
+        Toggle("Track opens", isOn: $trackOpens)
+          .toggleStyle(.switch)
+          .labelsHidden()
+          .help("Track opens")
+      }
+
+      ComposerEditor(
+        mode: $editorMode,
+        bodyHTML: $bodyHTML,
+        bodyText: $bodyText,
+        rawHTML: $rawHTML
+      )
+      .frame(minHeight: 220)
+
+      HStack(spacing: 10) {
+        Spacer()
+
+        Button("Cancel") {
+          onCancel()
+        }
+        .keyboardShortcut(.cancelAction)
+
+        Button {
+          Task {
+            await sendReply()
+          }
+        } label: {
+          if model.isSending {
+            ProgressView()
+              .controlSize(.small)
+          } else {
+            Text("Send")
+          }
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(model.isSending || outgoingBodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      }
+    }
+    .padding(16)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(.quaternary, lineWidth: 0.5)
+    }
+  }
+
+  private var outgoingBodyHTML: String? {
+    switch editorMode {
+    case .write:
+      return bodyHTML.trimmedNonEmpty
+    case .html:
+      return rawHTML.trimmedNonEmpty
+    }
+  }
+
+  private var outgoingBodyText: String {
+    switch editorMode {
+    case .write:
+      return bodyText.trimmedNonEmpty ?? bodyHTML.htmlPlainText
+    case .html:
+      return rawHTML.htmlPlainText
+    }
+  }
+
+  @MainActor
+  private func sendReply() async {
+    let draft = ComposeDraft.reply(to: email)
+    let sent = await model.send(SendMessageRequest(
+      accountId: email.accountId,
+      to: draft.to,
+      cc: "",
+      bcc: "",
+      subject: draft.subject,
+      bodyText: outgoingBodyText,
+      bodyHTML: outgoingBodyHTML,
+      trackOpens: trackOpens,
+      replyToEmailID: email.id
+    ))
+
+    if sent {
+      bodyHTML = ""
+      bodyText = ""
+      rawHTML = ""
+      onCancel()
+    }
   }
 }
 
@@ -1116,6 +1285,7 @@ private struct ConversationMessageRow: View {
   var email: EmailDetail
   var isExpanded: Bool
   var isSelected: Bool
+  var isReplying: Bool
   var previewMode: EmailPreviewMode
   var onToggle: () -> Void
   var onReply: () -> Void
@@ -1187,13 +1357,15 @@ private struct ConversationMessageRow: View {
 
           messageBody
 
-          HStack {
-            Button(action: onReply) {
-              Label("Reply", systemImage: "arrowshape.turn.up.left")
-            }
-            .buttonStyle(.bordered)
+          if !isReplying {
+            HStack {
+              Button(action: onReply) {
+                Label("Reply", systemImage: "arrowshape.turn.up.left")
+              }
+              .buttonStyle(.bordered)
 
-            Spacer()
+              Spacer()
+            }
           }
         }
         .padding(.horizontal, 0)
@@ -1791,17 +1963,20 @@ private struct EmailHTMLPreview: UIViewRepresentable {
 #elseif os(macOS)
 private struct EmailHTMLPreview: NSViewRepresentable {
   var html: String
+  var isScrollEnabled = true
+  var contentHeight: Binding<CGFloat>?
 
   func makeNSView(context: Context) -> WKWebView {
     makeMailWebView(coordinator: context.coordinator)
   }
 
   func updateNSView(_ webView: WKWebView, context: Context) {
+    context.coordinator.contentHeight = contentHeight
     context.coordinator.load(html, in: webView)
   }
 
   func makeCoordinator() -> HTMLMailCoordinator {
-    HTMLMailCoordinator()
+    HTMLMailCoordinator(contentHeight: contentHeight)
   }
 }
 #endif
