@@ -261,6 +261,15 @@ struct MailAPIClient {
     return response.filter
   }
 
+  func deleteFilter(id: String) async throws -> MailFilter {
+    let response: FilterResponse = try await request(
+      "api/filters/\(id)",
+      method: "DELETE",
+      body: EmptyBody()
+    )
+    return response.filter
+  }
+
   func emails(query: EmailQuery) async throws -> [EmailSummary] {
     var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(query.limit))]
     if let accountId = query.accountId {
@@ -277,6 +286,9 @@ struct MailAPIClient {
     }
     if let filterId = query.filterId {
       items.append(URLQueryItem(name: "filterId", value: filterId))
+    }
+    if query.refreshFilterCache {
+      items.append(URLQueryItem(name: "refreshFilter", value: "1"))
     }
     if !query.q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       items.append(URLQueryItem(name: "q", value: query.q))

@@ -1925,6 +1925,19 @@ private enum HTMLMailDocument {
       height: auto !important;
       object-fit: contain !important;
     }
+    img[src^="cid:"],
+    img:not([src]),
+    img[src=""],
+    .mail-hidden-broken-image {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+    }
     svg {
       max-width: 100% !important;
       max-height: 760px !important;
@@ -1939,6 +1952,14 @@ private enum HTMLMailDocument {
       padding-left: 12px;
       border-left: 3px solid var(--mail-border);
       color: var(--mail-muted);
+    }
+    [data-mail-contrast-repaired="foreground"] {
+      color: var(--mail-fg) !important;
+    }
+    a[data-mail-contrast-repaired],
+    [data-mail-contrast-repaired="link"],
+    [data-mail-contrast-repaired="link"] * {
+      color: var(--mail-link) !important;
     }
     :where(a) { color: var(--mail-link); }
     \(prefersMobileLayout ? mobileLayoutStyle : "")
@@ -2041,11 +2062,13 @@ private final class HTMLMailCoordinator: NSObject, WKNavigationDelegate {
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    repairRenderedContent(in: webView)
     updateContentHeight(in: webView)
     Task { @MainActor [weak self, weak webView] in
       for delay in [120, 350, 900, 1_600, 2_600] {
         try? await Task.sleep(for: .milliseconds(delay))
         guard let webView else { return }
+        self?.repairRenderedContent(in: webView)
         self?.updateContentHeight(in: webView)
       }
     }
@@ -2063,6 +2086,15 @@ private final class HTMLMailCoordinator: NSObject, WKNavigationDelegate {
     }
 
     decisionHandler(.allow)
+  }
+
+  private func repairRenderedContent(in webView: WKWebView) {
+    webView.evaluateJavaScript(Self.renderingRepairScript) { [weak self, weak webView] _, _ in
+      guard let self, let webView else { return }
+      Task { @MainActor in
+        self.updateContentHeight(in: webView)
+      }
+    }
   }
 
   private func updateContentHeight(in webView: WKWebView) {
@@ -2128,6 +2160,217 @@ private final class HTMLMailCoordinator: NSObject, WKNavigationDelegate {
       }
     }
   }
+
+  private static let renderingRepairScript = """
+  (() => {
+    if (window.__mailRenderingRepairInstalled) {
+      if (typeof window.__mailRepairRendering === "function") {
+        window.__mailRepairRendering();
+      }
+      return true;
+    }
+
+    window.__mailRenderingRepairInstalled = true;
+
+    const darkQuery = window.matchMedia
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
+
+    const fallbackBackground = () => {
+      if (darkQuery && darkQuery.matches) {
+        return { r: 31, g: 31, b: 31, a: 1 };
+      }
+      return { r: 255, g: 255, b: 255, a: 1 };
+    };
+
+    const parseColor = (value) => {
+      if (!value || value === "transparent") {
+        return { r: 0, g: 0, b: 0, a: 0 };
+      }
+
+      const match = value.match(/^rgba?\\(([^)]+)\\)$/i);
+      if (!match) {
+        return null;
+      }
+
+      const parts = match[1]
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+
+      if (parts.length < 3) {
+        return null;
+      }
+
+      const channel = (part) => {
+        if (part.endsWith("%")) {
+          return Math.round(Math.max(0, Math.min(100, Number.parseFloat(part))) * 2.55);
+        }
+        return Math.max(0, Math.min(255, Number.parseFloat(part)));
+      };
+
+      const alpha = parts.length >= 4
+        ? Math.max(0, Math.min(1, Number.parseFloat(parts[3])))
+        : 1;
+
+      return {
+        r: channel(parts[0]),
+        g: channel(parts[1]),
+        b: channel(parts[2]),
+        a: Number.isFinite(alpha) ? alpha : 1
+      };
+    };
+
+    const blend = (foreground, background) => {
+      const alpha = foreground.a + background.a * (1 - foreground.a);
+      if (alpha <= 0) {
+        return { r: 0, g: 0, b: 0, a: 0 };
+      }
+
+      return {
+        r: (foreground.r * foreground.a + background.r * background.a * (1 - foreground.a)) / alpha,
+        g: (foreground.g * foreground.a + background.g * background.a * (1 - foreground.a)) / alpha,
+        b: (foreground.b * foreground.a + background.b * background.a * (1 - foreground.a)) / alpha,
+        a: alpha
+      };
+    };
+
+    const luminance = (color) => {
+      const convert = (channel) => {
+        const value = channel / 255;
+        return value <= 0.03928
+          ? value / 12.92
+          : Math.pow((value + 0.055) / 1.055, 2.4);
+      };
+
+      return 0.2126 * convert(color.r) + 0.7152 * convert(color.g) + 0.0722 * convert(color.b);
+    };
+
+    const contrastRatio = (foreground, background) => {
+      const first = luminance(foreground);
+      const second = luminance(background);
+      const lighter = Math.max(first, second);
+      const darker = Math.min(first, second);
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+
+    const effectiveBackground = (element) => {
+      const chain = [];
+      let current = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE) {
+        chain.unshift(current);
+        current = current.parentElement;
+      }
+
+      let background = fallbackBackground();
+      for (const item of chain) {
+        const style = window.getComputedStyle(item);
+        const parsed = parseColor(style.backgroundColor);
+        if (parsed && parsed.a > 0) {
+          background = blend(parsed, background);
+        }
+      }
+
+      return { r: background.r, g: background.g, b: background.b, a: 1 };
+    };
+
+    const hasOwnText = (element) => Array
+      .from(element.childNodes)
+      .some((node) => node.nodeType === Node.TEXT_NODE && node.nodeValue.trim().length > 0);
+
+    const repairLowContrastText = () => {
+      const elements = document.body
+        ? Array.from(document.body.querySelectorAll("*"))
+        : [];
+
+      if (document.body) {
+        elements.unshift(document.body);
+      }
+
+      for (const element of elements) {
+        if (!(element instanceof HTMLElement)) {
+          continue;
+        }
+
+        if (!hasOwnText(element)) {
+          element.removeAttribute("data-mail-contrast-repaired");
+          continue;
+        }
+
+        const tagName = element.tagName.toLowerCase();
+        if (["script", "style", "noscript", "img", "video", "canvas", "iframe", "svg"].includes(tagName)) {
+          continue;
+        }
+
+        const style = window.getComputedStyle(element);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          Number(style.opacity || 1) === 0
+        ) {
+          continue;
+        }
+
+        const foreground = parseColor(style.color);
+        if (!foreground || foreground.a === 0) {
+          continue;
+        }
+
+        const background = effectiveBackground(element);
+        if (contrastRatio(foreground, background) < 4.5) {
+          element.setAttribute(
+            "data-mail-contrast-repaired",
+            element.closest("a") ? "link" : "foreground"
+          );
+        } else {
+          element.removeAttribute("data-mail-contrast-repaired");
+        }
+      }
+    };
+
+    const hideImage = (image) => {
+      image.classList.add("mail-hidden-broken-image");
+      image.setAttribute("aria-hidden", "true");
+    };
+
+    const shouldHideImage = (image) => {
+      const source = (image.getAttribute("src") || "").trim().toLowerCase();
+      if (!source || source.startsWith("cid:") || source === "about:blank") {
+        return true;
+      }
+      return image.complete && image.naturalWidth === 0 && image.naturalHeight === 0;
+    };
+
+    const repairImages = () => {
+      document.querySelectorAll("img").forEach((image) => {
+        image.addEventListener("error", () => hideImage(image), { once: true });
+        if (shouldHideImage(image)) {
+          hideImage(image);
+        }
+      });
+    };
+
+    const run = () => {
+      repairImages();
+      repairLowContrastText();
+    };
+
+    window.__mailRepairRendering = run;
+
+    if (darkQuery) {
+      if (typeof darkQuery.addEventListener === "function") {
+        darkQuery.addEventListener("change", run);
+      } else if (typeof darkQuery.addListener === "function") {
+        darkQuery.addListener(run);
+      }
+    }
+
+    run();
+    window.setTimeout(run, 120);
+    window.setTimeout(run, 800);
+    return true;
+  })()
+  """
 
   private func setContentHeight(_ height: CGFloat) {
     guard height.isFinite, height > 0 else { return }

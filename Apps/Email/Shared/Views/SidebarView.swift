@@ -3,128 +3,17 @@ import SwiftUI
 struct SidebarView: View {
   @Environment(AppModel.self) private var model
   @State private var filterEditor: FilterEditorContext?
+  @State private var filterPendingDeletion: MailFilter?
   var onAddAccount: () -> Void
   var onShowMessages: () -> Void
 
   var body: some View {
-    let visibleMailboxes = scopedMailboxes
-    let visibleLabels = scopedLabels
-
     List {
-      Section {
-        SidebarButton(
-          title: "All Inboxes",
-          subtitle: "Global",
-          systemImage: "tray.full",
-          count: model.globalUnreadCount,
-          isSelected: model.selectedAccountID == nil
-            && model.selectedMailboxID == nil
-            && model.selectedLabelID == nil
-            && model.selectedFilterID == nil
-        ) {
-          onShowMessages()
-          Task {
-            await model.selectGlobalInbox()
-          }
-        }
-      }
-
-      if !model.accounts.isEmpty {
-        Section("Accounts") {
-          ForEach(model.accounts) { account in
-            SidebarButton(
-              title: account.displayName,
-              subtitle: account.email,
-              systemImage: account.provider.systemImage,
-              avatarName: account.displayName,
-              avatarEmail: account.email,
-              avatarURL: account.avatarURL,
-              count: unreadCount(for: account),
-              isSelected: model.selectedAccountID == account.id
-                && model.selectedMailboxID == nil
-                && model.selectedLabelID == nil
-                && model.selectedFilterID == nil
-            ) {
-              onShowMessages()
-              Task {
-                await model.selectAccount(account)
-              }
-            }
-          }
-        }
-      }
-
-      if activeSidebarAccountID == nil {
-        Section("Filters") {
-          ForEach(model.filters) { filter in
-            SidebarButton(
-              title: filter.name,
-              subtitle: "Saved view",
-              systemImage: filter.systemImage,
-              tint: filter.swiftUIColor,
-              isSelected: model.selectedFilterID == filter.id
-            ) {
-              onShowMessages()
-              Task {
-                await model.selectFilter(filter)
-              }
-            }
-            .contextMenu {
-              Button("Edit Filter") {
-                filterEditor = .edit(filter)
-              }
-            }
-          }
-
-          SidebarButton(
-            title: "New Filter",
-            subtitle: nil,
-            systemImage: "plus.circle",
-            tint: .secondary,
-            isSelected: false
-          ) {
-            filterEditor = .create
-          }
-        }
-      }
-
-      if !visibleMailboxes.isEmpty {
-        Section("Folders") {
-          ForEach(visibleMailboxes) { mailbox in
-            SidebarButton(
-              title: mailbox.name,
-              subtitle: nil,
-              systemImage: image(for: mailbox.role),
-              count: mailbox.unreadCount,
-              isSelected: model.selectedMailboxID == mailbox.id
-            ) {
-              onShowMessages()
-              Task {
-                await model.selectMailbox(mailbox)
-              }
-            }
-          }
-        }
-      }
-
-      if !visibleLabels.isEmpty {
-        Section("Labels") {
-          ForEach(visibleLabels) { label in
-            SidebarButton(
-              title: label.name,
-              subtitle: nil,
-              systemImage: "tag",
-              tint: label.swiftUIColor,
-              isSelected: model.selectedLabelID == label.id
-            ) {
-              onShowMessages()
-              Task {
-                await model.selectLabel(label)
-              }
-            }
-          }
-        }
-      }
+      allInboxesSection
+      accountsSection
+      filtersSection
+      foldersSection
+      labelsSection
     }
     .listStyle(.sidebar)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -138,29 +27,221 @@ struct SidebarView: View {
         .help("Add account")
       }
     }
+    .confirmationDialog(
+      "Delete Filter?",
+      isPresented: isDeleteFilterConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      if let filter = filterPendingDeletion {
+        Button("Delete \(filter.name)", role: .destructive) {
+          deleteFilter(filter)
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This only removes the saved view. It does not delete or modify any emails.")
+    }
     .sheet(item: $filterEditor) { context in
       FilterEditorSheet(context: context) { draft in
-        Task {
-          if let filter = context.filter {
-            await model.updateFilter(
-              filter,
-              name: draft.name,
-              color: draft.color,
-              icon: draft.icon,
-              naturalLanguage: draft.naturalLanguage,
-              criteria: draft.criteria
-            )
-          } else {
-            await model.createFilter(
-              name: draft.name,
-              color: draft.color,
-              icon: draft.icon,
-              naturalLanguage: draft.naturalLanguage,
-              criteria: draft.criteria
-            )
+        saveFilter(context: context, draft: draft)
+      }
+    }
+  }
+
+  private var isDeleteFilterConfirmationPresented: Binding<Bool> {
+    Binding(
+      get: {
+        filterPendingDeletion != nil
+      },
+      set: { isPresented in
+        if !isPresented {
+          filterPendingDeletion = nil
+        }
+      }
+    )
+  }
+
+  @ViewBuilder
+  private var allInboxesSection: some View {
+    Section {
+      SidebarButton(
+        title: "All Inboxes",
+        subtitle: "Global",
+        systemImage: "tray.full",
+        count: model.globalUnreadCount,
+        isSelected: model.selectedAccountID == nil
+          && model.selectedMailboxID == nil
+          && model.selectedLabelID == nil
+          && model.selectedFilterID == nil
+      ) {
+        selectGlobalInbox()
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var accountsSection: some View {
+    if !model.accounts.isEmpty {
+      Section("Accounts") {
+        ForEach(model.accounts) { account in
+          SidebarButton(
+            title: account.displayName,
+            subtitle: account.email,
+            systemImage: account.provider.systemImage,
+            avatarName: account.displayName,
+            avatarEmail: account.email,
+            avatarURL: account.avatarURL,
+            count: unreadCount(for: account),
+            isSelected: model.selectedAccountID == account.id
+              && model.selectedMailboxID == nil
+              && model.selectedLabelID == nil
+              && model.selectedFilterID == nil
+          ) {
+            selectAccount(account)
           }
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var filtersSection: some View {
+    if activeSidebarAccountID == nil {
+      Section("Filters") {
+        ForEach(model.filters) { filter in
+          SidebarButton(
+            title: filter.name,
+            subtitle: "Saved view",
+            systemImage: filter.systemImage,
+            tint: filter.swiftUIColor,
+            isSelected: model.selectedFilterID == filter.id
+          ) {
+            selectFilter(filter)
+          }
+          .contextMenu {
+            Button("Edit Filter") {
+              filterEditor = .edit(filter)
+            }
+            Button("Delete Filter", role: .destructive) {
+              filterPendingDeletion = filter
+            }
+          }
+        }
+
+        SidebarButton(
+          title: "New Filter",
+          subtitle: nil,
+          systemImage: "plus.circle",
+          tint: .secondary,
+          isSelected: false
+        ) {
+          filterEditor = .create
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var foldersSection: some View {
+    let visibleMailboxes = scopedMailboxes
+    if !visibleMailboxes.isEmpty {
+      Section("Folders") {
+        ForEach(visibleMailboxes) { mailbox in
+          SidebarButton(
+            title: mailbox.name,
+            subtitle: nil,
+            systemImage: image(for: mailbox.role),
+            count: mailbox.unreadCount,
+            isSelected: model.selectedMailboxID == mailbox.id
+          ) {
+            selectMailbox(mailbox)
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var labelsSection: some View {
+    let visibleLabels = scopedLabels
+    if !visibleLabels.isEmpty {
+      Section("Labels") {
+        ForEach(visibleLabels) { label in
+          SidebarButton(
+            title: label.name,
+            subtitle: nil,
+            systemImage: "tag",
+            tint: label.swiftUIColor,
+            isSelected: model.selectedLabelID == label.id
+          ) {
+            selectLabel(label)
+          }
+        }
+      }
+    }
+  }
+
+  private func selectGlobalInbox() {
+    onShowMessages()
+    Task {
+      await model.selectGlobalInbox()
+    }
+  }
+
+  private func selectAccount(_ account: MailAccount) {
+    onShowMessages()
+    Task {
+      await model.selectAccount(account)
+    }
+  }
+
+  private func selectFilter(_ filter: MailFilter) {
+    onShowMessages()
+    Task {
+      await model.selectFilter(filter)
+    }
+  }
+
+  private func selectMailbox(_ mailbox: Mailbox) {
+    onShowMessages()
+    Task {
+      await model.selectMailbox(mailbox)
+    }
+  }
+
+  private func selectLabel(_ label: MailLabel) {
+    onShowMessages()
+    Task {
+      await model.selectLabel(label)
+    }
+  }
+
+  private func saveFilter(context: FilterEditorContext, draft: FilterEditorDraft) {
+    Task {
+      if let filter = context.filter {
+        await model.updateFilter(
+          filter,
+          name: draft.name,
+          color: draft.color,
+          icon: draft.icon,
+          naturalLanguage: draft.naturalLanguage,
+          criteria: draft.criteria
+        )
+      } else {
+        await model.createFilter(
+          name: draft.name,
+          color: draft.color,
+          icon: draft.icon,
+          naturalLanguage: draft.naturalLanguage,
+          criteria: draft.criteria
+        )
+      }
+    }
+  }
+
+  private func deleteFilter(_ filter: MailFilter) {
+    Task {
+      await model.deleteFilter(filter)
     }
   }
 
@@ -233,48 +314,25 @@ private struct FilterEditorDraft {
   var criteria: MailFilterCriteria
 }
 
-private enum FilterEditorMode: Equatable {
-  case choose
-  case naturalLanguage
-  case manual
-}
-
 private struct FilterEditorSheet: View {
   @Environment(\.dismiss) private var dismiss
   var context: FilterEditorContext
   var onSave: (FilterEditorDraft) -> Void
 
-  @State private var mode: FilterEditorMode
   @State private var name: String
   @State private var color: String
   @State private var icon: String
   @State private var naturalLanguage: String
-  @State private var sender: String
-  @State private var subject: String
-  @State private var text: String
-  @State private var hasAttachments: Bool
-  @State private var attachmentKind: String
-  @State private var unreadOnly: Bool
-  @State private var starredOnly: Bool
   @FocusState private var promptFocused: Bool
 
   init(context: FilterEditorContext, onSave: @escaping (FilterEditorDraft) -> Void) {
     self.context = context
     self.onSave = onSave
     let filter = context.filter
-    let criteria = filter?.criteria ?? MailFilterCriteria()
-    _mode = State(initialValue: filter == nil ? .choose : (filter?.naturalLanguage?.isEmpty == false ? .naturalLanguage : .manual))
     _name = State(initialValue: filter?.name ?? "")
     _color = State(initialValue: filter?.color ?? FilterEditorOption.colors.first?.id ?? "teal")
     _icon = State(initialValue: filter?.systemImage ?? FilterEditorOption.icons.first?.id ?? "line.3.horizontal.decrease.circle")
     _naturalLanguage = State(initialValue: filter?.naturalLanguage ?? "")
-    _sender = State(initialValue: criteria.sender ?? "")
-    _subject = State(initialValue: criteria.subject ?? "")
-    _text = State(initialValue: criteria.text ?? criteria.query ?? "")
-    _hasAttachments = State(initialValue: criteria.hasAttachments ?? (criteria.attachmentKind != nil))
-    _attachmentKind = State(initialValue: criteria.attachmentKind ?? "none")
-    _unreadOnly = State(initialValue: criteria.unread ?? false)
-    _starredOnly = State(initialValue: criteria.starred ?? false)
   }
 
   var body: some View {
@@ -283,14 +341,8 @@ private struct FilterEditorSheet: View {
       Divider()
       ScrollView {
         VStack(alignment: .leading, spacing: 16) {
-          switch mode {
-          case .choose:
-            modeChooser
-          case .naturalLanguage:
-            naturalLanguageBuilder
-          case .manual:
-            manualBuilder
-          }
+          FilterAppearanceSection(name: $name, color: $color, icon: $icon)
+          naturalLanguageBuilder
         }
         .padding(20)
       }
@@ -298,25 +350,18 @@ private struct FilterEditorSheet: View {
       footer
     }
     #if os(macOS)
-    .frame(width: 640, height: 560)
+    .frame(width: 640, height: 520)
     #endif
     #if os(iOS)
     .presentationDetents([.large])
     #endif
+    .task {
+      promptFocused = true
+    }
   }
 
   private var header: some View {
     HStack(spacing: 12) {
-      if mode != .choose && context.filter == nil {
-        Button {
-          mode = .choose
-        } label: {
-          Image(systemName: "chevron.left")
-        }
-        .buttonStyle(.borderless)
-        .help("Back")
-      }
-
       Text(context.filter == nil ? "New Filter" : "Edit Filter")
         .font(.title2.weight(.semibold))
 
@@ -334,124 +379,51 @@ private struct FilterEditorSheet: View {
     .padding(.vertical, 16)
   }
 
-  private var modeChooser: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      Text("Create a saved mail view")
-        .font(.headline)
-      HStack(spacing: 12) {
-        FilterModeCard(
-          title: "Natural language",
-          subtitle: "Describe the messages this filter should collect.",
-          systemImage: "sparkles",
-          tint: .teal
-        ) {
-          mode = .naturalLanguage
-          promptFocused = true
-        }
-
-        FilterModeCard(
-          title: "Manual",
-          subtitle: "Choose sender, text, status, and attachment rules.",
-          systemImage: "slider.horizontal.3",
-          tint: .blue
-        ) {
-          mode = .manual
-        }
-      }
-    }
-  }
-
   private var naturalLanguageBuilder: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      FilterAppearanceSection(name: $name, color: $color, icon: $icon)
-
-      VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: 3) {
         Text("Description")
           .font(.headline)
+        Text("Write the saved view you want. The server turns it into a live local query.")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+      }
 
-        ZStack(alignment: .topLeading) {
-          TextEditor(text: $naturalLanguage)
-            .focused($promptFocused)
-            .font(.body)
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(minHeight: 180)
-            .onChange(of: naturalLanguage) { _, value in
-              applyNaturalLanguageDefaults(value)
-            }
-
-          if naturalLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Text("Find emails with invoice attachments from any sender")
-              .foregroundStyle(.tertiary)
-              .padding(.horizontal, 18)
-              .padding(.vertical, 18)
-              .allowsHitTesting(false)
+      ZStack(alignment: .topLeading) {
+        TextEditor(text: $naturalLanguage)
+          .focused($promptFocused)
+          .font(.body)
+          .scrollContentBackground(.hidden)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .frame(minHeight: 220)
+          .onChange(of: naturalLanguage) { _, value in
+            applyNaturalLanguageDefaults(value)
           }
 
-          VStack {
-            HStack {
-              Spacer()
-              Button {
-                promptFocused = true
-              } label: {
-                Image(systemName: "mic")
-              }
-              .buttonStyle(.borderless)
-              .padding(12)
-              .help("Dictate")
-            }
+        if naturalLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          Text("Create a view for all my invoices")
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .allowsHitTesting(false)
+        }
+
+        VStack {
+          HStack {
             Spacer()
+            Button {
+              promptFocused = true
+            } label: {
+              Image(systemName: "mic")
+            }
+            .buttonStyle(.borderless)
+            .padding(12)
+            .help("Dictate")
           }
-        }
-        .background(sheetCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.10))
-        )
-      }
-    }
-  }
-
-  private var manualBuilder: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      FilterAppearanceSection(name: $name, color: $color, icon: $icon)
-
-      VStack(alignment: .leading, spacing: 12) {
-        Text("Conditions")
-          .font(.headline)
-
-        FilterTextField(title: "Sender contains", systemImage: "person.crop.circle", text: $sender)
-        FilterTextField(title: "Subject contains", systemImage: "textformat", text: $subject)
-        FilterTextField(title: "Text contains", systemImage: "magnifyingglass", text: $text)
-
-        Divider()
-
-        Toggle(isOn: $hasAttachments) {
-          Label("Has attachments", systemImage: "paperclip")
-        }
-
-        Picker("Attachment type", selection: $attachmentKind) {
-          Text("Any").tag("none")
-          Text("Invoice or receipt").tag("invoice")
-          Text("PDF").tag("pdf")
-          Text("Image").tag("image")
-          Text("Spreadsheet").tag("spreadsheet")
-          Text("Document").tag("document")
-        }
-        .pickerStyle(.menu)
-
-        Divider()
-
-        Toggle(isOn: $unreadOnly) {
-          Label("Unread only", systemImage: "envelope.badge")
-        }
-        Toggle(isOn: $starredOnly) {
-          Label("Starred only", systemImage: "star")
+          Spacer()
         }
       }
-      .padding(14)
       .background(sheetCardBackground)
       .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
       .overlay(
@@ -479,50 +451,17 @@ private struct FilterEditorSheet: View {
   }
 
   private var draft: FilterEditorDraft {
-    switch mode {
-    case .naturalLanguage:
-      FilterEditorDraft(
-        name: trimmedName,
-        color: color,
-        icon: icon,
-        naturalLanguage: trimmedNaturalLanguage,
-        criteria: MailFilterCriteria()
-      )
-    case .manual:
-      FilterEditorDraft(
-        name: trimmedName,
-        color: color,
-        icon: icon,
-        naturalLanguage: nil,
-        criteria: manualCriteria
-      )
-    case .choose:
-      FilterEditorDraft(name: "", color: color, icon: icon, naturalLanguage: nil, criteria: MailFilterCriteria())
-    }
-  }
-
-  private var manualCriteria: MailFilterCriteria {
-    MailFilterCriteria(
-      sender: sender.trimmedOrNil,
-      subject: subject.trimmedOrNil,
-      text: text.trimmedOrNil,
-      query: nil,
-      hasAttachments: hasAttachments || attachmentKind != "none" ? true : nil,
-      attachmentKind: attachmentKind == "none" ? nil : attachmentKind,
-      unread: unreadOnly ? true : nil,
-      starred: starredOnly ? true : nil
+    FilterEditorDraft(
+      name: trimmedName,
+      color: color,
+      icon: icon,
+      naturalLanguage: trimmedNaturalLanguage,
+      criteria: MailFilterCriteria()
     )
   }
 
   private var canSave: Bool {
-    switch mode {
-    case .choose:
-      false
-    case .naturalLanguage:
-      !trimmedNaturalLanguage.isEmpty
-    case .manual:
-      !trimmedName.isEmpty
-    }
+    !trimmedNaturalLanguage.isEmpty
   }
 
   private var trimmedName: String {
@@ -539,6 +478,8 @@ private struct FilterEditorSheet: View {
 
     if lower.range(of: #"\b(invoice|factura|receipt|recibo|bill|billing)\b"#, options: .regularExpression) != nil {
       applySuggestedPresentation(name: "Invoices", color: "green", icon: "doc.text")
+    } else if lower.range(of: #"\b(newsletter|newsletters|digest|digests)\b"#, options: .regularExpression) != nil {
+      applySuggestedPresentation(name: "Newsletters", color: "purple", icon: "newspaper")
     } else if lower.contains("attachment") || lower.contains("attached") || lower.contains("pdf") {
       applySuggestedPresentation(name: "Attachments", color: "teal", icon: "paperclip")
     } else if lower.contains("unread") {
@@ -558,43 +499,6 @@ private struct FilterEditorSheet: View {
     if icon == FilterEditorOption.icons.first?.id {
       icon = suggestedIcon
     }
-  }
-}
-
-private struct FilterModeCard: View {
-  var title: String
-  var subtitle: String
-  var systemImage: String
-  var tint: Color
-  var action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      VStack(alignment: .leading, spacing: 10) {
-        Image(systemName: systemImage)
-          .font(.title2.weight(.semibold))
-          .foregroundStyle(tint)
-          .frame(width: 34, height: 34)
-
-        Text(title)
-          .font(.headline)
-          .foregroundStyle(.primary)
-
-        Text(subtitle)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
-      .padding(16)
-      .background(sheetCardBackground)
-      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10))
-      )
-    }
-    .buttonStyle(.plain)
   }
 }
 
@@ -667,23 +571,6 @@ private struct FilterAppearanceSection: View {
   }
 }
 
-private struct FilterTextField: View {
-  var title: String
-  var systemImage: String
-  @Binding var text: String
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Label(title, systemImage: systemImage)
-        .foregroundStyle(.secondary)
-        .frame(width: 150, alignment: .leading)
-      TextField(title, text: $text)
-        .textFieldStyle(.plain)
-    }
-    .padding(.vertical, 6)
-  }
-}
-
 private struct FilterEditorOption: Identifiable {
   var id: String
   var title: String
@@ -694,6 +581,7 @@ private struct FilterEditorOption: Identifiable {
     FilterEditorOption(id: "tray.full", title: "Inbox"),
     FilterEditorOption(id: "paperclip", title: "Attachment"),
     FilterEditorOption(id: "doc.text", title: "Document"),
+    FilterEditorOption(id: "newspaper", title: "Newsletter"),
     FilterEditorOption(id: "creditcard", title: "Money"),
     FilterEditorOption(id: "cart", title: "Shopping"),
     FilterEditorOption(id: "calendar", title: "Calendar"),

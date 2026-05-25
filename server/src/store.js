@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { DatabaseSync } from "node:sqlite";
+import { defaultFilterQueryPlan, fallbackFilterQueryPlan } from "./filterQueryPlanner.js";
 import { senderLogoURLForEmail } from "./logoResolver.js";
 
 const SYSTEM_MAILBOXES = [
@@ -20,10 +21,12 @@ const SYSTEM_LABELS = [
 ];
 
 const SEARCH_INDEX_VERSION = "2";
+const FILTER_CACHE_LIMIT = 5_000;
 
 export class MailStore {
-  constructor({ databasePath = ":memory:", seedDemo = false } = {}) {
+  constructor({ databasePath = ":memory:", seedDemo = false, filterQueryPlanner = defaultFilterQueryPlan } = {}) {
     this.databasePath = databasePath;
+    this.filterQueryPlanner = filterQueryPlanner;
     this.db = new DatabaseSync(databasePath);
     this.migrate();
     if (seedDemo) {
@@ -104,6 +107,11 @@ export class MailStore {
         icon TEXT NOT NULL DEFAULT 'line.3.horizontal.decrease.circle',
         natural_language TEXT,
         criteria_json TEXT NOT NULL DEFAULT '{}',
+        query_sql TEXT,
+        query_source TEXT NOT NULL DEFAULT 'criteria',
+        query_error TEXT,
+        cached_email_ids_json TEXT NOT NULL DEFAULT '[]',
+        cache_updated_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -232,6 +240,11 @@ export class MailStore {
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
     this.ensureColumn("emails", "references_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("saved_filters", "query_sql", "TEXT");
+    this.ensureColumn("saved_filters", "query_source", "TEXT NOT NULL DEFAULT 'criteria'");
+    this.ensureColumn("saved_filters", "query_error", "TEXT");
+    this.ensureColumn("saved_filters", "cached_email_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("saved_filters", "cache_updated_at", "TEXT");
     this.ensureDefaultsForExistingAccounts();
     this.ensureLocalUser();
     this.linkUnownedAccountsToLocalUser();
@@ -778,7 +791,11 @@ export class MailStore {
   listFilters() {
     return this.db.prepare(`
       SELECT id, name, color, icon, natural_language AS naturalLanguage,
-             criteria_json AS criteriaJSON, created_at AS createdAt, updated_at AS updatedAt
+             criteria_json AS criteriaJSON, query_sql AS querySQL,
+             query_source AS querySource, query_error AS queryError,
+             cached_email_ids_json AS cachedEmailIdsJSON,
+             cache_updated_at AS cacheUpdatedAt,
+             created_at AS createdAt, updated_at AS updatedAt
       FROM saved_filters
       ORDER BY name ASC
     `).all().map(row => this.publicFilter(row));
@@ -787,7 +804,11 @@ export class MailStore {
   getFilter(id) {
     const row = this.db.prepare(`
       SELECT id, name, color, icon, natural_language AS naturalLanguage,
-             criteria_json AS criteriaJSON, created_at AS createdAt, updated_at AS updatedAt
+             criteria_json AS criteriaJSON, query_sql AS querySQL,
+             query_source AS querySource, query_error AS queryError,
+             cached_email_ids_json AS cachedEmailIdsJSON,
+             cache_updated_at AS cacheUpdatedAt,
+             created_at AS createdAt, updated_at AS updatedAt
       FROM saved_filters
       WHERE id = ?
     `).get(id);
@@ -797,11 +818,14 @@ export class MailStore {
   createFilter(input = {}) {
     const naturalLanguage = optionalString(input.naturalLanguage);
     let criteria = normalizeFilterCriteria(input.criteria);
-    if (naturalLanguage && !hasMeaningfulFilterCriteria(criteria)) {
+    const plan = naturalLanguage ? this.filterQueryPlan(naturalLanguage, criteria) : null;
+    if (plan && !hasMeaningfulFilterCriteria(criteria)) {
+      criteria = plan.criteria;
+    } else if (naturalLanguage && !hasMeaningfulFilterCriteria(criteria)) {
       criteria = filterCriteriaFromNaturalLanguage(naturalLanguage);
     }
 
-    const presentation = filterPresentation({ criteria, naturalLanguage });
+    const presentation = plan ?? filterPresentation({ criteria, naturalLanguage });
     const name = optionalString(input.name) ?? presentation.name;
     const color = optionalString(input.color) ?? presentation.color;
     const icon = optionalString(input.icon) ?? presentation.icon;
@@ -809,9 +833,31 @@ export class MailStore {
     const id = randomUUID();
 
     this.db.prepare(`
-      INSERT INTO saved_filters (id, name, color, icon, natural_language, criteria_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name, color, icon, naturalLanguage, JSON.stringify(criteria), now, now);
+      INSERT INTO saved_filters (
+        id, name, color, icon, natural_language, criteria_json,
+        query_sql, query_source, query_error, cached_email_ids_json, cache_updated_at,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      name,
+      color,
+      icon,
+      naturalLanguage,
+      JSON.stringify(criteria),
+      plan?.sql ?? null,
+      plan?.source ?? "criteria",
+      plan?.error ?? null,
+      "[]",
+      null,
+      now,
+      now
+    );
+
+    if (plan?.sql) {
+      this.refreshFilterCache(id);
+    }
 
     return this.getFilter(id);
   }
@@ -828,11 +874,14 @@ export class MailStore {
     let criteria = Object.hasOwn(input, "criteria")
       ? normalizeFilterCriteria(input.criteria)
       : existing.criteria;
-    if (naturalLanguage && !hasMeaningfulFilterCriteria(criteria)) {
+    const plan = naturalLanguage ? this.filterQueryPlan(naturalLanguage, criteria) : null;
+    if (plan && !hasMeaningfulFilterCriteria(criteria)) {
+      criteria = plan.criteria;
+    } else if (naturalLanguage && !hasMeaningfulFilterCriteria(criteria)) {
       criteria = filterCriteriaFromNaturalLanguage(naturalLanguage);
     }
 
-    const presentation = filterPresentation({ criteria, naturalLanguage });
+    const presentation = plan ?? filterPresentation({ criteria, naturalLanguage });
     const name = optionalString(input.name) ?? existing.name ?? presentation.name;
     const color = optionalString(input.color) ?? existing.color ?? presentation.color;
     const icon = optionalString(input.icon) ?? existing.icon ?? presentation.icon;
@@ -840,11 +889,38 @@ export class MailStore {
 
     this.db.prepare(`
       UPDATE saved_filters
-      SET name = ?, color = ?, icon = ?, natural_language = ?, criteria_json = ?, updated_at = ?
+      SET name = ?, color = ?, icon = ?, natural_language = ?, criteria_json = ?,
+          query_sql = ?, query_source = ?, query_error = ?,
+          cached_email_ids_json = '[]', cache_updated_at = NULL, updated_at = ?
       WHERE id = ?
-    `).run(name, color, icon, naturalLanguage, JSON.stringify(criteria), now, id);
+    `).run(
+      name,
+      color,
+      icon,
+      naturalLanguage,
+      JSON.stringify(criteria),
+      plan?.sql ?? null,
+      plan?.source ?? "criteria",
+      plan?.error ?? null,
+      now,
+      id
+    );
+
+    if (plan?.sql) {
+      this.refreshFilterCache(id);
+    }
 
     return this.getFilter(id);
+  }
+
+  deleteFilter(id) {
+    const existing = this.getFilter(id);
+    if (!existing) {
+      throw httpError(404, "Filter not found.");
+    }
+
+    this.db.prepare("DELETE FROM saved_filters WHERE id = ?").run(id);
+    return existing;
   }
 
   publicFilter(row) {
@@ -855,9 +931,122 @@ export class MailStore {
       icon: row.icon,
       naturalLanguage: row.naturalLanguage,
       criteria: normalizeFilterCriteria(parseJSON(row.criteriaJSON, {})),
+      querySQL: row.querySQL,
+      querySource: row.querySource,
+      queryError: row.queryError,
+      cachedEmailIds: parseJSON(row.cachedEmailIdsJSON, []),
+      cacheUpdatedAt: row.cacheUpdatedAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
     };
+  }
+
+  filterQueryPlan(naturalLanguage, criteria = {}) {
+    const fallback = fallbackFilterQueryPlan(naturalLanguage);
+    const fallbackCriteria = filterCriteriaFromNaturalLanguage(naturalLanguage);
+    let plan = fallback;
+    try {
+      plan = this.filterQueryPlanner(naturalLanguage, { criteria }) ?? fallback;
+    } catch (error) {
+      plan = {
+        ...fallback,
+        source: "heuristic",
+        error: `Filter planner failed: ${error.message}`
+      };
+    }
+
+    const candidate = {
+      name: optionalString(plan.name) ?? fallback.name,
+      color: optionalString(plan.color) ?? fallback.color,
+      icon: optionalString(plan.icon) ?? fallback.icon,
+      source: optionalString(plan.source) ?? fallback.source,
+      error: optionalString(plan.error),
+      criteria: normalizeFilterCriteria(plan.criteria ?? fallbackCriteria),
+      sql: optionalString(plan.sql) ?? fallback.sql
+    };
+
+    try {
+      candidate.sql = this.validateFilterQuerySQL(candidate.sql);
+      return candidate;
+    } catch (error) {
+      return {
+        ...fallback,
+        criteria: fallbackCriteria,
+        sql: this.validateFilterQuerySQL(fallback.sql),
+        source: "heuristic",
+        error: `Generated filter query rejected: ${error.message}`
+      };
+    }
+  }
+
+  refreshFilterCache(id) {
+    const filter = this.getFilter(id);
+    if (!filter) {
+      throw httpError(404, "Filter not found.");
+    }
+    if (!filter.querySQL) {
+      return filter;
+    }
+
+    const now = new Date().toISOString();
+    try {
+      const emailIds = this.emailIdsForFilterSQL(filter.querySQL);
+      this.db.prepare(`
+        UPDATE saved_filters
+        SET cached_email_ids_json = ?, cache_updated_at = ?, query_error = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify(emailIds), now, now, id);
+    } catch (error) {
+      this.db.prepare(`
+        UPDATE saved_filters
+        SET query_error = ?, updated_at = ?
+        WHERE id = ?
+      `).run(error.message, now, id);
+    }
+
+    return this.getFilter(id);
+  }
+
+  emailIdsForFilterSQL(sql) {
+    const safeSQL = this.validateFilterQuerySQL(sql);
+    const rows = this.db.prepare(`
+      SELECT id
+      FROM (${safeSQL}) filter_result
+      LIMIT ?
+    `).all(FILTER_CACHE_LIMIT);
+    return uniqueStrings(rows.map(row => row.id));
+  }
+
+  validateFilterQuerySQL(sql) {
+    const query = optionalString(sql)?.replace(/\s+/gu, " ");
+    if (!query) {
+      throw httpError(400, "Filter query is empty.");
+    }
+    if (/[;]|--|\/\*|\*\//u.test(query)) {
+      throw httpError(400, "Filter query must be a single statement without comments.");
+    }
+    if (!/^select\s+(?:distinct\s+)?e\.id\s+from\s+emails\s+e\b/iu.test(query)) {
+      throw httpError(400, "Filter query must select e.id from emails e.");
+    }
+    if (/[?:@$]/u.test(query)) {
+      throw httpError(400, "Filter query must not contain bind parameters.");
+    }
+
+    const lower = query.toLowerCase();
+    const blocked = /\b(insert|update|delete|drop|alter|create|replace|pragma|attach|detach|vacuum|reindex|truncate)\b/u;
+    if (blocked.test(lower)) {
+      throw httpError(400, "Filter query must be read-only.");
+    }
+
+    const allowedTables = new Set(["emails", "accounts", "mailboxes", "labels", "email_labels", "email_attachments", "email_fts"]);
+    for (const match of lower.matchAll(/\b(?:from|join)\s+([a-z_][a-z0-9_]*)\b/gu)) {
+      if (!allowedTables.has(match[1])) {
+        throw httpError(400, `Filter query cannot use table ${match[1]}.`);
+      }
+    }
+
+    this.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all();
+    return query;
   }
 
   findOrCreateLabel(input) {
@@ -881,9 +1070,12 @@ export class MailStore {
   listEmails(filters = {}) {
     const limit = clampInt(filters.limit, 1, 200, 80);
     const offset = clampInt(filters.offset, 0, 100000, 0);
-    const savedFilter = filters.filterId ? this.getFilter(filters.filterId) : null;
+    let savedFilter = filters.filterId ? this.getFilter(filters.filterId) : null;
     if (filters.filterId && !savedFilter) {
       throw httpError(404, "Filter not found.");
+    }
+    if (savedFilter?.querySQL && (filters.refreshFilter === "1" || filters.refreshFilter === true || !savedFilter.cacheUpdatedAt)) {
+      savedFilter = this.refreshFilterCache(savedFilter.id);
     }
     const filterCriteria = savedFilter?.criteria ?? {};
     const queryText = [filters.q, filterCriteria.query].map(optionalString).filter(Boolean).join(" ");
@@ -922,7 +1114,11 @@ export class MailStore {
       args.push(filters.labelId);
     }
 
-    this.applyFilterCriteria({ criteria: filterCriteria, where, args });
+    if (savedFilter?.querySQL) {
+      this.applyFilterCache({ filter: savedFilter, where, args });
+    } else {
+      this.applyFilterCriteria({ criteria: filterCriteria, where, args });
+    }
 
     if (filters.unread === "1" || filters.unread === true) {
       where.push("e.is_read = 0");
@@ -955,6 +1151,17 @@ export class MailStore {
       hasAttachments: Boolean(row.hasAttachments),
       labels: this.labelsForEmail(row.id)
     }));
+  }
+
+  applyFilterCache({ filter, where, args }) {
+    const emailIds = Array.isArray(filter.cachedEmailIds) ? filter.cachedEmailIds : [];
+    if (emailIds.length === 0) {
+      where.push("0 = 1");
+      return;
+    }
+
+    where.push(`e.id IN (${emailIds.map(() => "?").join(", ")})`);
+    args.push(...emailIds);
   }
 
   applyFilterCriteria({ criteria = {}, where, args }) {

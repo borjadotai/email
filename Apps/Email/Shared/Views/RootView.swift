@@ -24,6 +24,7 @@ struct RootView: View {
   @State private var mailPollingTask: Task<Void, Never>?
   @State private var mailPollingShouldNotify = false
   @State private var preferredCompactColumn: NavigationSplitViewColumn = .content
+  private let mailPollingIntervalSeconds = 60
 
   var body: some View {
     @Bindable var model = model
@@ -140,17 +141,17 @@ struct RootView: View {
     #if os(iOS)
     switch phase {
     case .active:
-      startMailPolling(shouldNotify: false)
+      startMailPolling(shouldNotify: true)
     case .background:
       stopMailPolling()
       BackgroundMailRefreshController.shared.scheduleNextRefresh()
     case .inactive:
       stopMailPolling()
     @unknown default:
-      startMailPolling(shouldNotify: false)
+      startMailPolling(shouldNotify: true)
     }
     #else
-    startMailPolling(shouldNotify: phase != .active)
+    startMailPolling(shouldNotify: true)
     #endif
   }
 
@@ -160,7 +161,7 @@ struct RootView: View {
     mailPollingShouldNotify = shouldNotify
     mailPollingTask = Task {
       while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(5 * 60))
+        try? await Task.sleep(for: .seconds(mailPollingIntervalSeconds))
         guard !Task.isCancelled else { return }
         let newEmailIDs = await model.pollAllMailForNewEmails()
         guard shouldNotify else { continue }

@@ -184,6 +184,13 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     return;
   }
 
+  if (filterRouteMatch && req.method === "DELETE") {
+    const filter = store.deleteFilter(filterRouteMatch[1]);
+    events.emit("filters.changed", { filterId: filter.id, deleted: true });
+    sendJSON(res, 200, { filter });
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/emails") {
     const emails = store.listEmails(Object.fromEntries(url.searchParams.entries()));
     sendJSON(res, 200, { emails });
@@ -398,7 +405,7 @@ function safeFilename(value) {
 
 function sendCORS(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 

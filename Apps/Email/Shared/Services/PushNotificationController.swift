@@ -110,7 +110,7 @@ final class BackgroundMailRefreshController {
   static let shared = BackgroundMailRefreshController()
   static let taskIdentifier = "com.borjadotai.email.mail-refresh"
 
-  private let interval: TimeInterval = 5 * 60
+  private let interval: TimeInterval = 60
 
   func scheduleNextRefresh() {
     let request = BGAppRefreshTaskRequest(identifier: Self.taskIdentifier)

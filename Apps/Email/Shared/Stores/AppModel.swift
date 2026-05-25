@@ -167,7 +167,7 @@ final class AppModel {
       mailboxes = try await apiClient.mailboxes()
       labels = try await apiClient.labels()
       filters = try await apiClient.filters()
-      try await loadEmails()
+      try await loadEmails(refreshFilterCache: selectedFilterID != nil)
     } catch {
       if reportErrors {
         errorMessage = error.localizedDescription
@@ -175,14 +175,15 @@ final class AppModel {
     }
   }
 
-  private func loadEmails() async throws {
+  private func loadEmails(refreshFilterCache: Bool = false) async throws {
     let query = EmailQuery(
       accountId: selectedAccountID,
       mailboxId: selectedMailboxID,
       mailboxRole: defaultMailboxRole,
       labelId: selectedLabelID,
       filterId: selectedFilterID,
-      q: searchText
+      q: searchText,
+      refreshFilterCache: refreshFilterCache
     )
     let pendingArchiveID = pendingArchive?.id
     emails = try await apiClient.emails(query: query)
@@ -206,9 +207,9 @@ final class AppModel {
     }
   }
 
-  func refreshEmails() async {
+  func refreshEmails(refreshFilterCache: Bool = false) async {
     do {
-      try await loadEmails()
+      try await loadEmails(refreshFilterCache: refreshFilterCache)
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -289,6 +290,16 @@ final class AppModel {
     return details
   }
 
+  private func refreshSelectedFilterCache(filterID: String) async {
+    guard selectedFilterID == filterID else { return }
+    do {
+      try await loadEmails(refreshFilterCache: true)
+      filters = try await apiClient.filters()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
   func checkHealth() async {
     do {
       health = try await apiClient.health()
@@ -336,6 +347,7 @@ final class AppModel {
     selectedLabelID = nil
     selectedFilterID = filter.id
     await refreshEmails()
+    await refreshSelectedFilterCache(filterID: filter.id)
   }
 
   func createGlobalLabel(name: String, color: String, icon: String) async {
@@ -399,8 +411,26 @@ final class AppModel {
       )
       filters = filters.map { $0.id == updated.id ? updated : $0 }
       if selectedFilterID == updated.id {
+        try await loadEmails(refreshFilterCache: true)
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func deleteFilter(_ filter: MailFilter) async {
+    do {
+      _ = try await apiClient.deleteFilter(id: filter.id)
+      filters.removeAll { $0.id == filter.id }
+      if selectedFilterID == filter.id {
+        selectedFilterID = nil
+        selectedEmailID = nil
+        selectedEmail = nil
+        conversationEmails = []
         try await loadEmails()
       }
+      statusMessage = "Filter deleted"
+      errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }

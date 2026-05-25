@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fallbackFilterQueryPlan } from "../src/filterQueryPlanner.js";
 import { senderLogoURLForEmail } from "../src/logoResolver.js";
 import { MailStore } from "../src/store.js";
 
@@ -23,7 +24,10 @@ test("seeds demo accounts and searches with FTS", () => {
 
 test("search results are sorted by newest received date first", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
-  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: fallbackFilterQueryPlan
+  });
 
   try {
     const account = store.createAccount({
@@ -389,7 +393,10 @@ test("creates editable global labels and filters across accounts", () => {
 
 test("creates saved filters from natural language and applies them dynamically", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
-  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: fallbackFilterQueryPlan
+  });
 
   try {
     const gmail = store.createAccount({
@@ -448,6 +455,7 @@ test("creates saved filters from natural language and applies them dynamically",
     assert.equal(filter.name, "Invoices");
     assert.equal(filter.criteria.hasAttachments, true);
     assert.equal(filter.criteria.attachmentKind, "invoice");
+    assert.equal(filter.querySource, "heuristic");
     assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [invoice.id]);
 
     const laterInvoice = store.upsertProviderEmail(testProviderEmail({
@@ -463,9 +471,127 @@ test("creates saved filters from natural language and applies them dynamically",
       attachments: [{ filename: "factura-mayo.pdf", mimeType: "application/pdf", size: 128 }]
     }));
 
-    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [laterInvoice.id, invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [laterInvoice.id, invoice.id]);
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === imageOnly.id));
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === noAttachment.id));
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("uses AI generated saved filter queries and refreshes cached results", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: () => ({
+      name: "Newsletters",
+      color: "purple",
+      icon: "newspaper",
+      source: "codex",
+      sql: `SELECT e.id
+FROM emails e
+WHERE lower(e.body_text) LIKE '%unsubscribe%'
+   OR lower(e.subject) LIKE '%newsletter%'
+ORDER BY e.received_at DESC`
+    })
+  });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const first = store.upsertProviderEmail(testProviderEmail({
+      id: "newsletter-filter-hit",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-newsletter-filter-hit",
+      senderName: "Daily Notes",
+      senderEmail: "daily@example.com",
+      subject: "Today's newsletter",
+      bodyText: "Welcome. Unsubscribe here.",
+      receivedAt: "2026-05-23T10:00:00.000Z"
+    }));
+    store.upsertProviderEmail(testProviderEmail({
+      id: "newsletter-filter-miss",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-newsletter-filter-miss",
+      senderName: "Friend",
+      senderEmail: "friend@example.com",
+      subject: "Lunch",
+      bodyText: "Want to get lunch?",
+      receivedAt: "2026-05-23T11:00:00.000Z"
+    }));
+
+    const filter = store.createFilter({
+      naturalLanguage: "Create a view for all my newsletters"
+    });
+
+    assert.equal(filter.querySource, "codex");
+    assert.equal(filter.name, "Newsletters");
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [first.id]);
+
+    const later = store.upsertProviderEmail(testProviderEmail({
+      id: "newsletter-filter-hit-later",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-newsletter-filter-hit-later",
+      senderName: "Digest",
+      senderEmail: "digest@example.com",
+      subject: "Morning links",
+      bodyText: "Read online. Unsubscribe here.",
+      receivedAt: "2026-05-24T10:00:00.000Z"
+    }));
+
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [first.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [later.id, first.id]);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("deletes saved filters without deleting matching emails", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: fallbackFilterQueryPlan
+  });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = store.upsertProviderEmail(testProviderEmail({
+      id: "delete-filter-email",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-delete-filter-email",
+      senderName: "Shop",
+      senderEmail: "shop@example.com",
+      subject: "Your invoice",
+      bodyText: "Invoice attached.",
+      attachments: [{ filename: "invoice.pdf", mimeType: "application/pdf", size: 128 }]
+    }));
+    const filter = store.createFilter({
+      naturalLanguage: "Create a view for all my invoices"
+    });
+
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(item => item.id), [email.id]);
+    const deleted = store.deleteFilter(filter.id);
+
+    assert.equal(deleted.id, filter.id);
+    assert.equal(store.getFilter(filter.id), null);
+    assert.equal(store.getEmail(email.id).id, email.id);
+    assert.deepEqual(store.listEmails().map(item => item.id), [email.id]);
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

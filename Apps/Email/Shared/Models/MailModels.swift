@@ -81,6 +81,9 @@ struct MailFilter: Codable, Identifiable, Hashable {
   var icon: String
   var naturalLanguage: String?
   var criteria: MailFilterCriteria
+  var querySource: String?
+  var queryError: String?
+  var cacheUpdatedAt: String?
   var createdAt: String
   var updatedAt: String
 }
@@ -321,6 +324,7 @@ struct EmailQuery: Equatable {
   var filterId: String?
   var q: String
   var limit: Int = 80
+  var refreshFilterCache: Bool = false
 }
 
 enum ThemePreference: String, CaseIterable, Identifiable {
