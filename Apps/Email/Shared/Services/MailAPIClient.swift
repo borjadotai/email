@@ -95,6 +95,26 @@ struct MailAPIClient {
   var baseURL: URL
   var session: URLSession = .shared
 
+  var normalizedBaseURL: URL {
+    Self.normalizedServerBaseURL(baseURL)
+  }
+
+  static func normalizedServerBaseURL(_ url: URL) -> URL {
+    guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return url
+    }
+
+    components.query = nil
+    components.fragment = nil
+
+    let path = components.percentEncodedPath
+    if path == "/" || path == "/api" || path.hasPrefix("/api/") {
+      components.percentEncodedPath = ""
+    }
+
+    return components.url ?? url
+  }
+
   func health() async throws -> HealthResponse {
     try await request("api/health")
   }
@@ -366,7 +386,10 @@ struct MailAPIClient {
   }
 
   func attachmentDownloadURL(emailId: String, attachmentId: String) throws -> URL {
-    guard let url = URL(string: "api/emails/\(emailId)/attachments/\(attachmentId)/download", relativeTo: baseURL)?.absoluteURL else {
+    guard let url = URL(
+      string: "api/emails/\(emailId)/attachments/\(attachmentId)/download",
+      relativeTo: normalizedBaseURL
+    )?.absoluteURL else {
       throw MailAPIError.invalidURL
     }
     return url
@@ -394,7 +417,7 @@ struct MailAPIClient {
     bodyData: Data?
   ) async throws -> T {
     guard var components = URLComponents(
-      url: baseURL.appendingPathComponent(path),
+      url: normalizedBaseURL.appendingPathComponent(path),
       resolvingAgainstBaseURL: false
     ) else {
       throw MailAPIError.invalidURL

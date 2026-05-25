@@ -301,25 +301,38 @@ struct EmailPreviewView: View {
     let messages = model.conversationEmails.isEmpty ? [email] : model.conversationEmails
 
     if messages.count <= 1 {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          bodyContent(email, allowsInternalScroll: false)
+      ScrollViewReader { scrollProxy in
+        ScrollView {
+          VStack(alignment: .leading, spacing: 16) {
+            bodyContent(email, allowsInternalScroll: false)
 
-          replyArea(for: email)
-        }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-      }
-    } else {
-      ScrollView {
-        conversationStack(selected: email, messages: messages)
+            replyArea(for: email)
+              .id(replyAnchorID(for: email.id))
+          }
           .padding(.horizontal, 28)
           .padding(.vertical, 20)
           .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .onChange(of: inlineReplyEmailID) { _, replyEmailID in
+          guard replyEmailID == email.id else { return }
+          scrollReplyIntoView(replyEmailID, with: scrollProxy)
+        }
       }
-      .animation(.snappy(duration: 0.24), value: messages.map(\.id))
-      .animation(.snappy(duration: 0.24), value: expandedMessageIDs)
+    } else {
+      ScrollViewReader { scrollProxy in
+        ScrollView {
+          conversationStack(selected: email, messages: messages)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .onChange(of: inlineReplyEmailID) { _, replyEmailID in
+          guard let replyEmailID else { return }
+          scrollReplyIntoView(replyEmailID, with: scrollProxy)
+        }
+        .animation(.snappy(duration: 0.24), value: messages.map(\.id))
+        .animation(.snappy(duration: 0.24), value: expandedMessageIDs)
+      }
     }
   }
 
@@ -366,6 +379,7 @@ struct EmailPreviewView: View {
 
         if inlineReplyEmailID == message.id {
           replyArea(for: message)
+            .id(replyAnchorID(for: message.id))
             .padding(.leading, 12)
             .padding(.bottom, 18)
         }
@@ -411,6 +425,21 @@ struct EmailPreviewView: View {
     withAnimation(.snappy(duration: 0.22)) {
       expandedMessageIDs.insert(email.id)
       inlineReplyEmailID = email.id
+    }
+  }
+
+  private func replyAnchorID(for emailID: String) -> String {
+    "reply:\(emailID)"
+  }
+
+  private func scrollReplyIntoView(_ emailID: String?, with proxy: ScrollViewProxy) {
+    guard let emailID else { return }
+
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(120))
+      withAnimation(.snappy(duration: 0.22)) {
+        proxy.scrollTo(replyAnchorID(for: emailID), anchor: .bottom)
+      }
     }
   }
 
@@ -1967,16 +1996,23 @@ private struct EmailHTMLPreview: NSViewRepresentable {
   var contentHeight: Binding<CGFloat>?
 
   func makeNSView(context: Context) -> WKWebView {
-    makeMailWebView(coordinator: context.coordinator)
+    let webView = makeMailWebView(coordinator: context.coordinator)
+    configureScrollBehavior(for: webView)
+    return webView
   }
 
   func updateNSView(_ webView: WKWebView, context: Context) {
+    configureScrollBehavior(for: webView)
     context.coordinator.contentHeight = contentHeight
     context.coordinator.load(html, in: webView)
   }
 
   func makeCoordinator() -> HTMLMailCoordinator {
     HTMLMailCoordinator(contentHeight: contentHeight)
+  }
+
+  private func configureScrollBehavior(for webView: WKWebView) {
+    (webView as? MailHTMLWebView)?.forwardsScrollEventsToNextResponder = !isScrollEnabled
   }
 }
 #endif
@@ -2102,7 +2138,11 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
   let configuration = WKWebViewConfiguration()
   configuration.defaultWebpagePreferences = preferences
 
+  #if os(macOS)
+  let webView = MailHTMLWebView(frame: .zero, configuration: configuration)
+  #else
   let webView = WKWebView(frame: .zero, configuration: configuration)
+  #endif
   webView.navigationDelegate = coordinator
 
   #if os(iOS)
@@ -2126,6 +2166,25 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
 
   return webView
 }
+
+#if os(macOS)
+private final class MailHTMLWebView: WKWebView {
+  var forwardsScrollEventsToNextResponder = false
+
+  override func scrollWheel(with event: NSEvent) {
+    guard forwardsScrollEventsToNextResponder else {
+      super.scrollWheel(with: event)
+      return
+    }
+
+    if let nextResponder {
+      nextResponder.scrollWheel(with: event)
+    } else {
+      super.scrollWheel(with: event)
+    }
+  }
+}
+#endif
 
 @MainActor
 private func openExternalURL(_ url: URL) {

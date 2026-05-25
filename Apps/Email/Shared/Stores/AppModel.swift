@@ -69,7 +69,7 @@ final class AppModel {
 
   var serverURLString: String {
     didSet {
-      UserDefaults.standard.set(serverURLString, forKey: Defaults.serverURL)
+      UserDefaults.standard.set(Defaults.normalizedServerURLString(serverURLString), forKey: Defaults.serverURL)
     }
   }
 
@@ -87,8 +87,9 @@ final class AppModel {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
     if Defaults.isLoopbackURL(initialServerURL), !Defaults.isLoopbackURL(Defaults.defaultServerURL) {
       initialServerURL = Defaults.defaultServerURL
-      UserDefaults.standard.set(initialServerURL, forKey: Defaults.serverURL)
     }
+    initialServerURL = Defaults.normalizedServerURLString(initialServerURL)
+    UserDefaults.standard.set(initialServerURL, forKey: Defaults.serverURL)
     serverURLString = initialServerURL
     let rawTheme = UserDefaults.standard.string(forKey: Defaults.theme) ?? ThemePreference.system.rawValue
     themePreference = ThemePreference(rawValue: rawTheme) ?? .system
@@ -128,7 +129,8 @@ final class AppModel {
 
   var apiClient: MailAPIClient {
     let fallback = URL(string: Defaults.defaultServerURL) ?? URL(string: "http://127.0.0.1:7331")!
-    return MailAPIClient(baseURL: URL(string: serverURLString) ?? fallback)
+    let normalizedURLString = Defaults.normalizedServerURLString(serverURLString)
+    return MailAPIClient(baseURL: URL(string: normalizedURLString) ?? fallback)
   }
 
   var shouldStartBundledServer: Bool {
@@ -997,6 +999,15 @@ private enum Defaults {
     Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "http://127.0.0.1:7331"
   }
 
+  static func normalizedServerURLString(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: trimmed) else {
+      return trimmed
+    }
+
+    return MailAPIClient.normalizedServerBaseURL(url).absoluteString.trimmingTrailingSlash
+  }
+
   static func isLoopbackURL(_ value: String) -> Bool {
     guard let host = URLComponents(string: value)?.host?.lowercased() else { return false }
     return host == "127.0.0.1" || host == "localhost" || host == "::1"
@@ -1028,5 +1039,11 @@ private enum Defaults {
 
   static func clampedArchiveUndoDuration(_ value: Int) -> Int {
     min(max(value, archiveUndoDurationRange.lowerBound), archiveUndoDurationRange.upperBound)
+  }
+}
+
+private extension String {
+  var trimmingTrailingSlash: String {
+    count > 1 && hasSuffix("/") ? String(dropLast()) : self
   }
 }
