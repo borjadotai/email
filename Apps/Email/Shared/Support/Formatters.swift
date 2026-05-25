@@ -142,6 +142,30 @@ extension MailLabel {
   }
 }
 
+extension MailFilter {
+  var systemImage: String {
+    let value = icon.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? "line.3.horizontal.decrease.circle" : value
+  }
+
+  var swiftUIColor: Color {
+    switch color {
+    case "orange": .orange
+    case "green": .green
+    case "blue": .blue
+    case "purple": .purple
+    case "red": .red
+    case "yellow": .yellow
+    case "pink": .pink
+    case "teal": .teal
+    case "cyan": .cyan
+    case "indigo": .indigo
+    case "mint": .mint
+    default: .secondary
+    }
+  }
+}
+
 extension Color {
   static var mailSelectionBackground: Color {
     Color.primary.opacity(0.10)

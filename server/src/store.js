@@ -97,6 +97,17 @@ export class MailStore {
         UNIQUE(account_id, name)
       );
 
+      CREATE TABLE IF NOT EXISTS saved_filters (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT 'gray',
+        icon TEXT NOT NULL DEFAULT 'line.3.horizontal.decrease.circle',
+        natural_language TEXT,
+        criteria_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS emails (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -208,6 +219,7 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_emails_tracking ON emails(tracking_id);
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
       CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
+      CREATE INDEX IF NOT EXISTS idx_saved_filters_updated ON saved_filters(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_blocked_senders_account ON blocked_senders(account_id, scope, value);
       CREATE INDEX IF NOT EXISTS idx_push_tokens_active ON push_tokens(platform, bundle_id, environment)
         WHERE disabled_at IS NULL;
@@ -763,6 +775,91 @@ export class MailStore {
     return this.listLabels(existing.accountId ?? null).find(label => label.id === id);
   }
 
+  listFilters() {
+    return this.db.prepare(`
+      SELECT id, name, color, icon, natural_language AS naturalLanguage,
+             criteria_json AS criteriaJSON, created_at AS createdAt, updated_at AS updatedAt
+      FROM saved_filters
+      ORDER BY name ASC
+    `).all().map(row => this.publicFilter(row));
+  }
+
+  getFilter(id) {
+    const row = this.db.prepare(`
+      SELECT id, name, color, icon, natural_language AS naturalLanguage,
+             criteria_json AS criteriaJSON, created_at AS createdAt, updated_at AS updatedAt
+      FROM saved_filters
+      WHERE id = ?
+    `).get(id);
+    return row ? this.publicFilter(row) : null;
+  }
+
+  createFilter(input = {}) {
+    const naturalLanguage = optionalString(input.naturalLanguage);
+    let criteria = normalizeFilterCriteria(input.criteria);
+    if (naturalLanguage && !hasMeaningfulFilterCriteria(criteria)) {
+      criteria = filterCriteriaFromNaturalLanguage(naturalLanguage);
+    }
+
+    const presentation = filterPresentation({ criteria, naturalLanguage });
+    const name = optionalString(input.name) ?? presentation.name;
+    const color = optionalString(input.color) ?? presentation.color;
+    const icon = optionalString(input.icon) ?? presentation.icon;
+    const now = new Date().toISOString();
+    const id = randomUUID();
+
+    this.db.prepare(`
+      INSERT INTO saved_filters (id, name, color, icon, natural_language, criteria_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, name, color, icon, naturalLanguage, JSON.stringify(criteria), now, now);
+
+    return this.getFilter(id);
+  }
+
+  updateFilter(id, input = {}) {
+    const existing = this.getFilter(id);
+    if (!existing) {
+      throw httpError(404, "Filter not found.");
+    }
+
+    const naturalLanguage = Object.hasOwn(input, "naturalLanguage")
+      ? optionalString(input.naturalLanguage)
+      : existing.naturalLanguage;
+    let criteria = Object.hasOwn(input, "criteria")
+      ? normalizeFilterCriteria(input.criteria)
+      : existing.criteria;
+    if (naturalLanguage && !hasMeaningfulFilterCriteria(criteria)) {
+      criteria = filterCriteriaFromNaturalLanguage(naturalLanguage);
+    }
+
+    const presentation = filterPresentation({ criteria, naturalLanguage });
+    const name = optionalString(input.name) ?? existing.name ?? presentation.name;
+    const color = optionalString(input.color) ?? existing.color ?? presentation.color;
+    const icon = optionalString(input.icon) ?? existing.icon ?? presentation.icon;
+    const now = new Date().toISOString();
+
+    this.db.prepare(`
+      UPDATE saved_filters
+      SET name = ?, color = ?, icon = ?, natural_language = ?, criteria_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(name, color, icon, naturalLanguage, JSON.stringify(criteria), now, id);
+
+    return this.getFilter(id);
+  }
+
+  publicFilter(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      color: row.color,
+      icon: row.icon,
+      naturalLanguage: row.naturalLanguage,
+      criteria: normalizeFilterCriteria(parseJSON(row.criteriaJSON, {})),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    };
+  }
+
   findOrCreateLabel(input) {
     const name = requiredString(input.name, "name");
     const accountId = input.accountId ?? null;
@@ -784,13 +881,19 @@ export class MailStore {
   listEmails(filters = {}) {
     const limit = clampInt(filters.limit, 1, 200, 80);
     const offset = clampInt(filters.offset, 0, 100000, 0);
+    const savedFilter = filters.filterId ? this.getFilter(filters.filterId) : null;
+    if (filters.filterId && !savedFilter) {
+      throw httpError(404, "Filter not found.");
+    }
+    const filterCriteria = savedFilter?.criteria ?? {};
+    const queryText = [filters.q, filterCriteria.query].map(optionalString).filter(Boolean).join(" ");
     const joins = [
       "JOIN accounts a ON a.id = e.account_id",
       "JOIN mailboxes m ON m.id = e.mailbox_id"
     ];
     const where = [];
     const args = [];
-    const query = normalizeSearch(filters.q);
+    const query = normalizeSearch(queryText);
 
     if (query) {
       joins.push("JOIN email_fts ON email_fts.email_id = e.id");
@@ -818,6 +921,8 @@ export class MailStore {
       where.push("filter_labels.label_id = ?");
       args.push(filters.labelId);
     }
+
+    this.applyFilterCriteria({ criteria: filterCriteria, where, args });
 
     if (filters.unread === "1" || filters.unread === true) {
       where.push("e.is_read = 0");
@@ -850,6 +955,47 @@ export class MailStore {
       hasAttachments: Boolean(row.hasAttachments),
       labels: this.labelsForEmail(row.id)
     }));
+  }
+
+  applyFilterCriteria({ criteria = {}, where, args }) {
+    if (criteria.sender) {
+      const pattern = containsPattern(criteria.sender);
+      where.push("(lower(e.sender_email) LIKE ? OR lower(e.sender_name) LIKE ?)");
+      args.push(pattern, pattern);
+    }
+
+    if (criteria.subject) {
+      where.push("lower(e.subject) LIKE ?");
+      args.push(containsPattern(criteria.subject));
+    }
+
+    if (criteria.text) {
+      const pattern = containsPattern(criteria.text);
+      where.push("(lower(e.subject) LIKE ? OR lower(e.snippet) LIKE ? OR lower(e.body_text) LIKE ?)");
+      args.push(pattern, pattern, pattern);
+    }
+
+    if (criteria.hasAttachments === true) {
+      where.push("e.has_attachments = 1");
+    } else if (criteria.hasAttachments === false) {
+      where.push("e.has_attachments = 0");
+    }
+
+    if (criteria.attachmentKind) {
+      const condition = attachmentKindCondition(criteria.attachmentKind);
+      if (condition) {
+        where.push(condition.sql);
+        args.push(...condition.args);
+      }
+    }
+
+    if (criteria.unread === true) {
+      where.push("e.is_read = 0");
+    }
+
+    if (criteria.starred === true) {
+      where.push("e.is_starred = 1");
+    }
   }
 
   getEmail(id) {
@@ -1852,6 +1998,209 @@ function parseJSON(value, fallback) {
     return JSON.parse(value);
   } catch {
     return fallback;
+  }
+}
+
+function normalizeFilterCriteria(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const criteria = {};
+  const sender = optionalString(source.sender);
+  const subject = optionalString(source.subject);
+  const text = optionalString(source.text);
+  const query = optionalString(source.query);
+  const attachmentKind = normalizeAttachmentKind(source.attachmentKind);
+
+  if (sender) criteria.sender = sender;
+  if (subject) criteria.subject = subject;
+  if (text) criteria.text = text;
+  if (query) criteria.query = query;
+  if (typeof source.hasAttachments === "boolean") criteria.hasAttachments = source.hasAttachments;
+  if (attachmentKind) criteria.attachmentKind = attachmentKind;
+  if (typeof source.unread === "boolean") criteria.unread = source.unread;
+  if (typeof source.starred === "boolean") criteria.starred = source.starred;
+  return criteria;
+}
+
+function normalizeAttachmentKind(value) {
+  const kind = optionalString(value)?.toLowerCase();
+  if (!kind || kind === "any" || kind === "none") return null;
+  if (["invoice", "pdf", "image", "spreadsheet", "document"].includes(kind)) {
+    return kind;
+  }
+  throw httpError(400, "Attachment kind must be invoice, pdf, image, spreadsheet, or document.");
+}
+
+function hasMeaningfulFilterCriteria(criteria = {}) {
+  return Object.values(criteria).some(value => value !== null && value !== undefined && value !== "");
+}
+
+function filterCriteriaFromNaturalLanguage(value) {
+  const prompt = optionalString(value) ?? "";
+  const lower = prompt.toLowerCase();
+  const criteria = {};
+
+  if (/\b(unread|not read|unopened|new mail|new email)\b/u.test(lower)) {
+    criteria.unread = true;
+  }
+  if (/\b(starred|favorite|favourite|important)\b/u.test(lower)) {
+    criteria.starred = true;
+  }
+  if (/\b(attachment|attached|file|pdf|invoice|factura|receipt|recibo|bill|billing|image|photo|spreadsheet|excel|csv|document)\b/u.test(lower)) {
+    criteria.hasAttachments = true;
+  }
+
+  if (/\b(invoice|factura|receipt|recibo|bill|billing)\b/u.test(lower)) {
+    criteria.attachmentKind = "invoice";
+  } else if (/\bpdf\b/u.test(lower)) {
+    criteria.attachmentKind = "pdf";
+  } else if (/\b(image|photo|png|jpg|jpeg)\b/u.test(lower)) {
+    criteria.attachmentKind = "image";
+  } else if (/\b(spreadsheet|excel|csv|xlsx)\b/u.test(lower)) {
+    criteria.attachmentKind = "spreadsheet";
+  } else if (/\b(document|docx|word)\b/u.test(lower)) {
+    criteria.attachmentKind = "document";
+  }
+
+  const sender = senderCriteriaFromPrompt(prompt);
+  if (sender) {
+    criteria.sender = sender;
+  }
+
+  return normalizeFilterCriteria(criteria);
+}
+
+function senderCriteriaFromPrompt(prompt) {
+  const anySender = /\bfrom\s+any\s+sender\b/iu.test(prompt);
+  if (anySender) return null;
+
+  const emailMatch = prompt.match(/\bfrom\s+([^\s,;<>]+@[^\s,;<>]+)/iu);
+  if (emailMatch) return emailMatch[1];
+
+  const domainMatch = prompt.match(/\bfrom\s+([a-z0-9.-]+\.[a-z]{2,})\b/iu);
+  if (domainMatch) return domainMatch[1];
+
+  const phraseMatch = prompt.match(/\bfrom\s+([^,.;\n]+)/iu);
+  const value = optionalString(phraseMatch?.[1]);
+  if (!value || /\b(any|sender|senders|emails?|messages?|that|with|containing|contains?)\b/iu.test(value)) {
+    return null;
+  }
+  return value;
+}
+
+function filterPresentation({ criteria = {}, naturalLanguage = null }) {
+  const lower = String(naturalLanguage ?? "").toLowerCase();
+  if (criteria.attachmentKind === "invoice" || /\b(invoice|factura|receipt|recibo|bill|billing)\b/u.test(lower)) {
+    return { name: "Invoices", color: "green", icon: "doc.text" };
+  }
+  if (criteria.attachmentKind === "pdf") {
+    return { name: "PDFs", color: "red", icon: "doc.richtext" };
+  }
+  if (criteria.hasAttachments) {
+    return { name: "Attachments", color: "teal", icon: "paperclip" };
+  }
+  if (criteria.unread) {
+    return { name: "Unread", color: "blue", icon: "envelope.badge" };
+  }
+  if (criteria.starred) {
+    return { name: "Starred", color: "yellow", icon: "star" };
+  }
+  return { name: "New Filter", color: "teal", icon: "line.3.horizontal.decrease.circle" };
+}
+
+function containsPattern(value) {
+  return `%${String(value).trim().toLowerCase()}%`;
+}
+
+function attachmentKindCondition(kind) {
+  switch (kind) {
+    case "invoice": {
+      const terms = ["invoice", "factura", "receipt", "recibo", "bill"];
+      return {
+        sql: `(
+          e.has_attachments = 1
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM email_attachments ea
+              WHERE ea.email_id = e.id
+                AND ea.is_inline = 0
+                AND (
+                  lower(ea.filename) LIKE ?
+                  OR lower(ea.filename) LIKE ?
+                  OR lower(ea.filename) LIKE ?
+                  OR lower(ea.filename) LIKE ?
+                  OR lower(ea.filename) LIKE ?
+                  OR lower(ea.mime_type) = 'application/pdf'
+                )
+            )
+            OR lower(e.subject) LIKE ?
+            OR lower(e.snippet) LIKE ?
+            OR lower(e.body_text) LIKE ?
+          )
+        )`,
+        args: [
+          ...terms.map(containsPattern),
+          containsPattern("invoice"),
+          containsPattern("factura"),
+          containsPattern("receipt")
+        ]
+      };
+    }
+    case "pdf":
+      return {
+        sql: `EXISTS (
+          SELECT 1
+          FROM email_attachments ea
+          WHERE ea.email_id = e.id
+            AND ea.is_inline = 0
+            AND (lower(ea.mime_type) = 'application/pdf' OR lower(ea.filename) LIKE ?)
+        )`,
+        args: ["%.pdf"]
+      };
+    case "image":
+      return {
+        sql: `EXISTS (
+          SELECT 1
+          FROM email_attachments ea
+          WHERE ea.email_id = e.id
+            AND ea.is_inline = 0
+            AND (lower(ea.mime_type) LIKE 'image/%' OR lower(ea.filename) LIKE ? OR lower(ea.filename) LIKE ?)
+        )`,
+        args: ["%.png", "%.jpg"]
+      };
+    case "spreadsheet":
+      return {
+        sql: `EXISTS (
+          SELECT 1
+          FROM email_attachments ea
+          WHERE ea.email_id = e.id
+            AND ea.is_inline = 0
+            AND (
+              lower(ea.mime_type) IN ('text/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+              OR lower(ea.filename) LIKE ?
+              OR lower(ea.filename) LIKE ?
+              OR lower(ea.filename) LIKE ?
+            )
+        )`,
+        args: ["%.csv", "%.xls", "%.xlsx"]
+      };
+    case "document":
+      return {
+        sql: `EXISTS (
+          SELECT 1
+          FROM email_attachments ea
+          WHERE ea.email_id = e.id
+            AND ea.is_inline = 0
+            AND (
+              lower(ea.mime_type) IN ('application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+              OR lower(ea.filename) LIKE ?
+              OR lower(ea.filename) LIKE ?
+            )
+        )`,
+        args: ["%.doc", "%.docx"]
+      };
+    default:
+      return null;
   }
 }
 

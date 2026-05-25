@@ -22,6 +22,7 @@ final class AppModel {
   var profile: UserProfile?
   var mailboxes: [Mailbox] = []
   var labels: [MailLabel] = []
+  var filters: [MailFilter] = []
   var emails: [EmailSummary] = []
   var selectedEmail: EmailDetail?
   var conversationEmails: [EmailDetail] = []
@@ -29,6 +30,7 @@ final class AppModel {
   var selectedAccountID: String?
   var selectedMailboxID: String?
   var selectedLabelID: String?
+  var selectedFilterID: String?
   var searchText: String = ""
   var isLoading = false
   var isRefreshingMail = false
@@ -103,6 +105,9 @@ final class AppModel {
   }
 
   var navigationTitle: String {
+    if let filter = filters.first(where: { $0.id == selectedFilterID }) {
+      return filter.name
+    }
     if let label = labels.first(where: { $0.id == selectedLabelID }) {
       return label.name
     }
@@ -159,6 +164,7 @@ final class AppModel {
       accounts = try await apiClient.accounts()
       mailboxes = try await apiClient.mailboxes()
       labels = try await apiClient.labels()
+      filters = try await apiClient.filters()
       try await loadEmails()
     } catch {
       if reportErrors {
@@ -173,6 +179,7 @@ final class AppModel {
       mailboxId: selectedMailboxID,
       mailboxRole: defaultMailboxRole,
       labelId: selectedLabelID,
+      filterId: selectedFilterID,
       q: searchText
     )
     let pendingArchiveID = pendingArchive?.id
@@ -293,6 +300,7 @@ final class AppModel {
     selectedAccountID = nil
     selectedMailboxID = nil
     selectedLabelID = nil
+    selectedFilterID = nil
     await refreshEmails()
   }
 
@@ -300,6 +308,7 @@ final class AppModel {
     selectedAccountID = account.id
     selectedMailboxID = nil
     selectedLabelID = nil
+    selectedFilterID = nil
     await refreshEmails()
   }
 
@@ -307,6 +316,7 @@ final class AppModel {
     selectedAccountID = mailbox.accountId
     selectedMailboxID = mailbox.id
     selectedLabelID = nil
+    selectedFilterID = nil
     await refreshEmails()
   }
 
@@ -314,6 +324,15 @@ final class AppModel {
     selectedAccountID = label.accountId ?? selectedAccountID
     selectedMailboxID = nil
     selectedLabelID = label.id
+    selectedFilterID = nil
+    await refreshEmails()
+  }
+
+  func selectFilter(_ filter: MailFilter) async {
+    selectedAccountID = nil
+    selectedMailboxID = nil
+    selectedLabelID = nil
+    selectedFilterID = filter.id
     await refreshEmails()
   }
 
@@ -332,6 +351,54 @@ final class AppModel {
       let updated = try await apiClient.updateLabel(id: label.id, name: name, color: color, icon: icon)
       labels = labels.map { $0.id == updated.id ? updated : $0 }
       try await loadEmails()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func createFilter(
+    name: String,
+    color: String,
+    icon: String,
+    naturalLanguage: String?,
+    criteria: MailFilterCriteria
+  ) async {
+    do {
+      let filter = try await apiClient.createFilter(
+        name: name,
+        color: color,
+        icon: icon,
+        naturalLanguage: naturalLanguage,
+        criteria: criteria
+      )
+      filters = try await apiClient.filters()
+      await selectFilter(filter)
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func updateFilter(
+    _ filter: MailFilter,
+    name: String,
+    color: String,
+    icon: String,
+    naturalLanguage: String?,
+    criteria: MailFilterCriteria
+  ) async {
+    do {
+      let updated = try await apiClient.updateFilter(
+        id: filter.id,
+        name: name,
+        color: color,
+        icon: icon,
+        naturalLanguage: naturalLanguage,
+        criteria: criteria
+      )
+      filters = filters.map { $0.id == updated.id ? updated : $0 }
+      if selectedFilterID == updated.id {
+        try await loadEmails()
+      }
     } catch {
       errorMessage = error.localizedDescription
     }

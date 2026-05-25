@@ -63,6 +63,28 @@ struct MailLabel: Codable, Identifiable, Hashable {
   var isSystem: Bool
 }
 
+struct MailFilterCriteria: Codable, Hashable {
+  var sender: String? = nil
+  var subject: String? = nil
+  var text: String? = nil
+  var query: String? = nil
+  var hasAttachments: Bool? = nil
+  var attachmentKind: String? = nil
+  var unread: Bool? = nil
+  var starred: Bool? = nil
+}
+
+struct MailFilter: Codable, Identifiable, Hashable {
+  var id: String
+  var name: String
+  var color: String
+  var icon: String
+  var naturalLanguage: String?
+  var criteria: MailFilterCriteria
+  var createdAt: String
+  var updatedAt: String
+}
+
 struct EmailSummary: Codable, Identifiable, Hashable {
   var id: String
   var accountId: String
@@ -296,6 +318,7 @@ struct EmailQuery: Equatable {
   var mailboxId: String?
   var mailboxRole: String?
   var labelId: String?
+  var filterId: String?
   var q: String
   var limit: Int = 80
 }

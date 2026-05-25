@@ -16,6 +16,14 @@ struct LabelResponse: Decodable {
   var label: MailLabel
 }
 
+struct FiltersResponse: Decodable {
+  var filters: [MailFilter]
+}
+
+struct FilterResponse: Decodable {
+  var filter: MailFilter
+}
+
 struct EmailsResponse: Decodable {
   var emails: [EmailSummary]
 }
@@ -171,6 +179,68 @@ struct MailAPIClient {
     return response.label
   }
 
+  func filters() async throws -> [MailFilter] {
+    let response: FiltersResponse = try await request("api/filters")
+    return response.filters
+  }
+
+  func createFilter(
+    name: String,
+    color: String,
+    icon: String,
+    naturalLanguage: String?,
+    criteria: MailFilterCriteria
+  ) async throws -> MailFilter {
+    struct FilterPayload: Encodable {
+      var name: String
+      var color: String
+      var icon: String
+      var naturalLanguage: String?
+      var criteria: MailFilterCriteria
+    }
+    let response: FilterResponse = try await request(
+      "api/filters",
+      method: "POST",
+      body: FilterPayload(
+        name: name,
+        color: color,
+        icon: icon,
+        naturalLanguage: naturalLanguage,
+        criteria: criteria
+      )
+    )
+    return response.filter
+  }
+
+  func updateFilter(
+    id: String,
+    name: String,
+    color: String,
+    icon: String,
+    naturalLanguage: String?,
+    criteria: MailFilterCriteria
+  ) async throws -> MailFilter {
+    struct FilterPayload: Encodable {
+      var name: String
+      var color: String
+      var icon: String
+      var naturalLanguage: String?
+      var criteria: MailFilterCriteria
+    }
+    let response: FilterResponse = try await request(
+      "api/filters/\(id)",
+      method: "PATCH",
+      body: FilterPayload(
+        name: name,
+        color: color,
+        icon: icon,
+        naturalLanguage: naturalLanguage,
+        criteria: criteria
+      )
+    )
+    return response.filter
+  }
+
   func emails(query: EmailQuery) async throws -> [EmailSummary] {
     var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(query.limit))]
     if let accountId = query.accountId {
@@ -184,6 +254,9 @@ struct MailAPIClient {
     }
     if let labelId = query.labelId {
       items.append(URLQueryItem(name: "labelId", value: labelId))
+    }
+    if let filterId = query.filterId {
+      items.append(URLQueryItem(name: "filterId", value: filterId))
     }
     if !query.q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       items.append(URLQueryItem(name: "q", value: query.q))

@@ -387,6 +387,91 @@ test("creates editable global labels and filters across accounts", () => {
   }
 });
 
+test("creates saved filters from natural language and applies them dynamically", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const gmail = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const icloud = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person iCloud"
+    });
+    const gmailInbox = store.mailboxForRole(gmail.id, "inbox");
+    const icloudInbox = store.mailboxForRole(icloud.id, "inbox");
+
+    const invoice = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-hit",
+      accountId: gmail.id,
+      mailboxId: gmailInbox.id,
+      providerUID: "provider-invoice-filter-hit",
+      senderName: "Shop",
+      senderEmail: "shop@example.com",
+      subject: "Your invoice is attached",
+      bodyText: "Please find your invoice attached.",
+      receivedAt: "2026-05-23T10:00:00.000Z",
+      attachments: [{ filename: "invoice-123.pdf", mimeType: "application/pdf", size: 128 }]
+    }));
+    const imageOnly = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-miss-image",
+      accountId: gmail.id,
+      mailboxId: gmailInbox.id,
+      providerUID: "provider-invoice-filter-miss-image",
+      senderName: "Photos",
+      senderEmail: "photos@example.com",
+      subject: "Weekend photos",
+      bodyText: "A few images.",
+      receivedAt: "2026-05-23T11:00:00.000Z",
+      attachments: [{ filename: "photo.png", mimeType: "image/png", size: 128 }]
+    }));
+    const noAttachment = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-miss-no-attachment",
+      accountId: icloud.id,
+      mailboxId: icloudInbox.id,
+      providerUID: "provider-invoice-filter-miss-no-attachment",
+      senderName: "Billing",
+      senderEmail: "billing@example.com",
+      subject: "Invoice reminder",
+      bodyText: "No attachment here.",
+      receivedAt: "2026-05-23T12:00:00.000Z"
+    }));
+
+    const filter = store.createFilter({
+      naturalLanguage: "All emails from any sender that contain an attachment that is an invoice"
+    });
+
+    assert.equal(filter.name, "Invoices");
+    assert.equal(filter.criteria.hasAttachments, true);
+    assert.equal(filter.criteria.attachmentKind, "invoice");
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [invoice.id]);
+
+    const laterInvoice = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-hit-later",
+      accountId: icloud.id,
+      mailboxId: icloudInbox.id,
+      providerUID: "provider-invoice-filter-hit-later",
+      senderName: "Proveedor",
+      senderEmail: "proveedor@example.com",
+      subject: "Factura mayo",
+      bodyText: "Factura adjunta.",
+      receivedAt: "2026-05-24T10:00:00.000Z",
+      attachments: [{ filename: "factura-mayo.pdf", mimeType: "application/pdf", size: 128 }]
+    }));
+
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [laterInvoice.id, invoice.id]);
+    assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === imageOnly.id));
+    assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === noAttachment.id));
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("reclassifies only same-account inbox messages as sent", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
@@ -850,6 +935,7 @@ test("registers and refreshes push notification tokens", () => {
 });
 
 function testProviderEmail(overrides = {}) {
+  const attachments = overrides.attachments;
   return {
     id: overrides.id,
     accountId: overrides.accountId,
@@ -874,7 +960,8 @@ function testProviderEmail(overrides = {}) {
     isRead: overrides.isRead ?? true,
     isStarred: false,
     importance: "normal",
-    hasAttachments: false,
+    hasAttachments: overrides.hasAttachments ?? Boolean(attachments?.length),
+    attachments,
     trackingId: null,
     openedAt: null,
     createdAt: overrides.createdAt ?? "2026-05-23T10:00:00.000Z"

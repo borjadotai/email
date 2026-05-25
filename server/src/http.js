@@ -164,6 +164,26 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     return;
   }
 
+  if (req.method === "GET" && path === "/api/filters") {
+    sendJSON(res, 200, { filters: store.listFilters() });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/filters") {
+    const filter = store.createFilter(await readJSON(req));
+    events.emit("filters.changed", { filterId: filter.id });
+    sendJSON(res, 201, { filter });
+    return;
+  }
+
+  const filterRouteMatch = path.match(/^\/api\/filters\/([^/]+)$/);
+  if (filterRouteMatch && req.method === "PATCH") {
+    const filter = store.updateFilter(filterRouteMatch[1], await readJSON(req));
+    events.emit("filters.changed", { filterId: filter.id });
+    sendJSON(res, 200, { filter });
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/emails") {
     const emails = store.listEmails(Object.fromEntries(url.searchParams.entries()));
     sendJSON(res, 200, { emails });
