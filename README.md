@@ -389,5 +389,8 @@ Core endpoints live under `/api`:
 ## Runtime Notes
 
 - `EMAIL_INITIAL_SYNC_LIMIT` controls how many messages are imported per sync pass. The default is `500`.
+- `EMAIL_HISTORY_BACKFILL_LIMIT` controls how many older messages are imported per historical backfill pass. The default is `500`.
+- `EMAIL_HISTORY_BACKFILL_INTERVAL_MS` controls how often the server runs an automatic history backfill pass. The default is `60000`.
+- `EMAIL_AUTO_HISTORY_BACKFILL=0` disables automatic historical backfill.
 - `EMAIL_PUBLIC_BASE_URL` must point at a reachable server URL for Gmail OAuth callbacks and outbound open tracking pixels to work outside the local machine.
-- The current iCloud importer focuses on INBOX. Gmail imports all non-spam/trash messages returned by the Gmail API and places them into Inbox, Sent, Drafts, Trash, or Archive based on Gmail system labels.
+- Normal sync keeps recent mail current. Historical backfill pages older Gmail and iCloud mailbox history into the local SQLite/FTS index so search and saved filters can cover the full account over time.

@@ -12,6 +12,7 @@ const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.labels",
   "https://www.googleapis.com/auth/gmail.send"
 ];
+const HISTORY_BACKFILL_LIMIT = 500;
 
 export class ProviderService {
   constructor({ store, secretStore, config, baseURL }) {
@@ -177,6 +178,153 @@ export class ProviderService {
       default:
         throw httpError(400, `Unsupported provider ${account.provider}.`);
     }
+  }
+
+  async backfillAccountHistory(accountId, { limit = HISTORY_BACKFILL_LIMIT } = {}) {
+    const account = this.store.getAccount(accountId);
+    if (!account) throw httpError(404, "Account not found.");
+    const backfillLimit = clampSyncLimit(limit, this.config.historyBackfillLimit ?? HISTORY_BACKFILL_LIMIT);
+
+    switch (account.provider) {
+      case "gmail":
+        return this.backfillGmailHistory(account, { limit: backfillLimit });
+      case "icloud":
+        return this.backfillICloudHistory(account, { limit: backfillLimit });
+      default:
+        throw httpError(400, `Unsupported provider ${account.provider}.`);
+    }
+  }
+
+  async backfillGmailHistory(account, { limit = HISTORY_BACKFILL_LIMIT } = {}) {
+    const client = this.authorizedGmailClient(account);
+    const gmail = google.gmail({ version: "v1", auth: client });
+    const metadata = account.providerMetadata ?? {};
+    const before = gmailSearchDate(metadata.gmailBackfillBefore ?? this.store.oldestEmailReceivedAt(account.id));
+    const query = before ? `before:${before} -in:spam -in:trash` : "-in:spam -in:trash";
+    const pageSize = Math.min(500, Math.max(1, limit));
+    const list = await gmail.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults: pageSize,
+      includeSpamTrash: false
+    });
+
+    const messages = list.data.messages ?? [];
+    let imported = 0;
+    let oldestReceivedAt = null;
+    for (const item of messages) {
+      if (!item.id) continue;
+      const message = await gmail.users.messages.get({
+        userId: "me",
+        id: item.id,
+        format: "full"
+      });
+      const saved = this.store.upsertProviderEmail(gmailMessageToEmail({
+        account,
+        message: message.data,
+        mailboxId: this.gmailMailboxFor(account.id, message.data).id,
+        store: this.store,
+        attachments: await gmailAttachmentsForMessage(gmail, message.data, { includeData: false })
+      }));
+      oldestReceivedAt = olderISODate(oldestReceivedAt, saved.receivedAt);
+      imported += 1;
+    }
+
+    const complete = messages.length === 0;
+    this.store.markAccountSynced(account.id, {
+      gmailBackfillBefore: oldestReceivedAt ? gmailSearchDate(oldestReceivedAt) : before ?? null,
+      gmailBackfillComplete: complete
+    });
+
+    return {
+      provider: "gmail",
+      imported,
+      complete,
+      cursor: oldestReceivedAt ? gmailSearchDate(oldestReceivedAt) : before ?? null
+    };
+  }
+
+  async backfillICloudHistory(account, { limit = HISTORY_BACKFILL_LIMIT } = {}) {
+    const password = this.secretStore.get(secretKey(account.id, "icloud.app_password"));
+    if (!password) throw httpError(400, "iCloud app-specific password is missing. Reconnect the account.");
+
+    const user = account.providerMetadata.imapUsername ?? account.email;
+    const client = createICloudIMAPClient(user, password);
+    const metadata = account.providerMetadata ?? {};
+    const backfillState = { ...(metadata.icloudBackfill ?? {}) };
+    const mailboxes = [];
+    let imported = 0;
+
+    await client.connect();
+    try {
+      const availableMailboxes = (await client.list()).filter(shouldBackfillICloudMailbox);
+      for (const mailbox of availableMailboxes) {
+        const remaining = limit - imported;
+        if (remaining <= 0) break;
+
+        const path = mailbox.path;
+        const stateKey = iCloudMailboxStateKey(path);
+        const previous = backfillState[stateKey] ?? {};
+        if (previous.complete) {
+          mailboxes.push({ path, imported: 0, complete: true, skipped: true });
+          continue;
+        }
+
+        const lock = await client.getMailboxLock(path);
+        try {
+          const uidValidity = String(client.mailbox?.uidValidity ?? mailbox.uidValidity ?? "unknown");
+          const exists = Number(client.mailbox?.exists ?? mailbox.exists ?? 0);
+          const high = previous.uidValidity === uidValidity && Number.isInteger(previous.nextSeqBefore)
+            ? previous.nextSeqBefore - 1
+            : exists;
+          if (high <= 0) {
+            backfillState[stateKey] = { path, uidValidity, nextSeqBefore: 1, complete: true };
+            mailboxes.push({ path, imported: 0, complete: true });
+            continue;
+          }
+
+          const low = Math.max(1, high - remaining + 1);
+          let mailboxImported = 0;
+          for await (const message of client.fetch(`${low}:${high}`, {
+            uid: true,
+            flags: true,
+            internalDate: true,
+            source: true
+          })) {
+            if (!message.source) continue;
+            const parsed = await simpleParser(message.source);
+            this.store.upsertProviderEmail(iCloudMessageToEmail({
+              account,
+              parsed,
+              message,
+              mailboxId: this.iCloudMailboxForPath(account.id, path).id,
+              store: this.store,
+              providerUID: iCloudProviderUID(path, uidValidity, message.uid),
+              attachments: iCloudAttachmentsFromParsed(parsed, { includeData: false })
+            }));
+            mailboxImported += 1;
+          }
+
+          imported += mailboxImported;
+          const nextSeqBefore = low;
+          const complete = low <= 1;
+          backfillState[stateKey] = { path, uidValidity, nextSeqBefore, complete };
+          mailboxes.push({ path, imported: mailboxImported, sequenceRange: `${low}:${high}`, complete });
+        } finally {
+          lock.release();
+        }
+      }
+    } finally {
+      await safeLogout(client, user);
+    }
+
+    const complete = mailboxes.length > 0 && mailboxes.every(item => item.complete || item.skipped);
+    this.store.markAccountSynced(account.id, {
+      icloudBackfill: backfillState,
+      icloudBackfillComplete: complete
+    });
+
+    return { provider: "icloud", imported, complete, mailboxes };
   }
 
   async sendMessage(email, input) {
@@ -358,12 +506,14 @@ export class ProviderService {
         }, syncWindow.fetchOptions)) {
           const parsed = await simpleParser(message.source);
           const mailbox = this.iCloudMailboxFor(account.id, parsed);
+          const uidValidity = client.mailbox?.uidValidity ?? null;
           const saved = this.store.upsertProviderEmail(iCloudMessageToEmail({
             account,
             parsed,
             message,
             mailboxId: mailbox.id,
             store: this.store,
+            providerUID: iCloudProviderUID("INBOX", uidValidity, message.uid),
             attachments: iCloudAttachmentsFromParsed(parsed)
           }));
           if (saved.wasNew) {
@@ -476,8 +626,8 @@ export class ProviderService {
   }
 
   async archiveICloudEmail(account, email) {
-    const uid = Number(email.providerUID);
-    if (!Number.isInteger(uid) || uid <= 0 || email.mailboxRole !== "inbox") {
+    const providerRef = parseICloudProviderUID(email.providerUID);
+    if (!providerRef || email.mailboxRole !== "inbox") {
       return { status: "local_only", provider: "icloud" };
     }
 
@@ -488,9 +638,9 @@ export class ProviderService {
     const client = createICloudIMAPClient(user, password);
     await client.connect();
     try {
-      const lock = await client.getMailboxLock("INBOX");
+      const lock = await client.getMailboxLock(providerRef.path);
       try {
-        await moveICloudMessageToArchive(client, uid);
+        await moveICloudMessageToArchive(client, providerRef.uid);
       } finally {
         lock.release();
       }
@@ -502,8 +652,8 @@ export class ProviderService {
   }
 
   async updateICloudEmailReadStatus(account, email, isRead) {
-    const uid = Number(email.providerUID);
-    if (!Number.isInteger(uid) || uid <= 0 || email.mailboxRole !== "inbox") {
+    const providerRef = parseICloudProviderUID(email.providerUID);
+    if (!providerRef) {
       return { status: "local_only", provider: "icloud" };
     }
 
@@ -514,12 +664,12 @@ export class ProviderService {
     const client = createICloudIMAPClient(user, password);
     await client.connect();
     try {
-      const lock = await client.getMailboxLock("INBOX");
+      const lock = await client.getMailboxLock(providerRef.path);
       try {
         if (isRead) {
-          await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
+          await client.messageFlagsAdd(String(providerRef.uid), ["\\Seen"], { uid: true });
         } else {
-          await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
+          await client.messageFlagsRemove(String(providerRef.uid), ["\\Seen"], { uid: true });
         }
       } finally {
         lock.release();
@@ -532,8 +682,8 @@ export class ProviderService {
   }
 
   async trashICloudEmail(account, email) {
-    const uid = Number(email.providerUID);
-    if (!Number.isInteger(uid) || uid <= 0 || email.mailboxRole !== "inbox") {
+    const providerRef = parseICloudProviderUID(email.providerUID);
+    if (!providerRef) {
       return { status: "local_only", provider: "icloud" };
     }
 
@@ -544,9 +694,9 @@ export class ProviderService {
     const client = createICloudIMAPClient(user, password);
     await client.connect();
     try {
-      const lock = await client.getMailboxLock("INBOX");
+      const lock = await client.getMailboxLock(providerRef.path);
       try {
-        await moveICloudMessageToTrash(client, uid);
+        await moveICloudMessageToTrash(client, providerRef.uid);
       } finally {
         lock.release();
       }
@@ -615,8 +765,8 @@ export class ProviderService {
   }
 
   async iCloudAttachmentsForEmail(account, email) {
-    const uid = Number(email.providerUID);
-    if (!Number.isInteger(uid) || uid <= 0 || email.mailboxRole !== "inbox") {
+    const providerRef = parseICloudProviderUID(email.providerUID);
+    if (!providerRef) {
       return [];
     }
 
@@ -627,9 +777,9 @@ export class ProviderService {
     const client = createICloudIMAPClient(user, password);
     await client.connect();
     try {
-      const lock = await client.getMailboxLock("INBOX");
+      const lock = await client.getMailboxLock(providerRef.path);
       try {
-        const message = await client.fetchOne(String(uid), { source: true }, { uid: true });
+        const message = await client.fetchOne(String(providerRef.uid), { source: true }, { uid: true });
         if (!message?.source) return [];
         const parsed = await simpleParser(message.source);
         return iCloudAttachmentsFromParsed(parsed);
@@ -690,6 +840,16 @@ export class ProviderService {
     if (this.store.isAccountIdentityEmail(accountId, fromEmail)) {
       return this.store.mailboxForRole(accountId, "sent");
     }
+    return this.store.mailboxForRole(accountId, "inbox");
+  }
+
+  iCloudMailboxForPath(accountId, path) {
+    const normalized = String(path ?? "").toLowerCase();
+    if (normalized.includes("archive") || normalized.includes("old emails")) return this.store.mailboxForRole(accountId, "archive");
+    if (normalized.includes("junk") || normalized.includes("spam")) return this.store.mailboxForRole(accountId, "spam");
+    if (normalized.includes("deleted") || normalized.includes("trash")) return this.store.mailboxForRole(accountId, "trash");
+    if (normalized.includes("sent")) return this.store.mailboxForRole(accountId, "sent");
+    if (normalized.includes("draft")) return this.store.mailboxForRole(accountId, "drafts");
     return this.store.mailboxForRole(accountId, "inbox");
   }
 }
@@ -783,6 +943,58 @@ function iCloudSyncWindow(account, mailbox, exists, limit) {
   };
 }
 
+function iCloudProviderUID(path, uidValidity, uid) {
+  return `icloud:${encodeURIComponent(String(path))}:${String(uidValidity ?? "unknown")}:${String(uid)}`;
+}
+
+function parseICloudProviderUID(value) {
+  const text = String(value ?? "");
+  if (/^\d+$/u.test(text)) {
+    return { path: "INBOX", uid: Number(text), uidValidity: null };
+  }
+
+  const parts = text.split(":");
+  if (parts.length < 4 || parts[0] !== "icloud") return null;
+  const uid = Number(parts.at(-1));
+  if (!Number.isInteger(uid) || uid <= 0) return null;
+  return {
+    path: decodeURIComponent(parts.slice(1, -2).join(":")) || "INBOX",
+    uidValidity: parts.at(-2) ?? null,
+    uid
+  };
+}
+
+function iCloudMailboxStateKey(path) {
+  return encodeURIComponent(String(path));
+}
+
+function shouldBackfillICloudMailbox(mailbox) {
+  const path = String(mailbox?.path ?? "").toLowerCase();
+  if (!path) return false;
+  if (path === "notes" || path.includes("/notes")) return false;
+  if (path.includes("draft")) return false;
+  if (path.includes("junk") || path.includes("spam")) return false;
+  if (path.includes("deleted") || path.includes("trash")) return false;
+  return true;
+}
+
+function gmailSearchDate(value) {
+  const existing = String(value ?? "").match(/^(\d{4})\/(\d{2})\/(\d{2})$/u);
+  if (existing) return existing[0];
+  const date = new Date(value);
+  if (!Number.isFinite(date.valueOf())) return null;
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
+function olderISODate(current, candidate) {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  return new Date(candidate) < new Date(current) ? candidate : current;
+}
+
 async function moveICloudMessageToArchive(client, uid) {
   try {
     return await client.messageMove(String(uid), "Archive", { uid: true });
@@ -873,7 +1085,7 @@ function gmailSenderEmail(message) {
   return parseAddress(headers.get("from") || "").email.toLowerCase();
 }
 
-function iCloudMessageToEmail({ account, parsed, message, mailboxId, store, attachments = [] }) {
+function iCloudMessageToEmail({ account, parsed, message, mailboxId, store, attachments = [], providerUID = null }) {
   const from = parsed.from?.value?.[0] ?? {};
   const references = normalizeReferences(parsed.references);
   const rfcMessageID = normalizeMessageID(parsed.messageId);
@@ -882,7 +1094,7 @@ function iCloudMessageToEmail({ account, parsed, message, mailboxId, store, atta
     id: randomUUID(),
     accountId: account.id,
     mailboxId,
-    providerUID: String(message.uid),
+    providerUID: providerUID ?? String(message.uid),
     threadId: references[0] ?? inReplyTo ?? rfcMessageID ?? String(message.uid),
     senderName: localSenderName(store, from.address, from.name),
     senderEmail: from.address || "",
@@ -910,19 +1122,21 @@ function iCloudMessageToEmail({ account, parsed, message, mailboxId, store, atta
   };
 }
 
-async function gmailAttachmentsForMessage(gmail, message) {
+async function gmailAttachmentsForMessage(gmail, message, { includeData = true } = {}) {
   const parts = collectGmailAttachmentParts(message.payload);
   const attachments = [];
 
   for (const part of parts) {
-    let data = part.body?.data ? decodeBase64URL(part.body.data) : null;
+    let data = includeData && part.body?.data ? decodeBase64URL(part.body.data) : null;
     if (!data && part.body?.attachmentId && message.id) {
-      const attachment = await gmail.users.messages.attachments.get({
-        userId: "me",
-        messageId: message.id,
-        id: part.body.attachmentId
-      });
-      data = attachment.data?.data ? decodeBase64URL(attachment.data.data) : null;
+      if (includeData) {
+        const attachment = await gmail.users.messages.attachments.get({
+          userId: "me",
+          messageId: message.id,
+          id: part.body.attachmentId
+        });
+        data = attachment.data?.data ? decodeBase64URL(attachment.data.data) : null;
+      }
     }
 
     attachments.push({
@@ -961,7 +1175,7 @@ function isInlineAttachment(part) {
   return disposition.includes("inline");
 }
 
-function iCloudAttachmentsFromParsed(parsed) {
+function iCloudAttachmentsFromParsed(parsed, { includeData = true } = {}) {
   return (parsed.attachments ?? []).map(attachment => ({
     contentId: optionalString(attachment.contentId),
     filename: attachment.filename || "Attachment",
@@ -969,7 +1183,7 @@ function iCloudAttachmentsFromParsed(parsed) {
     size: Number(attachment.size ?? attachment.content?.length ?? 0),
     disposition: optionalString(attachment.contentDisposition),
     isInline: attachment.related === true || attachment.contentDisposition === "inline",
-    data: attachment.content ? Buffer.from(attachment.content) : null
+    data: includeData && attachment.content ? Buffer.from(attachment.content) : null
   }));
 }
 

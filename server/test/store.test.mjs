@@ -621,6 +621,51 @@ test("deletes saved filters without deleting matching emails", () => {
   }
 });
 
+test("upserts provider messages by RFC message id when provider uid changes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const archive = store.mailboxForRole(account.id, "archive");
+
+    const first = store.upsertProviderEmail(testProviderEmail({
+      id: "provider-rfc-dedupe-1",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "5896",
+      rfcMessageID: "<same-message@example.com>",
+      senderName: "Plenitude",
+      senderEmail: "factura@clientes.eniplenitude.es",
+      subject: "Tu factura interactiva ya está disponible"
+    }));
+    const updated = store.upsertProviderEmail(testProviderEmail({
+      id: "provider-rfc-dedupe-2",
+      accountId: account.id,
+      mailboxId: archive.id,
+      providerUID: "icloud:Archive:1:28623",
+      rfcMessageID: "<same-message@example.com>",
+      senderName: "Plenitude",
+      senderEmail: "factura@clientes.eniplenitude.es",
+      subject: "Su factura F25ES-01391086 - Plenitude"
+    }));
+
+    assert.equal(updated.wasNew, false);
+    assert.equal(updated.id, first.id);
+    assert.equal(updated.providerUID, "icloud:Archive:1:28623");
+    assert.equal(updated.mailboxRole, "archive");
+    assert.equal(store.listEmails({ accountId: account.id }).length, 1);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("reclassifies only same-account inbox messages as sent", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

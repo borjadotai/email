@@ -225,6 +225,8 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_emails_account_received ON emails(account_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_mailbox_received ON emails(mailbox_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_tracking ON emails(tracking_id);
+      CREATE INDEX IF NOT EXISTS idx_emails_account_rfc_message_id ON emails(account_id, rfc_message_id)
+        WHERE rfc_message_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
       CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
       CREATE INDEX IF NOT EXISTS idx_saved_filters_updated ON saved_filters(updated_at DESC);
@@ -252,6 +254,7 @@ export class MailStore {
     this.reclassifyLocalUserInboxMessages();
     this.repairCrossAccountSentMisclassifications();
     this.repairLocalUserSenderNames();
+    this.repairDuplicateProviderMessages();
     this.ensureSearchIndexVersion();
   }
 
@@ -637,6 +640,58 @@ export class MailStore {
     return result.changes ?? 0;
   }
 
+  repairDuplicateProviderMessages() {
+    const groups = this.db.prepare(`
+      SELECT account_id AS accountId, lower(sender_email) AS senderEmail, subject, received_at AS receivedAt
+      FROM emails
+      GROUP BY account_id, lower(sender_email), subject, received_at
+      HAVING COUNT(*) > 1
+    `).all();
+
+    const rowsForGroup = this.db.prepare(`
+      SELECT id, mailbox_id AS mailboxId
+      FROM emails
+      WHERE account_id = ?
+        AND lower(sender_email) = ?
+        AND subject = ?
+        AND received_at = ?
+      ORDER BY rfc_message_id IS NOT NULL DESC,
+               provider_uid LIKE 'icloud:%' DESC,
+               has_attachments DESC,
+               length(coalesce(body_text, '')) + length(coalesce(body_html, '')) DESC,
+               created_at DESC
+    `);
+    const copyLabels = this.db.prepare(`
+      INSERT OR IGNORE INTO email_labels (email_id, label_id)
+      SELECT ?, label_id FROM email_labels WHERE email_id = ?
+    `);
+    const deleteFTS = this.db.prepare("DELETE FROM email_fts WHERE email_id = ?");
+    const deleteEmail = this.db.prepare("DELETE FROM emails WHERE id = ?");
+    const touchedMailboxIDs = new Set();
+    let deleted = 0;
+
+    for (const group of groups) {
+      const rows = rowsForGroup.all(group.accountId, group.senderEmail, group.subject, group.receivedAt);
+      const keeper = rows[0];
+      if (!keeper) continue;
+      touchedMailboxIDs.add(keeper.mailboxId);
+
+      for (const duplicate of rows.slice(1)) {
+        copyLabels.run(keeper.id, duplicate.id);
+        deleteFTS.run(duplicate.id);
+        deleteEmail.run(duplicate.id);
+        touchedMailboxIDs.add(duplicate.mailboxId);
+        deleted += 1;
+      }
+    }
+
+    for (const mailboxId of touchedMailboxIDs) {
+      this.refreshMailboxUnread(mailboxId);
+    }
+
+    return deleted;
+  }
+
   updateAccountStatus(id, status, metadata = null) {
     const account = this.getAccount(id);
     if (!account) return null;
@@ -713,6 +768,10 @@ export class MailStore {
     const nextMetadata = { ...account.providerMetadata, ...metadata };
     this.db.prepare("UPDATE accounts SET provider_metadata_json = ? WHERE id = ?").run(JSON.stringify(nextMetadata), id);
     return this.getAccount(id);
+  }
+
+  oldestEmailReceivedAt(accountId) {
+    return this.db.prepare("SELECT MIN(received_at) AS oldest FROM emails WHERE account_id = ?").get(accountId)?.oldest ?? null;
   }
 
   listMailboxes(accountId = null) {
@@ -1928,14 +1987,32 @@ export class MailStore {
         mailboxId: this.mailboxForRole(resolvedEmail.accountId, "spam").id
       };
     }
-    const existing = resolvedEmail.providerUID
+    const providerUIDMatch = resolvedEmail.providerUID
       ? this.db.prepare("SELECT id, mailbox_id AS mailboxId FROM emails WHERE account_id = ? AND provider_uid = ?").get(resolvedEmail.accountId, resolvedEmail.providerUID)
       : null;
+    const rfcMessageIDMatch = resolvedEmail.rfcMessageID
+      ? this.db.prepare("SELECT id, mailbox_id AS mailboxId FROM emails WHERE account_id = ? AND rfc_message_id = ?").get(resolvedEmail.accountId, resolvedEmail.rfcMessageID)
+      : null;
+    const stableHeaderMatch = resolvedEmail.senderEmail && resolvedEmail.subject && resolvedEmail.receivedAt
+      ? this.db.prepare(`
+        SELECT id, mailbox_id AS mailboxId
+        FROM emails
+        WHERE account_id = ?
+          AND lower(sender_email) = lower(?)
+          AND subject = ?
+          AND received_at = ?
+        ORDER BY rfc_message_id IS NOT NULL DESC,
+                 provider_uid LIKE 'icloud:%' DESC,
+                 length(coalesce(body_text, '')) + length(coalesce(body_html, '')) DESC
+        LIMIT 1
+      `).get(resolvedEmail.accountId, resolvedEmail.senderEmail, resolvedEmail.subject, resolvedEmail.receivedAt)
+      : null;
+    const existing = providerUIDMatch ?? rfcMessageIDMatch ?? stableHeaderMatch;
 
       if (existing) {
         this.db.prepare(`
         UPDATE emails
-        SET mailbox_id = ?, thread_id = ?, sender_name = ?, sender_email = ?,
+        SET mailbox_id = ?, provider_uid = ?, thread_id = ?, sender_name = ?, sender_email = ?,
             sender_avatar_url = ?, recipients_json = ?, cc_json = ?, bcc_json = ?,
             subject = ?, snippet = ?, body_text = ?, body_html = ?,
             rfc_message_id = ?, in_reply_to = ?, references_json = ?,
@@ -1944,6 +2021,7 @@ export class MailStore {
         WHERE id = ?
       `).run(
         resolvedEmail.mailboxId,
+        resolvedEmail.providerUID,
         resolvedEmail.threadId,
         resolvedEmail.senderName,
         resolvedEmail.senderEmail,

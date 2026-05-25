@@ -18,7 +18,7 @@ const providers = new ProviderService({
   secretStore: new KeychainSecretStore()
 });
 const pushNotifications = new PushNotificationService({ store, config });
-const { server } = createServer({
+const { server, events } = createServer({
   store,
   providers,
   pushNotifications,
@@ -32,8 +32,58 @@ server.listen(config.port, config.host, () => {
   console.log(`SQLite database: ${config.databasePath}`);
 });
 
+let historyBackfillRunning = false;
+let historyBackfillTimer = null;
+
+if (config.autoHistoryBackfill) {
+  const intervalMs = Number.isFinite(config.historyBackfillIntervalMs)
+    ? Math.max(10_000, config.historyBackfillIntervalMs)
+    : 60_000;
+  historyBackfillTimer = setInterval(runHistoryBackfillPass, intervalMs);
+  setTimeout(runHistoryBackfillPass, 5_000);
+}
+
+async function runHistoryBackfillPass() {
+  if (historyBackfillRunning) return;
+  historyBackfillRunning = true;
+  try {
+    for (const account of store.listAccounts()) {
+      const current = store.getAccount(account.id);
+      if (!current?.syncHistory || historyBackfillComplete(current)) continue;
+      try {
+        console.log(`${new Date().toISOString()} history backfill started account=${current.id}`);
+        const result = await providers.backfillAccountHistory(current.id, {
+          limit: config.historyBackfillLimit
+        });
+        console.log(`${new Date().toISOString()} history backfill completed account=${current.id} imported=${result.imported} complete=${result.complete}`);
+        events.emit("accounts.changed", { accountId: current.id, backfilled: true });
+        if (result.imported > 0) {
+          events.emit("emails.changed", { accountId: current.id, backfilled: true });
+        }
+      } catch (error) {
+        console.warn(`${new Date().toISOString()} history backfill failed account=${current.id}: ${error.message}`);
+      }
+    }
+  } finally {
+    historyBackfillRunning = false;
+  }
+}
+
+function historyBackfillComplete(account) {
+  if (account.provider === "gmail") {
+    return account.providerMetadata.gmailBackfillComplete === true;
+  }
+  if (account.provider === "icloud") {
+    return account.providerMetadata.icloudBackfillComplete === true;
+  }
+  return true;
+}
+
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
+  if (historyBackfillTimer) {
+    clearInterval(historyBackfillTimer);
+  }
   server.close(() => {
     store.close();
     process.exit(0);

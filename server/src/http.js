@@ -139,6 +139,20 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     return;
   }
 
+  const accountBackfillMatch = path.match(/^\/api\/accounts\/([^/]+)\/backfill$/);
+  if (accountBackfillMatch && req.method === "POST") {
+    requireProviders(providers);
+    const body = await readJSON(req);
+    const backfill = await providers.backfillAccountHistory(accountBackfillMatch[1], {
+      limit: body.limit
+    });
+    if (backfill.imported > 0) {
+      events.emit("emails.changed", { accountId: accountBackfillMatch[1], backfilled: true });
+    }
+    sendJSON(res, 200, { backfill });
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/mailboxes") {
     sendJSON(res, 200, { mailboxes: store.listMailboxes(url.searchParams.get("accountId")) });
     return;
