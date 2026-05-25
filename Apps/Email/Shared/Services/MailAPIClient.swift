@@ -204,29 +204,17 @@ struct MailAPIClient {
     return response.filters
   }
 
-  func createFilter(
-    name: String,
-    color: String,
-    icon: String,
-    naturalLanguage: String?,
-    criteria: MailFilterCriteria
-  ) async throws -> MailFilter {
+  func createFilter(naturalLanguage: String) async throws -> MailFilter {
     struct FilterPayload: Encodable {
-      var name: String
-      var color: String
-      var icon: String
-      var naturalLanguage: String?
+      var naturalLanguage: String
       var criteria: MailFilterCriteria
     }
     let response: FilterResponse = try await request(
       "api/filters",
       method: "POST",
       body: FilterPayload(
-        name: name,
-        color: color,
-        icon: icon,
         naturalLanguage: naturalLanguage,
-        criteria: criteria
+        criteria: MailFilterCriteria()
       )
     )
     return response.filter
@@ -234,28 +222,18 @@ struct MailAPIClient {
 
   func updateFilter(
     id: String,
-    name: String,
-    color: String,
-    icon: String,
-    naturalLanguage: String?,
-    criteria: MailFilterCriteria
+    naturalLanguage: String
   ) async throws -> MailFilter {
     struct FilterPayload: Encodable {
-      var name: String
-      var color: String
-      var icon: String
-      var naturalLanguage: String?
+      var naturalLanguage: String
       var criteria: MailFilterCriteria
     }
     let response: FilterResponse = try await request(
       "api/filters/\(id)",
       method: "PATCH",
       body: FilterPayload(
-        name: name,
-        color: color,
-        icon: icon,
         naturalLanguage: naturalLanguage,
-        criteria: criteria
+        criteria: MailFilterCriteria()
       )
     )
     return response.filter

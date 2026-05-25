@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { DatabaseSync } from "node:sqlite";
-import { defaultFilterQueryPlan, fallbackFilterQueryPlan } from "./filterQueryPlanner.js";
+import { defaultFilterQueryPlan, fallbackFilterQueryPlan, isInvoicePrompt } from "./filterQueryPlanner.js";
 import { senderLogoURLForEmail } from "./logoResolver.js";
 
 const SYSTEM_MAILBOXES = [
@@ -882,9 +882,10 @@ export class MailStore {
     }
 
     const presentation = plan ?? filterPresentation({ criteria, naturalLanguage });
-    const name = optionalString(input.name) ?? existing.name ?? presentation.name;
-    const color = optionalString(input.color) ?? existing.color ?? presentation.color;
-    const icon = optionalString(input.icon) ?? existing.icon ?? presentation.icon;
+    const naturalLanguageChanged = Object.hasOwn(input, "naturalLanguage") && naturalLanguage !== existing.naturalLanguage;
+    const name = optionalString(input.name) ?? (naturalLanguageChanged ? presentation.name : existing.name) ?? presentation.name;
+    const color = optionalString(input.color) ?? (naturalLanguageChanged ? presentation.color : existing.color) ?? presentation.color;
+    const icon = optionalString(input.icon) ?? (naturalLanguageChanged ? presentation.icon : existing.icon) ?? presentation.icon;
     const now = new Date().toISOString();
 
     this.db.prepare(`
@@ -980,10 +981,11 @@ export class MailStore {
   }
 
   refreshFilterCache(id) {
-    const filter = this.getFilter(id);
+    let filter = this.getFilter(id);
     if (!filter) {
       throw httpError(404, "Filter not found.");
     }
+    filter = this.repairFilterQueryPlanIfNeeded(filter);
     if (!filter.querySQL) {
       return filter;
     }
@@ -1005,6 +1007,38 @@ export class MailStore {
     }
 
     return this.getFilter(id);
+  }
+
+  repairFilterQueryPlanIfNeeded(filter) {
+    if (!isInvoicePrompt(filter.naturalLanguage)) {
+      return filter;
+    }
+
+    const plan = this.filterQueryPlan(filter.naturalLanguage, {});
+    if (filter.querySQL === plan.sql && filter.querySource === plan.source && !filter.queryError) {
+      return filter;
+    }
+
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE saved_filters
+      SET name = ?, color = ?, icon = ?, criteria_json = ?,
+          query_sql = ?, query_source = ?, query_error = ?,
+          cached_email_ids_json = '[]', cache_updated_at = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(
+      plan.name,
+      plan.color,
+      plan.icon,
+      JSON.stringify(plan.criteria),
+      plan.sql,
+      plan.source,
+      plan.error ?? null,
+      now,
+      filter.id
+    );
+
+    return this.getFilter(filter.id);
   }
 
   emailIdsForFilterSQL(sql) {

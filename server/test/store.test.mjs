@@ -424,6 +424,18 @@ test("creates saved filters from natural language and applies them dynamically",
       receivedAt: "2026-05-23T10:00:00.000Z",
       attachments: [{ filename: "invoice-123.pdf", mimeType: "application/pdf", size: 128 }]
     }));
+    const randomNamedInvoice = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-hit-random-filename",
+      accountId: gmail.id,
+      mailboxId: gmailInbox.id,
+      providerUID: "provider-invoice-filter-hit-random-filename",
+      senderName: "Cafe",
+      senderEmail: "cafe@example.com",
+      subject: "La factura en PDF de tu pedido",
+      bodyText: "Gracias por tu compra. Adjuntamos tu factura.",
+      receivedAt: "2026-05-23T10:30:00.000Z",
+      attachments: [{ filename: "546626244_23-57-26.pdf", mimeType: "application/pdf", size: 128 }]
+    }));
     const imageOnly = store.upsertProviderEmail(testProviderEmail({
       id: "invoice-filter-miss-image",
       accountId: gmail.id,
@@ -456,7 +468,7 @@ test("creates saved filters from natural language and applies them dynamically",
     assert.equal(filter.criteria.hasAttachments, true);
     assert.equal(filter.criteria.attachmentKind, "invoice");
     assert.equal(filter.querySource, "heuristic");
-    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [randomNamedInvoice.id, invoice.id]);
 
     const laterInvoice = store.upsertProviderEmail(testProviderEmail({
       id: "invoice-filter-hit-later",
@@ -471,8 +483,8 @@ test("creates saved filters from natural language and applies them dynamically",
       attachments: [{ filename: "factura-mayo.pdf", mimeType: "application/pdf", size: 128 }]
     }));
 
-    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [invoice.id]);
-    assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [laterInvoice.id, invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [randomNamedInvoice.id, invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [laterInvoice.id, randomNamedInvoice.id, invoice.id]);
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === imageOnly.id));
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === noAttachment.id));
   } finally {

@@ -16,6 +16,9 @@ export function defaultFilterQueryPlan(prompt, options = {}) {
   if (process.env.EMAIL_FILTER_DISABLE_CODEX === "1") {
     return fallback;
   }
+  if (isInvoicePrompt(prompt)) {
+    return fallback;
+  }
 
   const command = resolveCodexCommand();
   const timeoutMs = Number.parseInt(process.env.EMAIL_FILTER_CODEX_TIMEOUT_MS ?? "", 10) || DEFAULT_CODEX_TIMEOUT_MS;
@@ -45,7 +48,9 @@ export function defaultFilterQueryPlan(prompt, options = {}) {
 
 export function fallbackFilterQueryPlan(prompt) {
   const lower = String(prompt ?? "").toLowerCase();
-  if (/\b(invoice|invoices|factura|facturas|receipt|receipts|recibo|recibos|bill|billing)\b/u.test(lower)) {
+  if (isInvoicePrompt(prompt)) {
+    const requiresAttachment = /\b(attachment|attachments|attached|file|files|pdf|pdfs)\b/u.test(lower);
+    const attachmentRequirement = requiresAttachment ? "e.has_attachments = 1\n  AND " : "";
     return {
       name: "Invoices",
       color: "green",
@@ -53,20 +58,28 @@ export function fallbackFilterQueryPlan(prompt) {
       source: "heuristic",
       sql: `SELECT e.id
 FROM emails e
-WHERE e.has_attachments = 1
-  AND (
+WHERE ${attachmentRequirement}(
     lower(e.subject) LIKE '%invoice%'
     OR lower(e.subject) LIKE '%factura%'
     OR lower(e.subject) LIKE '%receipt%'
     OR lower(e.subject) LIKE '%recibo%'
-    OR lower(e.subject) LIKE '%bill%'
+    OR lower(e.subject) LIKE '%billing%'
+    OR lower(e.subject) LIKE '%nomina%'
+    OR lower(e.subject) LIKE '%nómina%'
     OR lower(e.snippet) LIKE '%invoice%'
     OR lower(e.snippet) LIKE '%factura%'
     OR lower(e.snippet) LIKE '%receipt%'
+    OR lower(e.snippet) LIKE '%recibo%'
+    OR lower(e.snippet) LIKE '%billing%'
+    OR lower(e.snippet) LIKE '%nomina%'
+    OR lower(e.snippet) LIKE '%nómina%'
     OR lower(e.body_text) LIKE '%invoice%'
     OR lower(e.body_text) LIKE '%factura%'
     OR lower(e.body_text) LIKE '%receipt%'
     OR lower(e.body_text) LIKE '%recibo%'
+    OR lower(e.body_text) LIKE '%billing%'
+    OR lower(e.body_text) LIKE '%nomina%'
+    OR lower(e.body_text) LIKE '%nómina%'
     OR EXISTS (
       SELECT 1
       FROM email_attachments ea
@@ -77,6 +90,8 @@ WHERE e.has_attachments = 1
           OR lower(ea.filename) LIKE '%factura%'
           OR lower(ea.filename) LIKE '%receipt%'
           OR lower(ea.filename) LIKE '%recibo%'
+          OR lower(ea.filename) LIKE '%nomina%'
+          OR lower(ea.filename) LIKE '%nómina%'
         )
     )
   )
@@ -123,6 +138,10 @@ FROM emails e
 WHERE ${conditions}
 ORDER BY e.received_at DESC`
   };
+}
+
+export function isInvoicePrompt(prompt) {
+  return /\b(invoice|invoices|factura|facturas|receipt|receipts|recibo|recibos|billing|nomina|nómina)\b/iu.test(String(prompt ?? ""));
 }
 
 function codexArgs() {
@@ -181,7 +200,7 @@ email_labels el: email_id, label_id
 email_attachments ea: email_id, filename, mime_type, size, disposition, is_inline
 email_fts: email_id, account_id, subject, sender_name, sender_email, recipients, snippet, body_text
 
-For "invoices", require an actual non-inline attachment and invoice/receipt/billing evidence in subject, body, snippet, or attachment filename. Do not match every attachment.
+For "invoices", match invoice/receipt/factura/recibo/billing evidence in subject, snippet, body, or attachment filename. If the user explicitly asks for attachments or PDFs, require e.has_attachments = 1; do not require the filename itself to contain invoice terms.
 For "newsletters", look for newsletter/digest signals and subscription markers such as unsubscribe, manage preferences, view in browser, read online, sender/newsletter naming.
 
 User request: ${JSON.stringify(String(prompt ?? ""))}`;

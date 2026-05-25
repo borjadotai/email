@@ -370,21 +370,9 @@ final class AppModel {
     }
   }
 
-  func createFilter(
-    name: String,
-    color: String,
-    icon: String,
-    naturalLanguage: String?,
-    criteria: MailFilterCriteria
-  ) async {
+  func createFilter(naturalLanguage: String) async {
     do {
-      let filter = try await apiClient.createFilter(
-        name: name,
-        color: color,
-        icon: icon,
-        naturalLanguage: naturalLanguage,
-        criteria: criteria
-      )
+      let filter = try await apiClient.createFilter(naturalLanguage: naturalLanguage)
       filters = try await apiClient.filters()
       await selectFilter(filter)
     } catch {
@@ -394,20 +382,12 @@ final class AppModel {
 
   func updateFilter(
     _ filter: MailFilter,
-    name: String,
-    color: String,
-    icon: String,
-    naturalLanguage: String?,
-    criteria: MailFilterCriteria
+    naturalLanguage: String
   ) async {
     do {
       let updated = try await apiClient.updateFilter(
         id: filter.id,
-        name: name,
-        color: color,
-        icon: icon,
-        naturalLanguage: naturalLanguage,
-        criteria: criteria
+        naturalLanguage: naturalLanguage
       )
       filters = filters.map { $0.id == updated.id ? updated : $0 }
       if selectedFilterID == updated.id {

@@ -109,15 +109,19 @@ struct SidebarView: View {
     if activeSidebarAccountID == nil {
       Section("Filters") {
         ForEach(model.filters) { filter in
-          SidebarButton(
-            title: filter.name,
-            subtitle: "Saved view",
-            systemImage: filter.systemImage,
-            tint: filter.swiftUIColor,
-            isSelected: model.selectedFilterID == filter.id
-          ) {
-            selectFilter(filter)
-          }
+          FilterSidebarRow(
+            filter: filter,
+            isSelected: model.selectedFilterID == filter.id,
+            onSelect: {
+              selectFilter(filter)
+            },
+            onEdit: {
+              filterEditor = .edit(filter)
+            },
+            onDelete: {
+              filterPendingDeletion = filter
+            }
+          )
           .contextMenu {
             Button("Edit Filter") {
               filterEditor = .edit(filter)
@@ -125,6 +129,16 @@ struct SidebarView: View {
             Button("Delete Filter", role: .destructive) {
               filterPendingDeletion = filter
             }
+          }
+          .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+              filterPendingDeletion = filter
+            } label: {
+              Label("Delete", systemImage: "trash")
+            }
+          }
+          .accessibilityAction(named: "Delete Filter") {
+            filterPendingDeletion = filter
           }
         }
 
@@ -221,20 +235,10 @@ struct SidebarView: View {
       if let filter = context.filter {
         await model.updateFilter(
           filter,
-          name: draft.name,
-          color: draft.color,
-          icon: draft.icon,
-          naturalLanguage: draft.naturalLanguage,
-          criteria: draft.criteria
+          naturalLanguage: draft.naturalLanguage
         )
       } else {
-        await model.createFilter(
-          name: draft.name,
-          color: draft.color,
-          icon: draft.icon,
-          naturalLanguage: draft.naturalLanguage,
-          criteria: draft.criteria
-        )
+        await model.createFilter(naturalLanguage: draft.naturalLanguage)
       }
     }
   }
@@ -307,11 +311,7 @@ private struct FilterEditorContext: Identifiable {
 }
 
 private struct FilterEditorDraft {
-  var name: String
-  var color: String
-  var icon: String
-  var naturalLanguage: String?
-  var criteria: MailFilterCriteria
+  var naturalLanguage: String
 }
 
 private struct FilterEditorSheet: View {
@@ -319,9 +319,6 @@ private struct FilterEditorSheet: View {
   var context: FilterEditorContext
   var onSave: (FilterEditorDraft) -> Void
 
-  @State private var name: String
-  @State private var color: String
-  @State private var icon: String
   @State private var naturalLanguage: String
   @FocusState private var promptFocused: Bool
 
@@ -329,9 +326,6 @@ private struct FilterEditorSheet: View {
     self.context = context
     self.onSave = onSave
     let filter = context.filter
-    _name = State(initialValue: filter?.name ?? "")
-    _color = State(initialValue: filter?.color ?? FilterEditorOption.colors.first?.id ?? "teal")
-    _icon = State(initialValue: filter?.systemImage ?? FilterEditorOption.icons.first?.id ?? "line.3.horizontal.decrease.circle")
     _naturalLanguage = State(initialValue: filter?.naturalLanguage ?? "")
   }
 
@@ -341,7 +335,6 @@ private struct FilterEditorSheet: View {
       Divider()
       ScrollView {
         VStack(alignment: .leading, spacing: 16) {
-          FilterAppearanceSection(name: $name, color: $color, icon: $icon)
           naturalLanguageBuilder
         }
         .padding(20)
@@ -350,7 +343,7 @@ private struct FilterEditorSheet: View {
       footer
     }
     #if os(macOS)
-    .frame(width: 640, height: 520)
+    .frame(width: 640, height: 430)
     #endif
     #if os(iOS)
     .presentationDetents([.large])
@@ -382,9 +375,9 @@ private struct FilterEditorSheet: View {
   private var naturalLanguageBuilder: some View {
     VStack(alignment: .leading, spacing: 10) {
       VStack(alignment: .leading, spacing: 3) {
-        Text("Description")
+        Text("Describe the view")
           .font(.headline)
-        Text("Write the saved view you want. The server turns it into a live local query.")
+        Text("Examples: all my invoices, newsletters, unread emails from Stripe, receipts from any account.")
           .font(.subheadline)
           .foregroundStyle(.secondary)
       }
@@ -397,12 +390,9 @@ private struct FilterEditorSheet: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
           .frame(minHeight: 220)
-          .onChange(of: naturalLanguage) { _, value in
-            applyNaturalLanguageDefaults(value)
-          }
 
         if naturalLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          Text("Create a view for all my invoices")
+          Text("All my invoices")
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 18)
             .padding(.vertical, 18)
@@ -452,11 +442,7 @@ private struct FilterEditorSheet: View {
 
   private var draft: FilterEditorDraft {
     FilterEditorDraft(
-      name: trimmedName,
-      color: color,
-      icon: icon,
-      naturalLanguage: trimmedNaturalLanguage,
-      criteria: MailFilterCriteria()
+      naturalLanguage: trimmedNaturalLanguage
     )
   }
 
@@ -464,149 +450,9 @@ private struct FilterEditorSheet: View {
     !trimmedNaturalLanguage.isEmpty
   }
 
-  private var trimmedName: String {
-    name.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
   private var trimmedNaturalLanguage: String {
     naturalLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
   }
-
-  private func applyNaturalLanguageDefaults(_ value: String) {
-    let lower = value.lowercased()
-    guard !lower.isEmpty else { return }
-
-    if lower.range(of: #"\b(invoice|factura|receipt|recibo|bill|billing)\b"#, options: .regularExpression) != nil {
-      applySuggestedPresentation(name: "Invoices", color: "green", icon: "doc.text")
-    } else if lower.range(of: #"\b(newsletter|newsletters|digest|digests)\b"#, options: .regularExpression) != nil {
-      applySuggestedPresentation(name: "Newsletters", color: "purple", icon: "newspaper")
-    } else if lower.contains("attachment") || lower.contains("attached") || lower.contains("pdf") {
-      applySuggestedPresentation(name: "Attachments", color: "teal", icon: "paperclip")
-    } else if lower.contains("unread") {
-      applySuggestedPresentation(name: "Unread", color: "blue", icon: "envelope.badge")
-    } else if lower.contains("starred") || lower.contains("favorite") || lower.contains("favourite") {
-      applySuggestedPresentation(name: "Starred", color: "yellow", icon: "star")
-    }
-  }
-
-  private func applySuggestedPresentation(name suggestedName: String, color suggestedColor: String, icon suggestedIcon: String) {
-    if trimmedName.isEmpty {
-      name = suggestedName
-    }
-    if color == FilterEditorOption.colors.first?.id {
-      color = suggestedColor
-    }
-    if icon == FilterEditorOption.icons.first?.id {
-      icon = suggestedIcon
-    }
-  }
-}
-
-private struct FilterAppearanceSection: View {
-  @Binding var name: String
-  @Binding var color: String
-  @Binding var icon: String
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      Text("Appearance")
-        .font(.headline)
-
-      HStack(spacing: 12) {
-        Image(systemName: icon)
-          .font(.title3.weight(.semibold))
-          .foregroundStyle(selectedColor)
-          .frame(width: 42, height: 42)
-          .background(selectedColor.opacity(0.14))
-          .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-        TextField("Name", text: $name)
-          .textFieldStyle(.plain)
-          .font(.title3.weight(.semibold))
-
-        Picker("Icon", selection: $icon) {
-          ForEach(FilterEditorOption.icons) { option in
-            Label(option.title, systemImage: option.id).tag(option.id)
-          }
-        }
-        .labelsHidden()
-        .frame(width: 120)
-      }
-
-      HStack(spacing: 8) {
-        ForEach(FilterEditorOption.colors) { option in
-          Button {
-            color = option.id
-          } label: {
-            ZStack {
-              Circle()
-                .fill(option.color)
-                .frame(width: 24, height: 24)
-
-              if color == option.id {
-                Image(systemName: "checkmark")
-                  .font(.caption.weight(.bold))
-                  .foregroundStyle(.white)
-              }
-            }
-            .frame(width: 30, height: 30)
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel(option.title)
-          .accessibilityAddTraits(color == option.id ? .isSelected : [])
-        }
-      }
-    }
-    .padding(14)
-    .background(sheetCardBackground)
-    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.10))
-    )
-  }
-
-  private var selectedColor: Color {
-    FilterEditorOption.colors.first(where: { $0.id == color })?.color ?? .secondary
-  }
-}
-
-private struct FilterEditorOption: Identifiable {
-  var id: String
-  var title: String
-  var color: Color = .secondary
-
-  static let icons: [FilterEditorOption] = [
-    FilterEditorOption(id: "line.3.horizontal.decrease.circle", title: "Filter"),
-    FilterEditorOption(id: "tray.full", title: "Inbox"),
-    FilterEditorOption(id: "paperclip", title: "Attachment"),
-    FilterEditorOption(id: "doc.text", title: "Document"),
-    FilterEditorOption(id: "newspaper", title: "Newsletter"),
-    FilterEditorOption(id: "creditcard", title: "Money"),
-    FilterEditorOption(id: "cart", title: "Shopping"),
-    FilterEditorOption(id: "calendar", title: "Calendar"),
-    FilterEditorOption(id: "briefcase", title: "Work"),
-    FilterEditorOption(id: "person.crop.circle", title: "People"),
-    FilterEditorOption(id: "flag", title: "Flag"),
-    FilterEditorOption(id: "star", title: "Star"),
-    FilterEditorOption(id: "bell", title: "Alert"),
-    FilterEditorOption(id: "bolt", title: "Bolt")
-  ]
-
-  static let colors: [FilterEditorOption] = [
-    FilterEditorOption(id: "teal", title: "Teal", color: .teal),
-    FilterEditorOption(id: "green", title: "Green", color: .green),
-    FilterEditorOption(id: "blue", title: "Blue", color: .blue),
-    FilterEditorOption(id: "orange", title: "Orange", color: .orange),
-    FilterEditorOption(id: "purple", title: "Purple", color: .purple),
-    FilterEditorOption(id: "red", title: "Red", color: .red),
-    FilterEditorOption(id: "pink", title: "Pink", color: .pink),
-    FilterEditorOption(id: "cyan", title: "Cyan", color: .cyan),
-    FilterEditorOption(id: "indigo", title: "Indigo", color: .indigo),
-    FilterEditorOption(id: "mint", title: "Mint", color: .mint),
-    FilterEditorOption(id: "yellow", title: "Yellow", color: .yellow),
-    FilterEditorOption(id: "gray", title: "Gray", color: .secondary)
-  ]
 }
 
 private var sheetCardBackground: Color {
@@ -617,10 +463,55 @@ private var sheetCardBackground: Color {
   #endif
 }
 
-private extension String {
-  var trimmedOrNil: String? {
-    let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
+private struct FilterSidebarRow: View {
+  var filter: MailFilter
+  var isSelected: Bool
+  var onSelect: () -> Void
+  var onEdit: () -> Void
+  var onDelete: () -> Void
+
+  @State private var isHovered = false
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Button(action: onSelect) {
+        HStack(spacing: 10) {
+          Image(systemName: filter.systemImage)
+            .foregroundStyle(filter.swiftUIColor)
+            .frame(width: 24)
+
+          Text(filter.name)
+            .lineLimit(1)
+
+          Spacer(minLength: 6)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+
+      if isHovered || isSelected {
+        Button(action: onEdit) {
+          Image(systemName: "pencil")
+            .font(.caption.weight(.semibold))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Edit filter")
+
+        Button(role: .destructive, action: onDelete) {
+          Image(systemName: "trash")
+            .font(.caption.weight(.semibold))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Delete filter")
+      }
+    }
+    .contentShape(Rectangle())
+    .onHover { isHovered = $0 }
+    .listRowBackground(isSelected ? Color.mailSelectionBackground : Color.clear)
   }
 }
 
