@@ -49,8 +49,6 @@ export function defaultFilterQueryPlan(prompt, options = {}) {
 export function fallbackFilterQueryPlan(prompt) {
   const lower = String(prompt ?? "").toLowerCase();
   if (isInvoicePrompt(prompt)) {
-    const requiresAttachment = /\b(attachment|attachments|attached|file|files|pdf|pdfs)\b/u.test(lower);
-    const attachmentRequirement = requiresAttachment ? "e.has_attachments = 1\n  AND " : "";
     return {
       name: "Invoices",
       color: "green",
@@ -58,7 +56,7 @@ export function fallbackFilterQueryPlan(prompt) {
       source: "heuristic",
       sql: `SELECT e.id
 FROM emails e
-WHERE ${attachmentRequirement}(
+WHERE (
     lower(e.subject) LIKE '%invoice%'
     OR lower(e.subject) LIKE '%factura%'
     OR lower(e.subject) LIKE '%receipt%'
@@ -66,20 +64,27 @@ WHERE ${attachmentRequirement}(
     OR lower(e.subject) LIKE '%billing%'
     OR lower(e.subject) LIKE '%nomina%'
     OR lower(e.subject) LIKE '%nómina%'
-    OR lower(e.snippet) LIKE '%invoice%'
-    OR lower(e.snippet) LIKE '%factura%'
-    OR lower(e.snippet) LIKE '%receipt%'
-    OR lower(e.snippet) LIKE '%recibo%'
-    OR lower(e.snippet) LIKE '%billing%'
-    OR lower(e.snippet) LIKE '%nomina%'
-    OR lower(e.snippet) LIKE '%nómina%'
-    OR lower(e.body_text) LIKE '%invoice%'
-    OR lower(e.body_text) LIKE '%factura%'
-    OR lower(e.body_text) LIKE '%receipt%'
-    OR lower(e.body_text) LIKE '%recibo%'
-    OR lower(e.body_text) LIKE '%billing%'
-    OR lower(e.body_text) LIKE '%nomina%'
-    OR lower(e.body_text) LIKE '%nómina%'
+    OR lower(e.subject) LIKE '%pedido%'
+    OR lower(e.subject) LIKE '%payment confirmation%'
+    OR lower(e.subject) LIKE '%direct debit paid%'
+    OR lower(e.sender_name) LIKE '%receipt%'
+    OR lower(e.sender_email) LIKE '%receipt%'
+    OR lower(e.sender_name) LIKE '%billing%'
+    OR lower(e.sender_email) LIKE '%billing%'
+    OR lower(e.sender_name) LIKE '%accounting%'
+    OR lower(e.sender_email) LIKE '%accounting%'
+    OR (
+      lower(e.sender_email) LIKE '%amazon.%'
+      AND (
+        lower(e.subject) LIKE '%order%'
+        OR lower(e.subject) LIKE '%pedido%'
+        OR lower(e.subject) LIKE '%entregado%'
+      )
+    )
+    OR (
+      lower(e.sender_email) LIKE '%uber.%'
+      AND lower(e.sender_name) LIKE '%receipt%'
+    )
     OR EXISTS (
       SELECT 1
       FROM email_attachments ea
@@ -93,6 +98,25 @@ WHERE ${attachmentRequirement}(
           OR lower(ea.filename) LIKE '%nomina%'
           OR lower(ea.filename) LIKE '%nómina%'
         )
+    )
+    OR (
+      e.has_attachments = 1
+      AND (
+        lower(e.snippet) LIKE '%invoice%'
+        OR lower(e.snippet) LIKE '%factura%'
+        OR lower(e.snippet) LIKE '%receipt%'
+        OR lower(e.snippet) LIKE '%recibo%'
+        OR lower(e.snippet) LIKE '%billing%'
+        OR lower(e.snippet) LIKE '%nomina%'
+        OR lower(e.snippet) LIKE '%nómina%'
+        OR lower(e.body_text) LIKE '%invoice%'
+        OR lower(e.body_text) LIKE '%factura%'
+        OR lower(e.body_text) LIKE '%receipt%'
+        OR lower(e.body_text) LIKE '%recibo%'
+        OR lower(e.body_text) LIKE '%billing%'
+        OR lower(e.body_text) LIKE '%nomina%'
+        OR lower(e.body_text) LIKE '%nómina%'
+      )
     )
   )
 ORDER BY e.received_at DESC`
@@ -200,7 +224,7 @@ email_labels el: email_id, label_id
 email_attachments ea: email_id, filename, mime_type, size, disposition, is_inline
 email_fts: email_id, account_id, subject, sender_name, sender_email, recipients, snippet, body_text
 
-For "invoices", match invoice/receipt/factura/recibo/billing evidence in subject, snippet, body, or attachment filename. If the user explicitly asks for attachments or PDFs, require e.has_attachments = 1; do not require the filename itself to contain invoice terms.
+For "invoices", match invoice/receipt/factura/recibo/billing/payment evidence in subject, sender, or attachment filename. Body-only evidence should be used only with another signal such as e.has_attachments = 1, because newsletters often mention invoice words in footers. Do not require e.has_attachments = 1 just because the prompt says invoice; many receipt emails are link-only.
 For "newsletters", look for newsletter/digest signals and subscription markers such as unsubscribe, manage preferences, view in browser, read online, sender/newsletter naming.
 
 User request: ${JSON.stringify(String(prompt ?? ""))}`;

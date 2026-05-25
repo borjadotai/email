@@ -448,16 +448,27 @@ test("creates saved filters from natural language and applies them dynamically",
       receivedAt: "2026-05-23T11:00:00.000Z",
       attachments: [{ filename: "photo.png", mimeType: "image/png", size: 128 }]
     }));
-    const noAttachment = store.upsertProviderEmail(testProviderEmail({
-      id: "invoice-filter-miss-no-attachment",
+    const linkOnlyReceipt = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-hit-link-only",
       accountId: icloud.id,
       mailboxId: icloudInbox.id,
-      providerUID: "provider-invoice-filter-miss-no-attachment",
+      providerUID: "provider-invoice-filter-hit-link-only",
       senderName: "Billing",
       senderEmail: "billing@example.com",
       subject: "Invoice reminder",
-      bodyText: "No attachment here.",
+      bodyText: "Your receipt is available online.",
       receivedAt: "2026-05-23T12:00:00.000Z"
+    }));
+    const orderNewsletter = store.upsertProviderEmail(testProviderEmail({
+      id: "invoice-filter-miss-order-newsletter",
+      accountId: icloud.id,
+      mailboxId: icloudInbox.id,
+      providerUID: "provider-invoice-filter-miss-order-newsletter",
+      senderName: "Maps Newsletter",
+      senderEmail: "newsletter@example.com",
+      subject: "Changes in order online data",
+      bodyText: "A product update with no purchase or receipt.",
+      receivedAt: "2026-05-23T13:00:00.000Z"
     }));
 
     const filter = store.createFilter({
@@ -468,7 +479,7 @@ test("creates saved filters from natural language and applies them dynamically",
     assert.equal(filter.criteria.hasAttachments, true);
     assert.equal(filter.criteria.attachmentKind, "invoice");
     assert.equal(filter.querySource, "heuristic");
-    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [randomNamedInvoice.id, invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [linkOnlyReceipt.id, randomNamedInvoice.id, invoice.id]);
 
     const laterInvoice = store.upsertProviderEmail(testProviderEmail({
       id: "invoice-filter-hit-later",
@@ -483,10 +494,10 @@ test("creates saved filters from natural language and applies them dynamically",
       attachments: [{ filename: "factura-mayo.pdf", mimeType: "application/pdf", size: 128 }]
     }));
 
-    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [randomNamedInvoice.id, invoice.id]);
-    assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [laterInvoice.id, randomNamedInvoice.id, invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [linkOnlyReceipt.id, randomNamedInvoice.id, invoice.id]);
+    assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [laterInvoice.id, linkOnlyReceipt.id, randomNamedInvoice.id, invoice.id]);
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === imageOnly.id));
-    assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === noAttachment.id));
+    assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === orderNewsletter.id));
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

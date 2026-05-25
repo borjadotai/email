@@ -2286,7 +2286,7 @@ function filterCriteriaFromNaturalLanguage(value) {
   if (/\b(starred|favorite|favourite|important)\b/u.test(lower)) {
     criteria.starred = true;
   }
-  if (/\b(attachment|attached|file|pdf|invoice|factura|receipt|recibo|bill|billing|image|photo|spreadsheet|excel|csv|document)\b/u.test(lower)) {
+  if (/\b(attachment|attachments|attached|file|files|pdf|pdfs|image|photo|spreadsheet|excel|csv|document)\b/u.test(lower)) {
     criteria.hasAttachments = true;
   }
 
