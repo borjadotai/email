@@ -207,6 +207,20 @@ export class ProviderService {
     }
   }
 
+  async updateEmailReadStatus(email, isRead) {
+    const account = this.store.getAccount(email.accountId);
+    if (!account) throw httpError(404, "Account not found.");
+
+    switch (account.provider) {
+      case "gmail":
+        return this.updateGmailEmailReadStatus(account, email, isRead);
+      case "icloud":
+        return this.updateICloudEmailReadStatus(account, email, isRead);
+      default:
+        return { status: "local_only", provider: account.provider };
+    }
+  }
+
   async archiveEmail(email) {
     const account = this.store.getAccount(email.accountId);
     if (!account) throw httpError(404, "Account not found.");
@@ -430,6 +444,23 @@ export class ProviderService {
     return { status: "updated", provider: "gmail" };
   }
 
+  async updateGmailEmailReadStatus(account, email, isRead) {
+    if (!email.providerUID) {
+      return { status: "local_only", provider: "gmail" };
+    }
+
+    const client = this.authorizedGmailClient(account);
+    const gmail = google.gmail({ version: "v1", auth: client });
+    await gmail.users.messages.modify({
+      userId: "me",
+      id: email.providerUID,
+      requestBody: isRead
+        ? { removeLabelIds: ["UNREAD"] }
+        : { addLabelIds: ["UNREAD"] }
+    });
+    return { status: "updated", provider: "gmail" };
+  }
+
   async trashGmailEmail(account, email) {
     if (!email.providerUID) {
       return { status: "local_only", provider: "gmail" };
@@ -460,6 +491,36 @@ export class ProviderService {
       const lock = await client.getMailboxLock("INBOX");
       try {
         await moveICloudMessageToArchive(client, uid);
+      } finally {
+        lock.release();
+      }
+    } finally {
+      await safeLogout(client, user);
+    }
+
+    return { status: "updated", provider: "icloud" };
+  }
+
+  async updateICloudEmailReadStatus(account, email, isRead) {
+    const uid = Number(email.providerUID);
+    if (!Number.isInteger(uid) || uid <= 0 || email.mailboxRole !== "inbox") {
+      return { status: "local_only", provider: "icloud" };
+    }
+
+    const password = this.secretStore.get(secretKey(account.id, "icloud.app_password"));
+    if (!password) throw httpError(400, "iCloud app-specific password is missing. Reconnect the account.");
+
+    const user = account.providerMetadata.imapUsername ?? account.email;
+    const client = createICloudIMAPClient(user, password);
+    await client.connect();
+    try {
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        if (isRead) {
+          await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
+        } else {
+          await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
+        }
       } finally {
         lock.release();
       }

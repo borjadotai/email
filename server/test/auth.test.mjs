@@ -125,6 +125,79 @@ test("updates account settings through the API", async () => {
   }
 });
 
+test("marks provider email read before updating the local row", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = {
+      id: "email-read-api-test",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "gmail-provider-id",
+      threadId: "thread-read-api-test",
+      senderName: "Sender",
+      senderEmail: "sender@example.com",
+      senderAvatarURL: null,
+      recipients: [account.email],
+      cc: [],
+      bcc: [],
+      subject: "Unread provider-backed message",
+      snippet: "Unread provider-backed message",
+      bodyText: "Hello",
+      bodyHTML: null,
+      rfcMessageID: null,
+      inReplyTo: null,
+      references: [],
+      sentAt: new Date().toISOString(),
+      receivedAt: new Date().toISOString(),
+      isRead: false,
+      isStarred: false,
+      importance: "normal",
+      hasAttachments: false,
+      attachments: [],
+      trackingId: null,
+      openedAt: null,
+      createdAt: new Date().toISOString()
+    };
+    store.insertEmail(email);
+    store.refreshMailboxUnread(inbox.id);
+
+    const providerUpdates = [];
+    const providers = {
+      async updateEmailReadStatus(providerEmail, isRead) {
+        providerUpdates.push({ id: providerEmail.id, providerUID: providerEmail.providerUID, isRead });
+        assert.equal(store.getEmail(providerEmail.id).isRead, false);
+        return { status: "updated", provider: "gmail" };
+      }
+    };
+    server = createServer({ store, providers }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const response = await requestJSON(`${baseURL}/api/emails/${email.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ isRead: true }),
+      headers: { "Content-Type": "application/json" }
+    });
+
+    assert.deepEqual(providerUpdates, [{ id: email.id, providerUID: email.providerUID, isRead: true }]);
+    assert.equal(response.email.isRead, true);
+    assert.equal(store.getEmail(email.id).isRead, true);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 async function requestJSON(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) {

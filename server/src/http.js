@@ -227,7 +227,13 @@ async function route({ req, res, store, providers, pushNotifications, events, co
   }
 
   if (emailMatch && req.method === "PATCH") {
-    const email = store.updateEmail(emailMatch[1], await readJSON(req));
+    const patch = await readJSON(req);
+    const current = store.getEmail(emailMatch[1]);
+    if (!current) throw httpError(404, "Email not found.");
+    if (typeof patch.isRead === "boolean" && providers) {
+      await providers.updateEmailReadStatus(current, patch.isRead);
+    }
+    const email = store.updateEmail(emailMatch[1], patch);
     if (!email) throw httpError(404, "Email not found.");
     events.emit("emails.changed", { emailId: email.id });
     sendJSON(res, 200, { email });
