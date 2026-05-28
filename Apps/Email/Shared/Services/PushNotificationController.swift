@@ -35,8 +35,7 @@ final class PushNotificationController: NSObject, UNUserNotificationCenterDelega
     do {
       _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
     } catch {
-      model.statusMessage = nil
-      model.errorMessage = "Notification permission failed: \(error.localizedDescription)"
+      print("Notification permission unavailable: \(error.localizedDescription)")
     }
   }
 
