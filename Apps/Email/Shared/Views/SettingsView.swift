@@ -3,6 +3,11 @@ import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 struct SettingsView: View {
   @State private var selectedTab: SettingsTab = .general
@@ -66,6 +71,10 @@ private struct GeneralSettingsPane: View {
           }
         }
         .pickerStyle(.segmented)
+      }
+
+      Section("App Icon") {
+        AppIconSettingsSection()
       }
 
       #if os(macOS)
@@ -176,6 +185,197 @@ private struct GeneralSettingsPane: View {
     return version
   }
   #endif
+}
+
+private struct AppIconSettingsSection: View {
+  @State private var selectedIcon = AppIconController.currentPreference()
+  @State private var isChanging = false
+  @State private var errorMessage: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 12)], alignment: .leading, spacing: 12) {
+        ForEach(AppIconPreference.allCases) { preference in
+          AppIconChoiceButton(
+            preference: preference,
+            isSelected: selectedIcon == preference,
+            isChanging: isChanging
+          ) {
+            select(preference)
+          }
+        }
+      }
+
+      if let errorMessage {
+        Text(errorMessage)
+          .font(.caption)
+          .foregroundStyle(.red)
+      }
+
+      #if os(macOS)
+      Text("The selected icon is applied to the Dock while Email is running.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      #endif
+    }
+    .padding(.vertical, 4)
+    .task {
+      selectedIcon = AppIconController.currentPreference()
+    }
+  }
+
+  private func select(_ preference: AppIconPreference) {
+    guard selectedIcon != preference, !isChanging else { return }
+    isChanging = true
+    errorMessage = nil
+
+    Task {
+      do {
+        try await AppIconController.setIcon(preference)
+        selectedIcon = preference
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+      isChanging = false
+    }
+  }
+}
+
+private struct AppIconChoiceButton: View {
+  var preference: AppIconPreference
+  var isSelected: Bool
+  var isChanging: Bool
+  var action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      VStack(alignment: .leading, spacing: 10) {
+        Image(preference.previewAssetName)
+          .resizable()
+          .aspectRatio(1, contentMode: .fit)
+          .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+          .shadow(color: .black.opacity(0.10), radius: 8, y: 4)
+
+        HStack(spacing: 8) {
+          Text(preference.title)
+            .font(.headline)
+            .lineLimit(1)
+
+          Spacer(minLength: 8)
+
+          Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(isSelected ? .green : .secondary)
+        }
+      }
+      .padding(10)
+      .background(.quaternary.opacity(isSelected ? 0.70 : 0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .strokeBorder(isSelected ? Color.primary.opacity(0.18) : Color.secondary.opacity(0.12), lineWidth: 1)
+      }
+    }
+    .buttonStyle(.plain)
+    .disabled(isChanging)
+    .accessibilityLabel(preference.accessibilityLabel)
+  }
+}
+
+enum AppIconPreference: String, CaseIterable, Identifiable {
+  case closed
+  case open
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .closed: "Closed"
+    case .open: "Open"
+    }
+  }
+
+  var accessibilityLabel: String {
+    switch self {
+    case .closed: "Closed envelope app icon"
+    case .open: "Open envelope app icon"
+    }
+  }
+
+  var previewAssetName: String {
+    switch self {
+    case .closed: "AppIconPreviewClosed"
+    case .open: "AppIconPreviewOpen"
+    }
+  }
+
+  var alternateIconName: String? {
+    switch self {
+    case .closed: nil
+    case .open: "AppIconOpen"
+    }
+  }
+}
+
+@MainActor
+enum AppIconController {
+  static let userDefaultsKey = "email.appIconPreference"
+
+  static func currentPreference() -> AppIconPreference {
+    #if os(iOS)
+    if UIApplication.shared.alternateIconName == AppIconPreference.open.alternateIconName {
+      return .open
+    }
+    #endif
+
+    let rawValue = UserDefaults.standard.string(forKey: userDefaultsKey)
+    return rawValue.flatMap(AppIconPreference.init(rawValue:)) ?? .closed
+  }
+
+  static func applyStoredIconOnLaunch() {
+    #if os(macOS)
+    applyMacIcon(currentPreference())
+    #endif
+  }
+
+  static func setIcon(_ preference: AppIconPreference) async throws {
+    #if os(iOS)
+    guard UIApplication.shared.supportsAlternateIcons else {
+      throw AppIconError.unsupported
+    }
+
+    if UIApplication.shared.alternateIconName != preference.alternateIconName {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        UIApplication.shared.setAlternateIconName(preference.alternateIconName) { error in
+          if let error {
+            continuation.resume(throwing: error)
+          } else {
+            continuation.resume()
+          }
+        }
+      }
+    }
+    #elseif os(macOS)
+    applyMacIcon(preference)
+    #endif
+
+    UserDefaults.standard.set(preference.rawValue, forKey: userDefaultsKey)
+  }
+
+  #if os(macOS)
+  private static func applyMacIcon(_ preference: AppIconPreference) {
+    NSApplication.shared.applicationIconImage = NSImage(named: preference.previewAssetName)
+  }
+  #endif
+}
+
+private enum AppIconError: LocalizedError {
+  case unsupported
+
+  var errorDescription: String? {
+    switch self {
+    case .unsupported:
+      "This device does not support changing the app icon."
+    }
+  }
 }
 
 private struct AccountsSettingsPane: View {

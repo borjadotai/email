@@ -20,8 +20,10 @@ const SYSTEM_LABELS = [
   ["Later", "purple"]
 ];
 
-const SEARCH_INDEX_VERSION = "2";
+const SEARCH_INDEX_VERSION = "3";
 const FILTER_CACHE_LIMIT = 5_000;
+const SEARCHABLE_BODY_TEXT_LIMIT = 250_000;
+const HTML_SEARCH_INPUT_LIMIT = 750_000;
 
 export class MailStore {
   constructor({ databasePath = ":memory:", seedDemo = false, filterQueryPlanner = defaultFilterQueryPlan } = {}) {
@@ -220,6 +222,11 @@ export class MailStore {
         snippet,
         body_text,
         tokenize='porter unicode61'
+      );
+
+      CREATE TABLE IF NOT EXISTS email_fts_rows (
+        email_id TEXT PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE,
+        fts_rowid INTEGER NOT NULL UNIQUE
       );
 
       CREATE INDEX IF NOT EXISTS idx_emails_account_received ON emails(account_id, received_at DESC);
@@ -2009,6 +2016,7 @@ export class MailStore {
     const existing = providerUIDMatch ?? rfcMessageIDMatch ?? stableHeaderMatch;
 
       if (existing) {
+        const existingFTS = this.emailFTSSnapshot(existing.id);
         this.db.prepare(`
         UPDATE emails
         SET mailbox_id = ?, provider_uid = ?, thread_id = ?, sender_name = ?, sender_email = ?,
@@ -2043,8 +2051,10 @@ export class MailStore {
         resolvedEmail.hasAttachments ? 1 : 0,
         existing.id
       );
-      this.db.prepare("DELETE FROM email_fts WHERE email_id = ?").run(existing.id);
-      this.insertEmailFTS({ ...resolvedEmail, id: existing.id });
+      if (emailFTSInputChanged(existingFTS, resolvedEmail)) {
+        this.deleteEmailFTS(existing.id);
+        this.insertEmailFTS({ ...resolvedEmail, id: existing.id });
+      }
       if (Array.isArray(resolvedEmail.attachments)) {
         this.replaceEmailAttachments(existing.id, resolvedEmail.attachments);
       }
@@ -2059,7 +2069,7 @@ export class MailStore {
   }
 
   insertEmailFTS(email) {
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT INTO email_fts (email_id, account_id, subject, sender_name, sender_email, recipients, snippet, body_text)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -2072,6 +2082,31 @@ export class MailStore {
       email.snippet,
       searchableBodyText(email)
     );
+    const rowid = Number(result.lastInsertRowid ?? this.db.prepare("SELECT last_insert_rowid() AS rowid").get().rowid);
+    if (Number.isInteger(rowid) && rowid > 0) {
+      this.db.prepare("INSERT OR REPLACE INTO email_fts_rows (email_id, fts_rowid) VALUES (?, ?)").run(email.id, rowid);
+    }
+  }
+
+  deleteEmailFTS(emailId) {
+    const mapped = this.db.prepare("SELECT fts_rowid AS ftsRowID FROM email_fts_rows WHERE email_id = ?").get(emailId);
+    if (mapped?.ftsRowID) {
+      this.db.prepare("DELETE FROM email_fts WHERE rowid = ?").run(mapped.ftsRowID);
+      this.db.prepare("DELETE FROM email_fts_rows WHERE email_id = ?").run(emailId);
+      return;
+    }
+
+    this.db.prepare("DELETE FROM email_fts WHERE email_id = ?").run(emailId);
+  }
+
+  emailFTSSnapshot(emailId) {
+    return this.db.prepare(`
+      SELECT subject, sender_name AS senderName, sender_email AS senderEmail,
+             recipients_json AS recipientsJSON, snippet, body_text AS bodyText,
+             body_html AS bodyHTML
+      FROM emails
+      WHERE id = ?
+    `).get(emailId);
   }
 
   ensureSearchIndexVersion() {
@@ -2087,8 +2122,9 @@ export class MailStore {
              sender_email AS senderEmail, recipients_json AS recipientsJSON,
              snippet, body_text AS bodyText, body_html AS bodyHTML
       FROM emails
-    `).all();
+    `).iterate();
 
+    this.db.prepare("DELETE FROM email_fts_rows").run();
     this.db.prepare("DELETE FROM email_fts").run();
     for (const row of rows) {
       this.insertEmailFTS({
@@ -2531,22 +2567,129 @@ function normalizeAddressList(value) {
 }
 
 function searchableBodyText(email) {
-  return [
+  return limitSearchText([
     optionalString(email.bodyText),
     htmlToSearchText(email.bodyHTML)
-  ].filter(Boolean).join("\n");
+  ].filter(Boolean).join("\n"));
+}
+
+function emailFTSInputChanged(existing, next) {
+  if (!existing) return true;
+  return String(existing.subject ?? "") !== String(next.subject ?? "")
+    || String(existing.senderName ?? "") !== String(next.senderName ?? "")
+    || String(existing.senderEmail ?? "") !== String(next.senderEmail ?? "")
+    || normalizeAddressList(parseJSON(existing.recipientsJSON, [])).join(" ") !== normalizeAddressList(next.recipients).join(" ")
+    || String(existing.snippet ?? "") !== String(next.snippet ?? "")
+    || String(existing.bodyText ?? "") !== String(next.bodyText ?? "")
+    || String(existing.bodyHTML ?? "") !== String(next.bodyHTML ?? "");
 }
 
 function htmlToSearchText(value) {
   if (typeof value !== "string" || !value.trim()) return "";
-  return decodeHTMLEntities(
-    value
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
-      .replace(/<[^>]+>/gu, " ")
-      .replace(/\s+/gu, " ")
-      .trim()
-  );
+  const source = value.slice(0, HTML_SEARCH_INPUT_LIMIT);
+  let output = "";
+  let pendingSpace = false;
+  let suppressedTag = null;
+
+  function append(character) {
+    if (output.length >= SEARCHABLE_BODY_TEXT_LIMIT) return;
+    if (isHTMLWhitespace(character)) {
+      pendingSpace = output.length > 0;
+      return;
+    }
+    if (pendingSpace && output.length < SEARCHABLE_BODY_TEXT_LIMIT) {
+      output += " ";
+    }
+    pendingSpace = false;
+    output += character;
+  }
+
+  for (let index = 0; index < source.length && output.length < SEARCHABLE_BODY_TEXT_LIMIT; index += 1) {
+    const character = source[index];
+    if (character !== "<") {
+      if (!suppressedTag) append(character);
+      continue;
+    }
+
+    const tagEnd = source.indexOf(">", index + 1);
+    if (tagEnd === -1) {
+      if (!suppressedTag) append(" ");
+      break;
+    }
+
+    const tagText = source.slice(index + 1, tagEnd);
+    const tagName = htmlTagName(tagText);
+    const closing = isClosingHTMLTag(tagText);
+    if (suppressedTag) {
+      if (closing && tagName === suppressedTag) {
+        suppressedTag = null;
+      }
+      index = tagEnd;
+      continue;
+    }
+
+    if (!closing && (tagName === "script" || tagName === "style")) {
+      suppressedTag = tagName;
+      index = tagEnd;
+      continue;
+    }
+
+    append(" ");
+    index = tagEnd;
+  }
+
+  return decodeHTMLEntities(output.trim());
+}
+
+function limitSearchText(value) {
+  return value.length > SEARCHABLE_BODY_TEXT_LIMIT
+    ? value.slice(0, SEARCHABLE_BODY_TEXT_LIMIT)
+    : value;
+}
+
+function isHTMLWhitespace(character) {
+  return character === " "
+    || character === "\n"
+    || character === "\r"
+    || character === "\t"
+    || character === "\f"
+    || character === "\v"
+    || character === "\u00a0";
+}
+
+function isClosingHTMLTag(tagText) {
+  for (let index = 0; index < tagText.length; index += 1) {
+    const character = tagText[index];
+    if (isHTMLWhitespace(character)) continue;
+    return character === "/";
+  }
+  return false;
+}
+
+function htmlTagName(tagText) {
+  let index = 0;
+  while (index < tagText.length) {
+    const character = tagText[index];
+    if (isHTMLWhitespace(character) || character === "/") {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+
+  let name = "";
+  while (index < tagText.length) {
+    const character = tagText[index].toLowerCase();
+    const code = character.charCodeAt(0);
+    const isNameCharacter = (code >= 97 && code <= 122)
+      || (code >= 48 && code <= 57)
+      || character === ":"
+      || character === "-";
+    if (!isNameCharacter) break;
+    name += character;
+    index += 1;
+  }
+  return name;
 }
 
 function decodeHTMLEntities(value) {

@@ -115,6 +115,45 @@ test("search indexes HTML body text and rebuilds stale indexes", () => {
   }
 });
 
+test("search indexing handles very large HTML bodies", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const largeHTML = [
+      "<html><head><style>",
+      ".hidden{display:none}",
+      "</style></head><body><p>archiveNeedle invoice body</p>",
+      "<div>",
+      "<span>decorative wrapper</span>".repeat(40_000),
+      "</div></body></html>"
+    ].join("");
+
+    const saved = store.upsertProviderEmail(testProviderEmail({
+      id: "large-html-body",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-large-html-search",
+      senderName: "Large HTML Sender",
+      senderEmail: "large-html@example.com",
+      subject: "Large HTML body",
+      bodyText: "",
+      bodyHTML: largeHTML
+    }));
+
+    assert.equal(store.listEmails({ q: "archiveNeedle" })[0].id, saved.id);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("creates an account, sends a tracked message, and records opens", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

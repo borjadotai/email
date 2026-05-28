@@ -19,6 +19,7 @@ struct EmailApp: App {
         .environment(model)
         .preferredColorScheme(model.colorScheme)
         .task {
+          AppIconController.applyStoredIconOnLaunch()
           await PushNotificationController.shared.start(model: model)
         }
         #if os(macOS)
