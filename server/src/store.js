@@ -225,8 +225,14 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_emails_account_received ON emails(account_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_mailbox_received ON emails(mailbox_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_tracking ON emails(tracking_id);
+      CREATE INDEX IF NOT EXISTS idx_emails_account_thread ON emails(account_id, thread_id)
+        WHERE thread_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_emails_account_rfc_message_id ON emails(account_id, rfc_message_id)
         WHERE rfc_message_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_emails_rfc_message_id ON emails(rfc_message_id)
+        WHERE rfc_message_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_emails_in_reply_to ON emails(in_reply_to)
+        WHERE in_reply_to IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
       CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
       CREATE INDEX IF NOT EXISTS idx_saved_filters_updated ON saved_filters(updated_at DESC);
@@ -1352,20 +1358,13 @@ export class MailStore {
       anchor.inReplyTo,
       ...anchor.references
     ]);
+    const messageKeyPlaceholders = messageKeys.map(() => "?").join(", ");
     const rfcRows = messageKeys.length ? this.db.prepare(`
-      WITH keys(value) AS (
-        SELECT value FROM json_each(?)
-      )
       SELECT DISTINCT e.id
       FROM emails e
-      WHERE e.rfc_message_id IN (SELECT value FROM keys)
-         OR e.in_reply_to IN (SELECT value FROM keys)
-         OR EXISTS (
-           SELECT 1
-           FROM json_each(e.references_json) refs
-           JOIN keys ON keys.value = refs.value
-         )
-    `).all(JSON.stringify(messageKeys)) : [];
+      WHERE e.rfc_message_id IN (${messageKeyPlaceholders})
+         OR e.in_reply_to IN (${messageKeyPlaceholders})
+    `).all(...messageKeys, ...messageKeys) : [];
 
     const ids = uniqueStrings([...threadRows, ...rfcRows].map(row => row.id));
     if (ids.length === 0) {

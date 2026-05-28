@@ -67,7 +67,7 @@ test("configured public base URL wins for Gmail redirect URI", async () => {
       },
       baseURL: "http://127.0.0.1:7331"
     });
-    const publicBaseURL = "https://space.tailb90a7f.ts.net";
+    const publicBaseURL = "https://space.tailb90a7f.ts.net:8443";
     server = createServer({ store, providers, publicBaseURL }).server;
     await listen(server, 0);
     const baseURL = `http://127.0.0.1:${server.address().port}`;

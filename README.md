@@ -127,19 +127,23 @@ URL. On the server Mac, proxy the local email server through the device's
 tailnet HTTPS name:
 
 ```sh
-tailscale serve --bg --https=443 7331
+tailscale serve --bg --https=8443 7331
 ```
 
-If port `443` is already serving another local app, use another HTTPS port such
-as `8443` and include that port in the URL below.
+This repo's checked-in macOS and iOS defaults use this Mac's current private
+Tailscale endpoint:
+
+```text
+https://space.tailb90a7f.ts.net:8443
+```
 
 Then set the server `.env` to the same HTTPS base URL and register the exact
 Google callback:
 
 ```sh
-EMAIL_PUBLIC_BASE_URL=https://your-mac.your-tailnet.ts.net
+EMAIL_PUBLIC_BASE_URL=https://space.tailb90a7f.ts.net:8443
 # Google authorized redirect URI:
-# https://your-mac.your-tailnet.ts.net/api/auth/gmail/callback
+# https://space.tailb90a7f.ts.net:8443/api/auth/gmail/callback
 ```
 
 Client devices must be signed into the same tailnet and use that Tailscale URL
@@ -284,7 +288,7 @@ The packaged app bundles the local Node server under `Email.app/Contents/Resourc
 Provider secrets should not be bundled into the app. For builds that should use a shared backend, bake only the backend URL into the app:
 
 ```sh
-EMAIL_RELEASE_SERVER_URL=http://your-server:7331 npm run package:mac
+EMAIL_RELEASE_SERVER_URL=https://space.tailb90a7f.ts.net:8443 npm run package:mac
 ```
 
 Run the backend separately with the provider secrets in its server environment. Public direct-download distribution requires Developer ID signing and notarization:

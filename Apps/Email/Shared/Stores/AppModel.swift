@@ -1006,7 +1006,7 @@ private enum Defaults {
   static let archiveUndoDurationRange = 1...15
 
   static var defaultServerURL: String {
-    Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "http://127.0.0.1:7331"
+    Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "https://space.tailb90a7f.ts.net:8443"
   }
 
   static func normalizedServerURLString(_ value: String) -> String {
