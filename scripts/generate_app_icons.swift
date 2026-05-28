@@ -10,9 +10,15 @@ enum IconStyle: String {
   case open
 }
 
+enum IconPlatform {
+  case iOS
+  case macOS
+}
+
 struct IconSlot {
   var filename: String
   var pixels: Int
+  var platform: IconPlatform = .iOS
 }
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -41,20 +47,20 @@ let defaultSlots = [
   IconSlot(filename: "Icon-iPad-76@2x.png", pixels: 152),
   IconSlot(filename: "Icon-iPad-83.5@2x.png", pixels: 167),
   IconSlot(filename: "Icon-AppStore.png", pixels: 1024),
-  IconSlot(filename: "Icon-Mac-16.png", pixels: 16),
-  IconSlot(filename: "Icon-Mac-16@2x.png", pixels: 32),
-  IconSlot(filename: "Icon-Mac-32.png", pixels: 32),
-  IconSlot(filename: "Icon-Mac-32@2x.png", pixels: 64),
-  IconSlot(filename: "Icon-Mac-128.png", pixels: 128),
-  IconSlot(filename: "Icon-Mac-128@2x.png", pixels: 256),
-  IconSlot(filename: "Icon-Mac-256.png", pixels: 256),
-  IconSlot(filename: "Icon-Mac-256@2x.png", pixels: 512),
-  IconSlot(filename: "Icon-Mac-512.png", pixels: 512),
-  IconSlot(filename: "Icon-Mac-512@2x.png", pixels: 1024)
+  IconSlot(filename: "Icon-Mac-16.png", pixels: 16, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-16@2x.png", pixels: 32, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-32.png", pixels: 32, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-32@2x.png", pixels: 64, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-128.png", pixels: 128, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-128@2x.png", pixels: 256, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-256.png", pixels: 256, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-256@2x.png", pixels: 512, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-512.png", pixels: 512, platform: .macOS),
+  IconSlot(filename: "Icon-Mac-512@2x.png", pixels: 1024, platform: .macOS)
 ]
 
 let openSlots = defaultSlots.map { slot in
-  IconSlot(filename: slot.filename.replacingOccurrences(of: "Icon-", with: "Icon-Open-"), pixels: slot.pixels)
+  IconSlot(filename: slot.filename.replacingOccurrences(of: "Icon-", with: "Icon-Open-"), pixels: slot.pixels, platform: slot.platform)
 }
 
 try FileManager.default.createDirectory(at: defaultIconURL, withIntermediateDirectories: true)
@@ -63,27 +69,28 @@ try FileManager.default.createDirectory(at: defaultPreviewURL, withIntermediateD
 try FileManager.default.createDirectory(at: openPreviewURL, withIntermediateDirectories: true)
 
 for slot in defaultSlots {
-  try writeIcon(style: .closed, pixels: slot.pixels, to: defaultIconURL.appendingPathComponent(slot.filename))
+  try writeIcon(style: .closed, pixels: slot.pixels, platform: slot.platform, to: defaultIconURL.appendingPathComponent(slot.filename))
 }
 
 for slot in openSlots {
-  try writeIcon(style: .open, pixels: slot.pixels, to: openIconURL.appendingPathComponent(slot.filename))
+  try writeIcon(style: .open, pixels: slot.pixels, platform: slot.platform, to: openIconURL.appendingPathComponent(slot.filename))
 }
 
-try writeIcon(style: .closed, pixels: 256, to: defaultPreviewURL.appendingPathComponent("preview.png"))
-try writeIcon(style: .closed, pixels: 512, to: defaultPreviewURL.appendingPathComponent("preview@2x.png"))
-try writeIcon(style: .open, pixels: 256, to: openPreviewURL.appendingPathComponent("preview.png"))
-try writeIcon(style: .open, pixels: 512, to: openPreviewURL.appendingPathComponent("preview@2x.png"))
+try writeIcon(style: .closed, pixels: 256, platform: .iOS, to: defaultPreviewURL.appendingPathComponent("preview.png"))
+try writeIcon(style: .closed, pixels: 512, platform: .iOS, to: defaultPreviewURL.appendingPathComponent("preview@2x.png"))
+try writeIcon(style: .open, pixels: 256, platform: .iOS, to: openPreviewURL.appendingPathComponent("preview.png"))
+try writeIcon(style: .open, pixels: 512, platform: .iOS, to: openPreviewURL.appendingPathComponent("preview@2x.png"))
 
 try contentsJSON(defaultIconURL, filenames: defaultSlots.map(\.filename))
 try contentsJSON(openIconURL, filenames: openSlots.map(\.filename))
 try previewContentsJSON(defaultPreviewURL)
 try previewContentsJSON(openPreviewURL)
 
-func writeIcon(style: IconStyle, pixels: Int, to url: URL) throws {
+func writeIcon(style: IconStyle, pixels: Int, platform: IconPlatform, to url: URL) throws {
   let bytesPerRow = pixels * 4
   var bitmap = Data(repeating: 0, count: bytesPerRow * pixels)
   let image = try bitmap.withUnsafeMutableBytes { buffer -> CGImage in
+    let alphaInfo: CGImageAlphaInfo = platform == .macOS ? .premultipliedLast : .noneSkipLast
     guard
       let base = buffer.baseAddress,
       let context = CGContext(
@@ -93,7 +100,7 @@ func writeIcon(style: IconStyle, pixels: Int, to url: URL) throws {
         bitsPerComponent: 8,
         bytesPerRow: bytesPerRow,
         space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        bitmapInfo: alphaInfo.rawValue
       )
     else {
       throw NSError(domain: "IconGenerator", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not create bitmap context."])
@@ -102,7 +109,7 @@ func writeIcon(style: IconStyle, pixels: Int, to url: URL) throws {
     let graphicsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = graphicsContext
-    drawIcon(style: style, in: CGRect(x: 0, y: 0, width: pixels, height: pixels), context: context)
+    drawIcon(style: style, platform: platform, in: CGRect(x: 0, y: 0, width: pixels, height: pixels), context: context)
     NSGraphicsContext.restoreGraphicsState()
 
     guard let image = context.makeImage() else {
@@ -122,36 +129,79 @@ func writeIcon(style: IconStyle, pixels: Int, to url: URL) throws {
   try (data as Data).write(to: url)
 }
 
-func drawIcon(style: IconStyle, in rect: CGRect, context: CGContext) {
+func drawIcon(style: IconStyle, platform: IconPlatform, in rect: CGRect, context: CGContext) {
   context.setShouldAntialias(true)
   context.setAllowsAntialiasing(true)
 
-  NSColor.white.setFill()
-  NSBezierPath(rect: rect).fill()
+  let contentRect = drawIconSurface(platform: platform, in: rect)
 
   switch style {
   case .closed:
-    drawClosedEnvelope(in: rect)
+    drawClosedEnvelope(in: contentRect)
   case .open:
-    drawOpenEnvelope(in: rect)
+    drawOpenEnvelope(in: contentRect)
   }
+}
+
+@discardableResult
+func drawIconSurface(platform: IconPlatform, in rect: CGRect) -> CGRect {
+  let side = min(rect.width, rect.height)
+  let lineWidth = max(1, side * 0.006)
+  let surfaceRect: CGRect
+  let radius: CGFloat
+
+  switch platform {
+  case .iOS:
+    NSColor(calibratedWhite: 1, alpha: 1).setFill()
+    NSBezierPath(rect: rect).fill()
+    surfaceRect = rect.insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5)
+    radius = side * 0.218
+  case .macOS:
+    surfaceRect = rect.insetBy(dx: side * 0.055, dy: side * 0.055)
+    radius = side * 0.205
+  }
+
+  let surface = NSBezierPath(roundedRect: surfaceRect, xRadius: radius, yRadius: radius)
+  let fillGradient = NSGradient(colors: [
+    NSColor(calibratedWhite: 1, alpha: 1),
+    NSColor(calibratedWhite: 0.965, alpha: 1)
+  ])!
+  fill(surface, with: fillGradient, angle: 90)
+
+  NSColor(calibratedWhite: 0.84, alpha: 1).setStroke()
+  surface.lineWidth = lineWidth
+  surface.stroke()
+
+  let innerHighlight = NSBezierPath(roundedRect: surfaceRect.insetBy(dx: lineWidth * 2, dy: lineWidth * 2), xRadius: max(0, radius - lineWidth * 2), yRadius: max(0, radius - lineWidth * 2))
+  NSColor(calibratedWhite: 1, alpha: 0.55).setStroke()
+  innerHighlight.lineWidth = max(1, lineWidth * 0.5)
+  innerHighlight.stroke()
+
+  return surfaceRect
 }
 
 func drawClosedEnvelope(in rect: CGRect) {
   let side = min(rect.width, rect.height)
   let envelope = CGRect(
-    x: rect.midX - side * 0.32,
-    y: rect.midY - side * 0.155,
-    width: side * 0.64,
-    height: side * 0.31
+    x: rect.midX - side * 0.34,
+    y: rect.midY - side * 0.165,
+    width: side * 0.68,
+    height: side * 0.33
   )
   let radius = side * 0.035
   let lineWidth = max(1, side * 0.018)
 
-  NSColor(calibratedWhite: 0.025, alpha: 1).setFill()
-  NSBezierPath(roundedRect: envelope, xRadius: radius, yRadius: radius).fill()
+  let body = NSBezierPath(roundedRect: envelope, xRadius: radius, yRadius: radius)
+  fill(body, with: envelopeGradient(), angle: 90)
 
-  let detailColor = NSColor(calibratedWhite: 0.23, alpha: 1)
+  let topFlap = NSBezierPath()
+  topFlap.move(to: CGPoint(x: envelope.minX + envelope.width * 0.035, y: envelope.maxY - envelope.height * 0.04))
+  topFlap.line(to: CGPoint(x: envelope.maxX - envelope.width * 0.035, y: envelope.maxY - envelope.height * 0.04))
+  topFlap.line(to: CGPoint(x: envelope.midX, y: envelope.minY + envelope.height * 0.47))
+  topFlap.close()
+  fill(topFlap, with: flapGradient(), angle: 90)
+
+  let detailColor = NSColor(calibratedWhite: 0.31, alpha: 1)
   detailColor.setStroke()
   let flap = NSBezierPath()
   flap.lineWidth = lineWidth
@@ -175,25 +225,25 @@ func drawClosedEnvelope(in rect: CGRect) {
 func drawOpenEnvelope(in rect: CGRect) {
   let side = min(rect.width, rect.height)
   let body = CGRect(
-    x: rect.midX - side * 0.32,
-    y: rect.midY - side * 0.21,
-    width: side * 0.64,
+    x: rect.midX - side * 0.34,
+    y: rect.midY - side * 0.25,
+    width: side * 0.68,
     height: side * 0.30
   )
   let radius = side * 0.032
   let lineWidth = max(1, side * 0.015)
 
-  NSColor(calibratedWhite: 0.025, alpha: 1).setFill()
   let backFlap = NSBezierPath()
   backFlap.move(to: CGPoint(x: body.minX + body.width * 0.06, y: body.maxY - body.height * 0.03))
-  backFlap.line(to: CGPoint(x: body.midX, y: body.maxY + side * 0.24))
+  backFlap.line(to: CGPoint(x: body.midX, y: body.maxY + side * 0.20))
   backFlap.line(to: CGPoint(x: body.maxX - body.width * 0.06, y: body.maxY - body.height * 0.03))
   backFlap.close()
-  backFlap.fill()
+  fill(backFlap, with: flapGradient(), angle: 90)
 
-  NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius).fill()
+  let bodyPath = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
+  fill(bodyPath, with: envelopeGradient(), angle: 90)
 
-  let detailColor = NSColor(calibratedWhite: 0.23, alpha: 1)
+  let detailColor = NSColor(calibratedWhite: 0.31, alpha: 1)
   detailColor.setStroke()
   let frontFold = NSBezierPath()
   frontFold.lineWidth = lineWidth
@@ -208,9 +258,30 @@ func drawOpenEnvelope(in rect: CGRect) {
   openLip.lineWidth = max(1, side * 0.012)
   openLip.lineCapStyle = .round
   openLip.move(to: CGPoint(x: body.minX + body.width * 0.07, y: body.maxY - body.height * 0.08))
-  openLip.line(to: CGPoint(x: body.midX, y: body.maxY + side * 0.17))
+  openLip.line(to: CGPoint(x: body.midX, y: body.maxY + side * 0.14))
   openLip.line(to: CGPoint(x: body.maxX - body.width * 0.07, y: body.maxY - body.height * 0.08))
   openLip.stroke()
+}
+
+func envelopeGradient() -> NSGradient {
+  NSGradient(colors: [
+    NSColor(calibratedWhite: 0.19, alpha: 1),
+    NSColor(calibratedWhite: 0.035, alpha: 1)
+  ])!
+}
+
+func flapGradient() -> NSGradient {
+  NSGradient(colors: [
+    NSColor(calibratedWhite: 0.27, alpha: 1),
+    NSColor(calibratedWhite: 0.055, alpha: 1)
+  ])!
+}
+
+func fill(_ path: NSBezierPath, with gradient: NSGradient, angle: CGFloat) {
+  NSGraphicsContext.saveGraphicsState()
+  path.addClip()
+  gradient.draw(in: path.bounds, angle: angle)
+  NSGraphicsContext.restoreGraphicsState()
 }
 
 func contentsJSON(_ url: URL, filenames: [String]) throws {
