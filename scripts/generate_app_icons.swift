@@ -21,7 +21,6 @@ let defaultIconURL = assetsURL.appendingPathComponent("AppIcon.appiconset", isDi
 let openIconURL = assetsURL.appendingPathComponent("AppIconOpen.appiconset", isDirectory: true)
 let defaultPreviewURL = assetsURL.appendingPathComponent("AppIconPreviewClosed.imageset", isDirectory: true)
 let openPreviewURL = assetsURL.appendingPathComponent("AppIconPreviewOpen.imageset", isDirectory: true)
-let sourceImageURL = root.appendingPathComponent("Apps/Email/Resources/IconSources/email-icon-concepts.png")
 
 let defaultSlots = [
   IconSlot(filename: "Icon-iPhone-20@2x.png", pixels: 40),
@@ -62,8 +61,6 @@ try FileManager.default.createDirectory(at: defaultIconURL, withIntermediateDire
 try FileManager.default.createDirectory(at: openIconURL, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(at: defaultPreviewURL, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(at: openPreviewURL, withIntermediateDirectories: true)
-
-let sourceImage = try loadSourceImage(from: sourceImageURL)
 
 for slot in defaultSlots {
   try writeIcon(style: .closed, pixels: slot.pixels, to: defaultIconURL.appendingPathComponent(slot.filename))
@@ -125,23 +122,95 @@ func writeIcon(style: IconStyle, pixels: Int, to url: URL) throws {
   try (data as Data).write(to: url)
 }
 
-func loadSourceImage(from url: URL) throws -> CGImage {
-  guard
-    let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-    let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
-  else {
-    throw NSError(domain: "IconGenerator", code: 5, userInfo: [NSLocalizedDescriptionKey: "Could not read source image at \(url.path)."])
+func drawIcon(style: IconStyle, in rect: CGRect, context: CGContext) {
+  context.setShouldAntialias(true)
+  context.setAllowsAntialiasing(true)
+
+  NSColor.white.setFill()
+  NSBezierPath(rect: rect).fill()
+
+  switch style {
+  case .closed:
+    drawClosedEnvelope(in: rect)
+  case .open:
+    drawOpenEnvelope(in: rect)
   }
-  return image
 }
 
-func drawIcon(style: IconStyle, in rect: CGRect, context: CGContext) {
-  let side = sourceImage.width
-  let cropY = style == .open ? 0 : max(0, sourceImage.height - side)
-  let cropRect = CGRect(x: 0, y: cropY, width: side, height: side)
-  guard let cropped = sourceImage.cropping(to: cropRect) else { return }
-  context.interpolationQuality = .high
-  context.draw(cropped, in: rect)
+func drawClosedEnvelope(in rect: CGRect) {
+  let side = min(rect.width, rect.height)
+  let envelope = CGRect(
+    x: rect.midX - side * 0.32,
+    y: rect.midY - side * 0.155,
+    width: side * 0.64,
+    height: side * 0.31
+  )
+  let radius = side * 0.035
+  let lineWidth = max(1, side * 0.018)
+
+  NSColor(calibratedWhite: 0.025, alpha: 1).setFill()
+  NSBezierPath(roundedRect: envelope, xRadius: radius, yRadius: radius).fill()
+
+  let detailColor = NSColor(calibratedWhite: 0.23, alpha: 1)
+  detailColor.setStroke()
+  let flap = NSBezierPath()
+  flap.lineWidth = lineWidth
+  flap.lineCapStyle = .round
+  flap.lineJoinStyle = .round
+  flap.move(to: CGPoint(x: envelope.minX + envelope.width * 0.035, y: envelope.maxY - envelope.height * 0.08))
+  flap.line(to: CGPoint(x: envelope.midX, y: envelope.minY + envelope.height * 0.48))
+  flap.line(to: CGPoint(x: envelope.maxX - envelope.width * 0.035, y: envelope.maxY - envelope.height * 0.08))
+  flap.stroke()
+
+  let lowerFold = NSBezierPath()
+  lowerFold.lineWidth = max(1, side * 0.012)
+  lowerFold.lineCapStyle = .round
+  lowerFold.lineJoinStyle = .round
+  lowerFold.move(to: CGPoint(x: envelope.minX + envelope.width * 0.045, y: envelope.minY + envelope.height * 0.11))
+  lowerFold.line(to: CGPoint(x: envelope.midX, y: envelope.minY + envelope.height * 0.49))
+  lowerFold.line(to: CGPoint(x: envelope.maxX - envelope.width * 0.045, y: envelope.minY + envelope.height * 0.11))
+  lowerFold.stroke()
+}
+
+func drawOpenEnvelope(in rect: CGRect) {
+  let side = min(rect.width, rect.height)
+  let body = CGRect(
+    x: rect.midX - side * 0.32,
+    y: rect.midY - side * 0.21,
+    width: side * 0.64,
+    height: side * 0.30
+  )
+  let radius = side * 0.032
+  let lineWidth = max(1, side * 0.015)
+
+  NSColor(calibratedWhite: 0.025, alpha: 1).setFill()
+  let backFlap = NSBezierPath()
+  backFlap.move(to: CGPoint(x: body.minX + body.width * 0.06, y: body.maxY - body.height * 0.03))
+  backFlap.line(to: CGPoint(x: body.midX, y: body.maxY + side * 0.24))
+  backFlap.line(to: CGPoint(x: body.maxX - body.width * 0.06, y: body.maxY - body.height * 0.03))
+  backFlap.close()
+  backFlap.fill()
+
+  NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius).fill()
+
+  let detailColor = NSColor(calibratedWhite: 0.23, alpha: 1)
+  detailColor.setStroke()
+  let frontFold = NSBezierPath()
+  frontFold.lineWidth = lineWidth
+  frontFold.lineCapStyle = .round
+  frontFold.lineJoinStyle = .round
+  frontFold.move(to: CGPoint(x: body.minX + body.width * 0.045, y: body.minY + body.height * 0.12))
+  frontFold.line(to: CGPoint(x: body.midX, y: body.minY + body.height * 0.56))
+  frontFold.line(to: CGPoint(x: body.maxX - body.width * 0.045, y: body.minY + body.height * 0.12))
+  frontFold.stroke()
+
+  let openLip = NSBezierPath()
+  openLip.lineWidth = max(1, side * 0.012)
+  openLip.lineCapStyle = .round
+  openLip.move(to: CGPoint(x: body.minX + body.width * 0.07, y: body.maxY - body.height * 0.08))
+  openLip.line(to: CGPoint(x: body.midX, y: body.maxY + side * 0.17))
+  openLip.line(to: CGPoint(x: body.maxX - body.width * 0.07, y: body.maxY - body.height * 0.08))
+  openLip.stroke()
 }
 
 func contentsJSON(_ url: URL, filenames: [String]) throws {
