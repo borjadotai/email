@@ -13,6 +13,11 @@ const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send"
 ];
 const HISTORY_BACKFILL_LIMIT = 500;
+const GMAIL_SYSTEM_FOLDER_LABELS = [
+  { labelId: "SPAM", role: "spam" },
+  { labelId: "TRASH", role: "trash" }
+];
+const ICLOUD_SYNCED_SYSTEM_ROLES = new Set(["drafts", "spam", "trash"]);
 
 export class ProviderService {
   constructor({ store, secretStore, config, baseURL }) {
@@ -199,6 +204,48 @@ export class ProviderService {
     const client = this.authorizedGmailClient(account);
     const gmail = google.gmail({ version: "v1", auth: client });
     const metadata = account.providerMetadata ?? {};
+    let imported = 0;
+    let standardBackfill = {
+      imported: 0,
+      complete: metadata.gmailBackfillComplete === true,
+      cursor: metadata.gmailBackfillBefore ?? null,
+      skipped: metadata.gmailBackfillComplete === true
+    };
+
+    if (metadata.gmailBackfillComplete !== true) {
+      standardBackfill = await this.backfillGmailStandardHistory(account, gmail, {
+        limit
+      });
+      imported += standardBackfill.imported;
+    }
+
+    const remaining = limit - imported;
+    const systemFolders = remaining > 0
+      ? await this.backfillGmailSystemFolders(account, gmail, {
+        limit: remaining,
+        metadata
+      })
+      : {
+        imported: 0,
+        complete: gmailSystemBackfillComplete(metadata),
+        folders: []
+      };
+    imported += systemFolders.imported;
+
+    const complete = standardBackfill.complete && systemFolders.complete;
+
+    return {
+      provider: "gmail",
+      imported,
+      complete,
+      cursor: standardBackfill.cursor,
+      standard: standardBackfill,
+      systemFolders: systemFolders.folders
+    };
+  }
+
+  async backfillGmailStandardHistory(account, gmail, { limit = HISTORY_BACKFILL_LIMIT } = {}) {
+    const metadata = account.providerMetadata ?? {};
     const before = gmailSearchDate(metadata.gmailBackfillBefore ?? this.store.oldestEmailReceivedAt(account.id));
     const query = before ? `before:${before} -in:spam -in:trash` : "-in:spam -in:trash";
     const pageSize = Math.min(500, Math.max(1, limit));
@@ -214,18 +261,12 @@ export class ProviderService {
     let oldestReceivedAt = null;
     for (const item of messages) {
       if (!item.id) continue;
-      const message = await gmail.users.messages.get({
-        userId: "me",
-        id: item.id,
-        format: "full"
-      });
-      const saved = this.store.upsertProviderEmail(gmailMessageToEmail({
+      const saved = await this.importGmailMessage({
         account,
-        message: message.data,
-        mailboxId: this.gmailMailboxFor(account.id, message.data).id,
-        store: this.store,
-        attachments: await gmailAttachmentsForMessage(gmail, message.data, { includeData: false })
-      }));
+        gmail,
+        id: item.id,
+        includeAttachmentData: false
+      });
       oldestReceivedAt = olderISODate(oldestReceivedAt, saved.receivedAt);
       imported += 1;
     }
@@ -244,6 +285,64 @@ export class ProviderService {
     };
   }
 
+  async backfillGmailSystemFolders(account, gmail, { limit = HISTORY_BACKFILL_LIMIT, metadata = account.providerMetadata ?? {} } = {}) {
+    const state = { ...(metadata.gmailSystemBackfill ?? {}) };
+    const folders = [];
+    let imported = 0;
+
+    for (const folder of GMAIL_SYSTEM_FOLDER_LABELS) {
+      const remaining = limit - imported;
+      if (remaining <= 0) break;
+
+      const previous = state[folder.role] ?? {};
+      if (previous.complete) {
+        folders.push({ role: folder.role, imported: 0, complete: true, skipped: true });
+        continue;
+      }
+
+      const before = previous.before ?? null;
+      const pageSize = Math.min(500, Math.max(1, remaining));
+      const list = await gmail.users.messages.list({
+        userId: "me",
+        labelIds: [folder.labelId],
+        q: before ? `before:${before}` : undefined,
+        maxResults: pageSize,
+        includeSpamTrash: true
+      });
+
+      const messages = list.data.messages ?? [];
+      let folderImported = 0;
+      let oldestReceivedAt = null;
+      for (const item of messages) {
+        if (!item.id) continue;
+        const saved = await this.importGmailMessage({
+          account,
+          gmail,
+          id: item.id,
+          includeAttachmentData: false
+        });
+        oldestReceivedAt = olderISODate(oldestReceivedAt, saved.receivedAt);
+        folderImported += 1;
+      }
+
+      imported += folderImported;
+      const complete = messages.length === 0;
+      state[folder.role] = {
+        before: oldestReceivedAt ? gmailSearchDate(oldestReceivedAt) : before,
+        complete
+      };
+      folders.push({ role: folder.role, imported: folderImported, complete });
+    }
+
+    const complete = GMAIL_SYSTEM_FOLDER_LABELS.every(folder => state[folder.role]?.complete === true);
+    this.store.markAccountSynced(account.id, {
+      gmailSystemBackfill: state,
+      gmailSystemBackfillComplete: complete
+    });
+
+    return { imported, complete, folders };
+  }
+
   async backfillICloudHistory(account, { limit = HISTORY_BACKFILL_LIMIT } = {}) {
     const password = this.secretStore.get(secretKey(account.id, "icloud.app_password"));
     if (!password) throw httpError(400, "iCloud app-specific password is missing. Reconnect the account.");
@@ -252,12 +351,15 @@ export class ProviderService {
     const client = createICloudIMAPClient(user, password);
     const metadata = account.providerMetadata ?? {};
     const backfillState = { ...(metadata.icloudBackfill ?? {}) };
+    const systemBackfillState = { ...(metadata.icloudSystemBackfill ?? {}) };
     const mailboxes = [];
+    const systemFolders = [];
     let imported = 0;
 
     await client.connect();
     try {
-      const availableMailboxes = (await client.list()).filter(shouldBackfillICloudMailbox);
+      const listedMailboxes = await client.list();
+      const availableMailboxes = listedMailboxes.filter(shouldBackfillICloudMailbox);
       for (const mailbox of availableMailboxes) {
         const remaining = limit - imported;
         if (remaining <= 0) break;
@@ -314,17 +416,80 @@ export class ProviderService {
           lock.release();
         }
       }
+
+      const availableSystemMailboxes = listedMailboxes.filter(shouldBackfillICloudSystemMailbox);
+      for (const mailbox of availableSystemMailboxes) {
+        const remaining = limit - imported;
+        if (remaining <= 0) break;
+
+        const path = mailbox.path;
+        const role = iCloudMailboxRoleForPath(path, mailbox);
+        const stateKey = iCloudMailboxStateKey(path);
+        const previous = systemBackfillState[stateKey] ?? {};
+        if (previous.complete) {
+          systemFolders.push({ path, role, imported: 0, complete: true, skipped: true });
+          continue;
+        }
+
+        const lock = await client.getMailboxLock(path);
+        try {
+          const uidValidity = String(client.mailbox?.uidValidity ?? mailbox.uidValidity ?? "unknown");
+          const exists = Number(client.mailbox?.exists ?? mailbox.exists ?? 0);
+          const high = previous.uidValidity === uidValidity && Number.isInteger(previous.nextSeqBefore)
+            ? previous.nextSeqBefore - 1
+            : exists;
+          if (high <= 0) {
+            systemBackfillState[stateKey] = { path, role, uidValidity, nextSeqBefore: 1, complete: true };
+            systemFolders.push({ path, role, imported: 0, complete: true });
+            continue;
+          }
+
+          const low = Math.max(1, high - remaining + 1);
+          let mailboxImported = 0;
+          for await (const message of client.fetch(`${low}:${high}`, {
+            uid: true,
+            flags: true,
+            internalDate: true,
+            source: true
+          })) {
+            if (!message.source) continue;
+            const parsed = await simpleParser(message.source);
+            this.store.upsertProviderEmail(iCloudMessageToEmail({
+              account,
+              parsed,
+              message,
+              mailboxId: this.iCloudMailboxForPath(account.id, path, mailbox).id,
+              store: this.store,
+              providerUID: iCloudProviderUID(path, uidValidity, message.uid),
+              attachments: iCloudAttachmentsFromParsed(parsed, { includeData: false })
+            }));
+            mailboxImported += 1;
+          }
+
+          imported += mailboxImported;
+          const nextSeqBefore = low;
+          const complete = low <= 1;
+          systemBackfillState[stateKey] = { path, role, uidValidity, nextSeqBefore, complete };
+          systemFolders.push({ path, role, imported: mailboxImported, sequenceRange: `${low}:${high}`, complete });
+        } finally {
+          lock.release();
+        }
+      }
     } finally {
       await safeLogout(client, user);
     }
 
-    const complete = mailboxes.length > 0 && mailboxes.every(item => item.complete || item.skipped);
+    const standardComplete = mailboxes.length > 0 && mailboxes.every(item => item.complete || item.skipped);
+    const systemComplete = systemFolders.length === 0 || systemFolders.every(item => item.complete || item.skipped);
+    const complete = standardComplete && systemComplete;
     this.store.markAccountSynced(account.id, {
       icloudBackfill: backfillState,
-      icloudBackfillComplete: complete
+      icloudBackfillComplete: standardComplete,
+      icloudSystemBackfill: systemBackfillState,
+      icloudSystemBackfillComplete: systemComplete
     });
 
-    return { provider: "icloud", imported, complete, mailboxes };
+    return { provider: "icloud", imported, complete, mailboxes, systemFolders };
   }
 
   async sendMessage(email, input) {
@@ -430,32 +595,26 @@ export class ProviderService {
       const messages = list.data.messages ?? [];
       for (const item of messages) {
         if (!item.id) continue;
-        const message = await gmail.users.messages.get({
-          userId: "me",
-          id: item.id,
-          format: "full"
-        });
-        const saved = this.store.upsertProviderEmail(gmailMessageToEmail({
+        const saved = await this.importGmailMessage({
           account,
-          message: message.data,
-          mailboxId: this.gmailMailboxFor(account.id, message.data).id,
-          store: this.store,
-          attachments: await gmailAttachmentsForMessage(gmail, message.data)
-        }));
+          gmail,
+          id: item.id,
+          userLabels
+        });
         if (saved.wasNew) {
           newEmails.push(saved);
-        }
-        for (const labelId of message.data.labelIds ?? []) {
-          const localLabelId = userLabels.get(labelId);
-          if (localLabelId) {
-            this.store.setEmailLabel(saved.id, localLabelId, "add");
-          }
         }
         imported += 1;
         if (imported >= limit) break;
       }
       pageToken = list.data.nextPageToken;
     } while (pageToken && imported < limit);
+
+    const systemSync = await this.syncGmailSystemFolders(account, gmail, userLabels, {
+      limit: Math.min(25, Math.max(10, Math.ceil(limit / 4)))
+    });
+    imported += systemSync.imported;
+    newEmails.push(...systemSync.newEmails);
 
     const profile = await gmail.users.getProfile({ userId: "me" });
     this.store.markAccountSynced(account.id, {
@@ -465,6 +624,71 @@ export class ProviderService {
     });
 
     return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+  }
+
+  async syncGmailSystemFolders(account, gmail, userLabels, { limit = 100 } = {}) {
+    let imported = 0;
+    const newEmails = [];
+
+    for (const folder of GMAIL_SYSTEM_FOLDER_LABELS) {
+      let folderImported = 0;
+      let pageToken = undefined;
+      do {
+        const pageSize = Math.min(100, Math.max(1, limit - folderImported));
+        const list = await gmail.users.messages.list({
+          userId: "me",
+          labelIds: [folder.labelId],
+          maxResults: pageSize,
+          pageToken,
+          includeSpamTrash: true
+        });
+        const messages = list.data.messages ?? [];
+        for (const item of messages) {
+          if (!item.id) continue;
+          const saved = await this.importGmailMessage({
+            account,
+            gmail,
+            id: item.id,
+            userLabels
+          });
+          if (saved.wasNew) {
+            newEmails.push(saved);
+          }
+          imported += 1;
+          folderImported += 1;
+          if (folderImported >= limit) break;
+        }
+        pageToken = list.data.nextPageToken;
+      } while (pageToken && folderImported < limit);
+    }
+
+    return { imported, newEmails };
+  }
+
+  async importGmailMessage({ account, gmail, id, userLabels = null, includeAttachmentData = true }) {
+    const message = await gmail.users.messages.get({
+      userId: "me",
+      id,
+      format: "full"
+    });
+    const saved = this.store.upsertProviderEmail(gmailMessageToEmail({
+      account,
+      message: message.data,
+      mailboxId: this.gmailMailboxFor(account.id, message.data).id,
+      store: this.store,
+      attachments: await gmailAttachmentsForMessage(gmail, message.data, { includeData: includeAttachmentData })
+    }));
+
+    if (userLabels) {
+      for (const labelId of message.data.labelIds ?? []) {
+        const localLabelId = userLabels.get(labelId);
+        if (localLabelId) {
+          this.store.setEmailLabel(saved.id, localLabelId, "add");
+        }
+      }
+    }
+
+    return saved;
   }
 
   async syncICloudAccount(accountId, { limit = 100 } = {}) {
@@ -487,54 +711,95 @@ export class ProviderService {
         const syncWindow = iCloudSyncWindow(account, client.mailbox, exists, limit);
         syncMetadata = syncWindow.metadata;
 
-        if (exists === 0) {
-          this.store.markAccountSynced(account.id, syncMetadata);
-          return { provider: "icloud", imported: 0 };
-        }
-
-        if (!syncWindow.range) {
-          this.store.markAccountSynced(account.id, syncWindow.metadata);
-          return { provider: "icloud", imported: 0 };
-        }
-
-        let maxUID = syncWindow.lastUID;
-        for await (const message of client.fetch(syncWindow.range, {
-          uid: true,
-          flags: true,
-          internalDate: true,
-          source: true
-        }, syncWindow.fetchOptions)) {
-          const parsed = await simpleParser(message.source);
-          const mailbox = this.iCloudMailboxFor(account.id, parsed);
-          const uidValidity = client.mailbox?.uidValidity ?? null;
-          const saved = this.store.upsertProviderEmail(iCloudMessageToEmail({
-            account,
-            parsed,
-            message,
-            mailboxId: mailbox.id,
-            store: this.store,
-            providerUID: iCloudProviderUID("INBOX", uidValidity, message.uid),
-            attachments: iCloudAttachmentsFromParsed(parsed)
-          }));
-          if (saved.wasNew) {
-            newEmails.push(saved);
+        if (syncWindow.range) {
+          let maxUID = syncWindow.lastUID;
+          for await (const message of client.fetch(syncWindow.range, {
+            uid: true,
+            flags: true,
+            internalDate: true,
+            source: true
+          }, syncWindow.fetchOptions)) {
+            const parsed = await simpleParser(message.source);
+            const mailbox = this.iCloudMailboxFor(account.id, parsed);
+            const uidValidity = client.mailbox?.uidValidity ?? null;
+            const saved = this.store.upsertProviderEmail(iCloudMessageToEmail({
+              account,
+              parsed,
+              message,
+              mailboxId: mailbox.id,
+              store: this.store,
+              providerUID: iCloudProviderUID("INBOX", uidValidity, message.uid),
+              attachments: iCloudAttachmentsFromParsed(parsed)
+            }));
+            if (saved.wasNew) {
+              newEmails.push(saved);
+            }
+            if (Number.isInteger(message.uid) && message.uid > maxUID) {
+              maxUID = message.uid;
+            }
+            imported += 1;
           }
-          if (Number.isInteger(message.uid) && message.uid > maxUID) {
-            maxUID = message.uid;
-          }
-          imported += 1;
+          syncWindow.metadata.icloudInboxLastUid = maxUID;
+          syncMetadata = syncWindow.metadata;
         }
-        syncWindow.metadata.icloudInboxLastUid = maxUID;
-        syncMetadata = syncWindow.metadata;
       } finally {
         lock.release();
       }
+
+      const systemSync = await this.syncICloudSystemFolders(account, client, {
+        limit: Math.min(25, Math.max(10, Math.ceil(limit / 4)))
+      });
+      imported += systemSync.imported;
+      newEmails.push(...systemSync.newEmails);
     } finally {
       await safeLogout(client, user);
     }
 
     this.store.markAccountSynced(account.id, syncMetadata);
     return { provider: "icloud", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+  }
+
+  async syncICloudSystemFolders(account, client, { limit = 25 } = {}) {
+    const mailboxes = (await client.list()).filter(shouldBackfillICloudSystemMailbox);
+    let imported = 0;
+    const newEmails = [];
+
+    for (const mailbox of mailboxes) {
+      const lock = await client.getMailboxLock(mailbox.path);
+      try {
+        const exists = Number(client.mailbox?.exists ?? 0);
+        if (exists <= 0) continue;
+
+        const uidValidity = String(client.mailbox?.uidValidity ?? mailbox.uidValidity ?? "unknown");
+        const low = Math.max(1, exists - limit + 1);
+        for await (const message of client.fetch(`${low}:*`, {
+          uid: true,
+          flags: true,
+          internalDate: true,
+          source: true
+        })) {
+          if (!message.source) continue;
+          const parsed = await simpleParser(message.source);
+          const saved = this.store.upsertProviderEmail(iCloudMessageToEmail({
+            account,
+            parsed,
+            message,
+            mailboxId: this.iCloudMailboxForPath(account.id, mailbox.path, mailbox).id,
+            store: this.store,
+            providerUID: iCloudProviderUID(mailbox.path, uidValidity, message.uid),
+            attachments: iCloudAttachmentsFromParsed(parsed, { includeData: false })
+          }));
+          if (saved.wasNew) {
+            newEmails.push(saved);
+          }
+          imported += 1;
+        }
+      } finally {
+        lock.release();
+      }
+    }
+
+    return { imported, newEmails };
   }
 
   async sendGmailMessage(account, email, input) {
@@ -843,14 +1108,8 @@ export class ProviderService {
     return this.store.mailboxForRole(accountId, "inbox");
   }
 
-  iCloudMailboxForPath(accountId, path) {
-    const normalized = String(path ?? "").toLowerCase();
-    if (normalized.includes("archive") || normalized.includes("old emails")) return this.store.mailboxForRole(accountId, "archive");
-    if (normalized.includes("junk") || normalized.includes("spam")) return this.store.mailboxForRole(accountId, "spam");
-    if (normalized.includes("deleted") || normalized.includes("trash")) return this.store.mailboxForRole(accountId, "trash");
-    if (normalized.includes("sent")) return this.store.mailboxForRole(accountId, "sent");
-    if (normalized.includes("draft")) return this.store.mailboxForRole(accountId, "drafts");
-    return this.store.mailboxForRole(accountId, "inbox");
+  iCloudMailboxForPath(accountId, path, mailbox = null) {
+    return this.store.mailboxForRole(accountId, iCloudMailboxRoleForPath(path, mailbox) ?? "inbox");
   }
 }
 
@@ -972,10 +1231,25 @@ function shouldBackfillICloudMailbox(mailbox) {
   const path = String(mailbox?.path ?? "").toLowerCase();
   if (!path) return false;
   if (path === "notes" || path.includes("/notes")) return false;
-  if (path.includes("draft")) return false;
-  if (path.includes("junk") || path.includes("spam")) return false;
-  if (path.includes("deleted") || path.includes("trash")) return false;
+  if (ICLOUD_SYNCED_SYSTEM_ROLES.has(iCloudMailboxRoleForPath(path, mailbox))) return false;
   return true;
+}
+
+function shouldBackfillICloudSystemMailbox(mailbox) {
+  const path = String(mailbox?.path ?? "").toLowerCase();
+  if (!path) return false;
+  return ICLOUD_SYNCED_SYSTEM_ROLES.has(iCloudMailboxRoleForPath(path, mailbox));
+}
+
+function iCloudMailboxRoleForPath(path, mailbox = null) {
+  const specialUse = String(mailbox?.specialUse ?? "").toLowerCase();
+  const normalized = String(path ?? "").toLowerCase();
+  if (specialUse === "\\archive" || normalized.includes("archive") || normalized.includes("old emails")) return "archive";
+  if (specialUse === "\\junk" || normalized.includes("junk") || normalized.includes("spam")) return "spam";
+  if (specialUse === "\\trash" || normalized.includes("deleted") || normalized.includes("trash")) return "trash";
+  if (specialUse === "\\sent" || normalized.includes("sent")) return "sent";
+  if (specialUse === "\\drafts" || normalized.includes("draft")) return "drafts";
+  return null;
 }
 
 function gmailSearchDate(value) {

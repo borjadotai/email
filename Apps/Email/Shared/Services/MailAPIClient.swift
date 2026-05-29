@@ -124,6 +124,15 @@ struct MailAPIClient {
     return response.accounts
   }
 
+  func reorderAccounts(ids: [String]) async throws -> [MailAccount] {
+    let response: AccountsResponse = try await request(
+      "api/accounts/order",
+      method: "PATCH",
+      body: ReorderRequest(ids: ids)
+    )
+    return response.accounts
+  }
+
   func profile() async throws -> UserProfile {
     let response: ProfileResponse = try await request("api/profile")
     return response.profile
@@ -204,6 +213,15 @@ struct MailAPIClient {
     return response.filters
   }
 
+  func reorderFilters(ids: [String]) async throws -> [MailFilter] {
+    let response: FiltersResponse = try await request(
+      "api/filters/order",
+      method: "PATCH",
+      body: ReorderRequest(ids: ids)
+    )
+    return response.filters
+  }
+
   func createFilter(naturalLanguage: String) async throws -> MailFilter {
     struct FilterPayload: Encodable {
       var naturalLanguage: String
@@ -250,6 +268,9 @@ struct MailAPIClient {
 
   func emails(query: EmailQuery) async throws -> [EmailSummary] {
     var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(query.limit))]
+    if query.offset > 0 {
+      items.append(URLQueryItem(name: "offset", value: String(query.offset)))
+    }
     if let accountId = query.accountId {
       items.append(URLQueryItem(name: "accountId", value: accountId))
     }
@@ -451,3 +472,7 @@ struct MailAPIClient {
 }
 
 private struct EmptyBody: Encodable {}
+
+private struct ReorderRequest: Encodable {
+  var ids: [String]
+}

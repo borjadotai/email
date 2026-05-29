@@ -31,6 +31,7 @@ struct MailAccount: Codable, Identifiable, Hashable {
   var authType: String
   var status: String
   var syncHistory: Bool
+  var sortOrder: Int?
   var lastSyncAt: String?
   var createdAt: String
 }
@@ -51,6 +52,7 @@ struct Mailbox: Codable, Identifiable, Hashable {
   var name: String
   var role: String
   var unreadCount: Int
+  var totalCount: Int?
 }
 
 struct MailLabel: Codable, Identifiable, Hashable {
@@ -84,8 +86,42 @@ struct MailFilter: Codable, Identifiable, Hashable {
   var querySource: String?
   var queryError: String?
   var cacheUpdatedAt: String?
+  var sortOrder: Int?
   var createdAt: String
   var updatedAt: String
+}
+
+enum GlobalMailboxFolder: String, Codable, CaseIterable, Identifiable {
+  case sent
+  case drafts
+  case archive
+  case spam
+  case blocked
+  case trash
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .sent: "Sent"
+    case .drafts: "Drafts"
+    case .archive: "Archive"
+    case .spam: "Spam"
+    case .blocked: "Blocked"
+    case .trash: "Trash"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .sent: "paperplane"
+    case .drafts: "doc"
+    case .archive: "archivebox"
+    case .spam: "exclamationmark.octagon"
+    case .blocked: "hand.raised"
+    case .trash: "trash"
+    }
+  }
 }
 
 struct EmailSummary: Codable, Identifiable, Hashable {
@@ -324,6 +360,7 @@ struct EmailQuery: Equatable {
   var filterId: String?
   var q: String
   var limit: Int = 80
+  var offset: Int = 0
   var refreshFilterCache: Bool = false
 }
 

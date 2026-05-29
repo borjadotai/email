@@ -56,6 +56,9 @@ test("classifies sent messages by the synced account identity", () => {
     assert.equal(gmailInboundMailbox.role, "inbox");
     assert.equal(iCloudInboundMailbox.role, "inbox");
     assert.equal(iCloudSelfMailbox.role, "sent");
+    assert.equal(providers.iCloudMailboxForPath(icloud.id, "Junk").role, "spam");
+    assert.equal(providers.iCloudMailboxForPath(icloud.id, "Deleted Messages").role, "trash");
+    assert.equal(providers.iCloudMailboxForPath(icloud.id, "Drafts").role, "drafts");
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

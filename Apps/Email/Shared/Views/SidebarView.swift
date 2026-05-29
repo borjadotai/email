@@ -1,9 +1,15 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
   @Environment(AppModel.self) private var model
   @State private var filterEditor: FilterEditorContext?
   @State private var filterPendingDeletion: MailFilter?
+  @State private var draggingAccountID: String?
+  @State private var draggingFilterID: String?
+  @State private var accountDropTargetID: String?
+  @State private var filterDropTargetID: String?
+  @State private var sidebarInteractionResetToken = 0
   var onAddAccount: () -> Void
   var onShowMessages: () -> Void
 
@@ -11,6 +17,7 @@ struct SidebarView: View {
     List {
       allInboxesSection
       accountsSection
+      globalFoldersSection
       filtersSection
       foldersSection
       labelsSection
@@ -73,6 +80,7 @@ struct SidebarView: View {
           && model.selectedMailboxID == nil
           && model.selectedLabelID == nil
           && model.selectedFilterID == nil
+          && model.selectedGlobalFolder == nil
       ) {
         selectGlobalInbox()
       }
@@ -96,8 +104,68 @@ struct SidebarView: View {
               && model.selectedMailboxID == nil
               && model.selectedLabelID == nil
               && model.selectedFilterID == nil
+              && model.selectedGlobalFolder == nil,
+            isReorderable: true,
+            isDragging: draggingAccountID == account.id,
+            showsInsertionLine: accountDropTargetID == account.id,
+            resetToken: sidebarInteractionResetToken
           ) {
             selectAccount(account)
+          }
+          .onDrag {
+            withAnimation(.snappy(duration: 0.16)) {
+              draggingAccountID = account.id
+            }
+            return NSItemProvider(object: account.id as NSString)
+          } preview: {
+            SidebarDragPreview(
+              title: account.displayName,
+              subtitle: account.email,
+              systemImage: account.provider.systemImage,
+              avatarName: account.displayName,
+              avatarEmail: account.email,
+              avatarURL: account.avatarURL,
+              count: unreadCount(for: account)
+            )
+          }
+          .onDrop(
+            of: [.text],
+            delegate: SidebarReorderDropDelegate(
+              targetID: account.id,
+              draggingID: $draggingAccountID,
+              dropTargetID: $accountDropTargetID,
+              move: { sourceID, targetID in
+                model.moveAccount(id: sourceID, before: targetID)
+              },
+              persist: {
+                model.persistAccountOrder()
+              },
+              cleanup: {
+                clearSidebarDragState()
+              }
+            )
+          )
+        }
+        .onMove(perform: moveAccounts)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var globalFoldersSection: some View {
+    let folders = model.enabledGlobalFolders
+    if activeSidebarAccountID == nil && !folders.isEmpty {
+      Section("Folders") {
+        ForEach(folders) { folder in
+          SidebarButton(
+            title: folder.title,
+            subtitle: nil,
+            systemImage: folder.systemImage,
+            tint: tint(for: folder),
+            count: totalCount(for: folder),
+            isSelected: model.selectedGlobalFolder == folder
+          ) {
+            selectGlobalFolder(folder)
           }
         }
       }
@@ -111,7 +179,10 @@ struct SidebarView: View {
         ForEach(model.filters) { filter in
           FilterSidebarRow(
             filter: filter,
-            isSelected: model.selectedFilterID == filter.id,
+            isSelected: model.selectedFilterID == filter.id && model.selectedGlobalFolder == nil,
+            isDragging: draggingFilterID == filter.id,
+            showsInsertionLine: filterDropTargetID == filter.id,
+            resetToken: sidebarInteractionResetToken,
             onSelect: {
               selectFilter(filter)
             },
@@ -140,7 +211,38 @@ struct SidebarView: View {
           .accessibilityAction(named: "Delete Filter") {
             filterPendingDeletion = filter
           }
+          .onDrag {
+            withAnimation(.snappy(duration: 0.16)) {
+              draggingFilterID = filter.id
+            }
+            return NSItemProvider(object: filter.id as NSString)
+          } preview: {
+            SidebarDragPreview(
+              title: filter.name,
+              subtitle: nil,
+              systemImage: filter.systemImage,
+              tint: filter.swiftUIColor
+            )
+          }
+          .onDrop(
+            of: [.text],
+            delegate: SidebarReorderDropDelegate(
+              targetID: filter.id,
+              draggingID: $draggingFilterID,
+              dropTargetID: $filterDropTargetID,
+              move: { sourceID, targetID in
+                model.moveFilter(id: sourceID, before: targetID)
+              },
+              persist: {
+                model.persistFilterOrder()
+              },
+              cleanup: {
+                clearSidebarDragState()
+              }
+            )
+          )
         }
+        .onMove(perform: moveFilters)
 
         SidebarButton(
           title: "New Filter",
@@ -159,14 +261,14 @@ struct SidebarView: View {
   private var foldersSection: some View {
     let visibleMailboxes = scopedMailboxes
     if !visibleMailboxes.isEmpty {
-      Section("Folders") {
+      Section("Account Folders") {
         ForEach(visibleMailboxes) { mailbox in
           SidebarButton(
             title: mailbox.name,
             subtitle: nil,
             systemImage: image(for: mailbox.role),
-            count: mailbox.unreadCount,
-            isSelected: model.selectedMailboxID == mailbox.id
+            count: displayCount(for: mailbox),
+            isSelected: model.selectedMailboxID == mailbox.id && model.selectedGlobalFolder == nil
           ) {
             selectMailbox(mailbox)
           }
@@ -186,7 +288,7 @@ struct SidebarView: View {
             subtitle: nil,
             systemImage: "tag",
             tint: label.swiftUIColor,
-            isSelected: model.selectedLabelID == label.id
+            isSelected: model.selectedLabelID == label.id && model.selectedGlobalFolder == nil
           ) {
             selectLabel(label)
           }
@@ -206,6 +308,13 @@ struct SidebarView: View {
     onShowMessages()
     Task {
       await model.selectAccount(account)
+    }
+  }
+
+  private func selectGlobalFolder(_ folder: GlobalMailboxFolder) {
+    onShowMessages()
+    Task {
+      await model.selectGlobalFolder(folder)
     }
   }
 
@@ -249,10 +358,41 @@ struct SidebarView: View {
     }
   }
 
+  private func moveAccounts(from source: IndexSet, to destination: Int) {
+    model.moveAccounts(from: source, to: destination)
+  }
+
+  private func moveFilters(from source: IndexSet, to destination: Int) {
+    model.moveFilters(from: source, to: destination)
+  }
+
+  private func clearSidebarDragState() {
+    withAnimation(.snappy(duration: 0.16)) {
+      draggingAccountID = nil
+      draggingFilterID = nil
+      accountDropTargetID = nil
+      filterDropTargetID = nil
+      sidebarInteractionResetToken += 1
+    }
+  }
+
   private func unreadCount(for account: MailAccount) -> Int {
     model.mailboxes
       .filter { $0.accountId == account.id && $0.role == "inbox" }
       .reduce(0) { $0 + $1.unreadCount }
+  }
+
+  private func totalCount(for folder: GlobalMailboxFolder) -> Int {
+    model.mailboxes
+      .filter { $0.role == folder.rawValue }
+      .reduce(0) { $0 + displayCount(for: $1) }
+  }
+
+  private func displayCount(for mailbox: Mailbox) -> Int {
+    if mailbox.role == "inbox" {
+      return mailbox.unreadCount
+    }
+    return mailbox.totalCount ?? mailbox.unreadCount
   }
 
   private var activeSidebarAccountID: String? {
@@ -291,8 +431,20 @@ struct SidebarView: View {
     case "drafts": "doc"
     case "archive": "archivebox"
     case "spam": "exclamationmark.octagon"
+    case "blocked": "hand.raised"
     case "trash": "trash"
     default: "folder"
+    }
+  }
+
+  private func tint(for folder: GlobalMailboxFolder) -> Color {
+    switch folder {
+    case .sent: .blue
+    case .drafts: .teal
+    case .archive: .secondary
+    case .spam: .orange
+    case .blocked: .pink
+    case .trash: .red
     }
   }
 }
@@ -463,9 +615,51 @@ private var sheetCardBackground: Color {
   #endif
 }
 
+private struct SidebarReorderDropDelegate: DropDelegate {
+  var targetID: String
+  @Binding var draggingID: String?
+  @Binding var dropTargetID: String?
+  var move: (String, String) -> Void
+  var persist: () -> Void
+  var cleanup: () -> Void
+
+  func dropEntered(info: DropInfo) {
+    guard let draggingID, draggingID != targetID else { return }
+    withAnimation(.snappy(duration: 0.18)) {
+      dropTargetID = targetID
+      move(draggingID, targetID)
+    }
+  }
+
+  func dropUpdated(info: DropInfo) -> DropProposal? {
+    if let draggingID, draggingID != targetID, dropTargetID != targetID {
+      withAnimation(.snappy(duration: 0.12)) {
+        dropTargetID = targetID
+      }
+    }
+    return DropProposal(operation: .move)
+  }
+
+  func performDrop(info: DropInfo) -> Bool {
+    persist()
+    cleanup()
+    return true
+  }
+
+  func dropExited(info: DropInfo) {
+    guard dropTargetID == targetID else { return }
+    withAnimation(.snappy(duration: 0.12)) {
+      dropTargetID = nil
+    }
+  }
+}
+
 private struct FilterSidebarRow: View {
   var filter: MailFilter
   var isSelected: Bool
+  var isDragging = false
+  var showsInsertionLine = false
+  var resetToken = 0
   var onSelect: () -> Void
   var onEdit: () -> Void
   var onDelete: () -> Void
@@ -488,8 +682,12 @@ private struct FilterSidebarRow: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .frame(maxWidth: .infinity, alignment: .leading)
 
       if isHovered || isSelected {
+        SidebarDragHandle()
+          .transition(.opacity.combined(with: .scale(scale: 0.84)))
+
         Button(action: onEdit) {
           Image(systemName: "pencil")
             .font(.caption.weight(.semibold))
@@ -510,8 +708,29 @@ private struct FilterSidebarRow: View {
       }
     }
     .contentShape(Rectangle())
-    .onHover { isHovered = $0 }
-    .listRowBackground(isSelected ? Color.mailSelectionBackground : Color.clear)
+    .onHover { hovering in
+      withAnimation(.snappy(duration: 0.14)) {
+        isHovered = hovering
+      }
+    }
+    .onChange(of: resetToken) { _, _ in
+      isHovered = false
+    }
+    .scaleEffect(isDragging ? 0.985 : 1)
+    .opacity(isDragging ? 0.82 : 1)
+    .animation(.snappy(duration: 0.18), value: isDragging)
+    .animation(.snappy(duration: 0.18), value: showsInsertionLine)
+    .overlay(alignment: .top) {
+      if showsInsertionLine && !isDragging {
+        SidebarInsertionLine()
+      }
+    }
+    .listRowBackground(
+      SidebarRowBackground(
+        isSelected: isSelected,
+        isHovered: isHovered
+      )
+    )
   }
 }
 
@@ -525,48 +744,184 @@ private struct SidebarButton: View {
   var tint: Color = .secondary
   var count: Int = 0
   var isSelected: Bool
+  var isReorderable = false
+  var isDragging = false
+  var showsInsertionLine = false
+  var resetToken = 0
   var action: () -> Void
+
+  @State private var isHovered = false
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 10) {
-        if let avatarName, let avatarEmail {
-          AvatarView(
-            name: avatarName,
-            email: avatarEmail,
-            urlString: avatarURL,
-            size: 24
-          )
-          .frame(width: 24)
-        } else {
-          Image(systemName: systemImage)
-            .foregroundStyle(tint)
-            .frame(width: 24)
-        }
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .lineLimit(1)
-          if let subtitle, !subtitle.isEmpty {
-            Text(subtitle)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .lineLimit(1)
-          }
-        }
-
-        Spacer(minLength: 6)
-
-        if count > 0 {
-          Text(count, format: .number)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-        }
-      }
+      SidebarRowContent(
+        title: title,
+        subtitle: subtitle,
+        systemImage: systemImage,
+        avatarName: avatarName,
+        avatarEmail: avatarEmail,
+        avatarURL: avatarURL,
+        tint: tint,
+        count: count,
+        showsDragHandle: isReorderable && isHovered
+      )
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .listRowBackground(isSelected ? Color.mailSelectionBackground : Color.clear)
+    .onHover { hovering in
+      withAnimation(.snappy(duration: 0.14)) {
+        isHovered = hovering
+      }
+    }
+    .onChange(of: resetToken) { _, _ in
+      isHovered = false
+    }
+    .scaleEffect(isDragging ? 0.985 : 1)
+    .opacity(isDragging ? 0.82 : 1)
+    .animation(.snappy(duration: 0.18), value: isDragging)
+    .animation(.snappy(duration: 0.18), value: showsInsertionLine)
+    .overlay(alignment: .top) {
+      if showsInsertionLine && !isDragging {
+        SidebarInsertionLine()
+      }
+    }
+    .listRowBackground(
+      SidebarRowBackground(
+        isSelected: isSelected,
+        isHovered: isHovered
+      )
+    )
+  }
+}
+
+private struct SidebarDragPreview: View {
+  var title: String
+  var subtitle: String?
+  var systemImage: String
+  var avatarName: String? = nil
+  var avatarEmail: String? = nil
+  var avatarURL: String? = nil
+  var tint: Color = .secondary
+  var count: Int = 0
+
+  var body: some View {
+    SidebarRowContent(
+      title: title,
+      subtitle: subtitle,
+      systemImage: systemImage,
+      avatarName: avatarName,
+      avatarEmail: avatarEmail,
+      avatarURL: avatarURL,
+      tint: tint,
+      count: count,
+      showsDragHandle: true
+    )
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .frame(width: 236, alignment: .leading)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.10))
+    )
+    .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 8)
+  }
+}
+
+private struct SidebarRowContent: View {
+  var title: String
+  var subtitle: String?
+  var systemImage: String
+  var avatarName: String?
+  var avatarEmail: String?
+  var avatarURL: String?
+  var tint: Color
+  var count: Int
+  var showsDragHandle: Bool
+
+  var body: some View {
+    HStack(spacing: 10) {
+      if let avatarName, let avatarEmail {
+        AvatarView(
+          name: avatarName,
+          email: avatarEmail,
+          urlString: avatarURL,
+          size: 24
+        )
+        .frame(width: 24)
+      } else {
+        Image(systemName: systemImage)
+          .foregroundStyle(tint)
+          .frame(width: 24)
+      }
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .lineLimit(1)
+        if let subtitle, !subtitle.isEmpty {
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+      }
+
+      Spacer(minLength: 6)
+
+      if count > 0 {
+        Text(count, format: .number)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.secondary)
+          .monospacedDigit()
+      }
+
+      if showsDragHandle {
+        SidebarDragHandle()
+          .transition(.opacity.combined(with: .scale(scale: 0.84)))
+      }
+    }
+  }
+}
+
+private struct SidebarDragHandle: View {
+  var body: some View {
+    Image(systemName: "line.3.horizontal")
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.tertiary)
+      .frame(width: 16, height: 18)
+      .help("Drag to reorder")
+  }
+}
+
+private struct SidebarRowBackground: View {
+  var isSelected: Bool
+  var isHovered: Bool
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: 7, style: .continuous)
+      .fill(fill)
+      .padding(.vertical, 1)
+  }
+
+  private var fill: Color {
+    if isSelected {
+      return Color.mailSelectionBackground
+    }
+    if isHovered {
+      return Color.primary.opacity(0.06)
+    }
+    return .clear
+  }
+}
+
+private struct SidebarInsertionLine: View {
+  var body: some View {
+    Capsule()
+      .fill(Color.accentColor)
+      .frame(height: 2)
+      .padding(.horizontal, 8)
+      .shadow(color: Color.accentColor.opacity(0.28), radius: 4, x: 0, y: 0)
+      .allowsHitTesting(false)
+      .transition(.opacity)
   }
 }

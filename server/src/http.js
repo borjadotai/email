@@ -61,6 +61,13 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     return;
   }
 
+  if (req.method === "PATCH" && path === "/api/accounts/order") {
+    const accounts = store.reorderAccounts((await readJSON(req)).ids);
+    events.emit("accounts.changed", { reordered: true });
+    sendJSON(res, 200, { accounts });
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/profile") {
     sendJSON(res, 200, { profile: store.getProfile() });
     return;
@@ -180,6 +187,13 @@ async function route({ req, res, store, providers, pushNotifications, events, co
 
   if (req.method === "GET" && path === "/api/filters") {
     sendJSON(res, 200, { filters: store.listFilters() });
+    return;
+  }
+
+  if (req.method === "PATCH" && path === "/api/filters/order") {
+    const filters = store.reorderFilters((await readJSON(req)).ids);
+    events.emit("filters.changed", { reordered: true });
+    sendJSON(res, 200, { filters });
     return;
   }
 

@@ -15,12 +15,34 @@ struct PendingArchiveNotification: Identifiable, Hashable {
   var previousConversationEmails: [EmailDetail]
 }
 
+private struct EmailListCacheKey: Hashable {
+  var accountId: String?
+  var mailboxId: String?
+  var mailboxRole: String?
+  var labelId: String?
+  var filterId: String?
+  var query: String
+
+  init(query: EmailQuery) {
+    accountId = query.accountId
+    mailboxId = query.mailboxId
+    mailboxRole = query.mailboxRole
+    labelId = query.labelId
+    filterId = query.filterId
+    self.query = query.q.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
 @MainActor
 @Observable
 final class AppModel {
   var accounts: [MailAccount] = []
   var profile: UserProfile?
-  var mailboxes: [Mailbox] = []
+  var mailboxes: [Mailbox] = [] {
+    didSet {
+      PushNotificationController.shared.setApplicationBadgeCount(globalUnreadCount)
+    }
+  }
   var labels: [MailLabel] = []
   var filters: [MailFilter] = []
   var emails: [EmailSummary] = []
@@ -31,8 +53,12 @@ final class AppModel {
   var selectedMailboxID: String?
   var selectedLabelID: String?
   var selectedFilterID: String?
+  var selectedGlobalFolder: GlobalMailboxFolder?
   var searchText: String = ""
   var isLoading = false
+  var isLoadingEmails = false
+  var isLoadingMoreEmails = false
+  var hasMoreEmails = false
   var isRefreshingMail = false
   var refreshStartedAt: Date?
   var isSending = false
@@ -79,9 +105,29 @@ final class AppModel {
     }
   }
 
+  var showsGlobalFoldersSection: Bool {
+    didSet {
+      UserDefaults.standard.set(showsGlobalFoldersSection, forKey: Defaults.showsGlobalFoldersSection)
+      guard !showsGlobalFoldersSection, selectedGlobalFolder != nil else { return }
+      Task { await selectGlobalInbox() }
+    }
+  }
+
+  var visibleGlobalFolders: [GlobalMailboxFolder] {
+    didSet {
+      Defaults.saveVisibleGlobalFolders(visibleGlobalFolders)
+    }
+  }
+
   private var hasBootstrapped = false
   @ObservationIgnored private var pendingArchiveTask: Task<Void, Never>?
   @ObservationIgnored private var isAutoPollingMail = false
+  @ObservationIgnored private var emailListCache: [EmailListCacheKey: [EmailSummary]] = [:]
+  @ObservationIgnored private var activeEmailQuery: EmailQuery?
+  @ObservationIgnored private var nextEmailOffset = 0
+  @ObservationIgnored private var emailListLoadGeneration = 0
+  @ObservationIgnored private let initialEmailPageSize = 30
+  @ObservationIgnored private let nextEmailPageSize = 80
 
   init() {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
@@ -95,6 +141,8 @@ final class AppModel {
     themePreference = ThemePreference(rawValue: rawTheme) ?? .system
     archiveUndoDurationSeconds = Defaults.loadArchiveUndoDurationSeconds()
     shortcutBindings = Defaults.loadShortcutBindings()
+    showsGlobalFoldersSection = Defaults.loadShowsGlobalFoldersSection()
+    visibleGlobalFolders = Defaults.loadVisibleGlobalFolders()
   }
 
   var colorScheme: ColorScheme? {
@@ -115,6 +163,9 @@ final class AppModel {
     if let mailbox = mailboxes.first(where: { $0.id == selectedMailboxID }) {
       return mailbox.name
     }
+    if let selectedGlobalFolder {
+      return selectedGlobalFolder.title
+    }
     if let account = accounts.first(where: { $0.id == selectedAccountID }) {
       return account.displayName
     }
@@ -125,6 +176,12 @@ final class AppModel {
     mailboxes
       .filter { $0.role == "inbox" }
       .reduce(0) { $0 + $1.unreadCount }
+  }
+
+  var enabledGlobalFolders: [GlobalMailboxFolder] {
+    guard showsGlobalFoldersSection else { return [] }
+    let visible = Set(visibleGlobalFolders)
+    return GlobalMailboxFolder.allCases.filter { visible.contains($0) }
   }
 
   var apiClient: MailAPIClient {
@@ -155,7 +212,7 @@ final class AppModel {
     await refreshAll()
   }
 
-  func refreshAll(reportErrors: Bool = true) async {
+  func refreshAll(reportErrors: Bool = true, refreshSelectedFilterCache: Bool = false) async {
     isLoading = true
     defer { isLoading = false }
 
@@ -167,10 +224,10 @@ final class AppModel {
       mailboxes = try await apiClient.mailboxes()
       labels = try await apiClient.labels()
       filters = try await apiClient.filters()
-      try await loadEmails(refreshFilterCache: selectedFilterID != nil)
+      try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
     } catch {
       if reportErrors {
-        errorMessage = error.localizedDescription
+        reportError(error)
       }
     }
   }
@@ -179,39 +236,160 @@ final class AppModel {
     let query = EmailQuery(
       accountId: selectedAccountID,
       mailboxId: selectedMailboxID,
-      mailboxRole: defaultMailboxRole,
+      mailboxRole: selectedGlobalFolder?.rawValue ?? defaultMailboxRole,
       labelId: selectedLabelID,
       filterId: selectedFilterID,
       q: searchText,
       refreshFilterCache: refreshFilterCache
     )
-    let pendingArchiveID = pendingArchive?.id
-    emails = try await apiClient.emails(query: query)
-      .filter { $0.id != pendingArchiveID }
+    try await loadInitialEmailPage(query: query)
+  }
 
-    if let selectedEmailID, emails.contains(where: { $0.id == selectedEmailID }) {
-      if let loadedEmail = try? await apiClient.email(id: selectedEmailID) {
-        guard self.selectedEmailID == selectedEmailID else { return }
-        selectedEmail = loadedEmail
-        let loadedConversation = (try? await apiClient.thread(emailId: loadedEmail.id)) ?? [loadedEmail]
-        guard self.selectedEmailID == selectedEmailID else { return }
-        conversationEmails = loadedConversation
-      } else if self.selectedEmailID == selectedEmailID {
-        selectedEmail = nil
-        conversationEmails = []
-      }
+  private func loadInitialEmailPage(query: EmailQuery) async throws {
+    emailListLoadGeneration += 1
+    let generation = emailListLoadGeneration
+    let cacheKey = EmailListCacheKey(query: query)
+    activeEmailQuery = query
+    nextEmailOffset = 0
+    hasMoreEmails = false
+    isLoadingMoreEmails = false
+
+    if let cachedEmails = emailListCache[cacheKey] {
+      emails = visibleEmails(cachedEmails)
+      reconcileSelectedEmailWithVisibleList()
     } else {
+      emails = []
       selectedEmailID = nil
       selectedEmail = nil
       conversationEmails = []
     }
+
+    isLoadingEmails = true
+    defer {
+      if generation == emailListLoadGeneration {
+        isLoadingEmails = false
+      }
+    }
+
+    var pageQuery = query
+    pageQuery.limit = initialEmailPageSize
+    pageQuery.offset = 0
+
+    let page: [EmailSummary]
+    do {
+      page = try await apiClient.emails(query: pageQuery)
+    } catch {
+      if generation != emailListLoadGeneration || isCancellationError(error) {
+        return
+      }
+      throw error
+    }
+
+    guard generation == emailListLoadGeneration else { return }
+    let visiblePage = visibleEmails(page)
+    emails = visiblePage
+    emailListCache[cacheKey] = Array(visiblePage.prefix(initialEmailPageSize))
+    nextEmailOffset = page.count
+    hasMoreEmails = page.count == initialEmailPageSize
+    reconcileSelectedEmailWithVisibleList()
+  }
+
+  func loadMoreEmailsIfNeeded(current email: EmailSummary? = nil) {
+    guard hasMoreEmails, !isLoadingEmails, !isLoadingMoreEmails else { return }
+    if let email,
+       let index = emails.firstIndex(where: { $0.id == email.id }),
+       index < max(emails.count - 8, 0) {
+      return
+    }
+    guard var query = activeEmailQuery else { return }
+    let generation = emailListLoadGeneration
+    query.limit = nextEmailPageSize
+    query.offset = nextEmailOffset
+    query.refreshFilterCache = false
+    isLoadingMoreEmails = true
+
+    Task {
+      do {
+        let page = try await apiClient.emails(query: query)
+        guard generation == emailListLoadGeneration else { return }
+        appendEmailPage(page)
+      } catch {
+        guard generation == emailListLoadGeneration else { return }
+        reportError(error)
+      }
+      if generation == emailListLoadGeneration {
+        isLoadingMoreEmails = false
+      }
+    }
+  }
+
+  private func appendEmailPage(_ page: [EmailSummary]) {
+    let visiblePage = visibleEmails(page)
+    let existingIDs = Set(emails.map(\.id))
+    emails.append(contentsOf: visiblePage.filter { !existingIDs.contains($0.id) })
+    nextEmailOffset += page.count
+    hasMoreEmails = page.count == nextEmailPageSize
+  }
+
+  private func visibleEmails(_ summaries: [EmailSummary]) -> [EmailSummary] {
+    let pendingArchiveID = pendingArchive?.id
+    return summaries.filter { $0.id != pendingArchiveID }
+  }
+
+  private func reconcileSelectedEmailWithVisibleList() {
+    if let selectedEmailID, emails.contains(where: { $0.id == selectedEmailID }) {
+      return
+    }
+    selectedEmailID = nil
+    selectedEmail = nil
+    conversationEmails = []
+  }
+
+  private func clearSearchForNavigation() {
+    let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSearch.isEmpty || isSearchPresented else { return }
+    searchText = ""
+    isSearchPresented = false
+  }
+
+  private func refreshMailboxCounts() async throws {
+    mailboxes = try await apiClient.mailboxes()
+  }
+
+  private func reportError(_ error: Error) {
+    guard let message = errorDescriptionForReporting(error) else { return }
+    errorMessage = message
+  }
+
+  private func errorDescriptionForReporting(_ error: Error) -> String? {
+    guard !isCancellationError(error) else { return nil }
+    return error.localizedDescription
+  }
+
+  private func isCancellationError(_ error: Error) -> Bool {
+    if Task.isCancelled || error is CancellationError {
+      return true
+    }
+
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+      return true
+    }
+
+    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+       underlyingError.domain == NSURLErrorDomain,
+       underlyingError.code == NSURLErrorCancelled {
+      return true
+    }
+
+    return false
   }
 
   func refreshEmails(refreshFilterCache: Bool = false) async {
     do {
       try await loadEmails(refreshFilterCache: refreshFilterCache)
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -237,7 +415,9 @@ final class AppModel {
       do {
         _ = try await apiClient.syncAccount(id: accountId, limit: 50)
       } catch {
-        syncErrors.append(error.localizedDescription)
+        if let message = errorDescriptionForReporting(error) {
+          syncErrors.append(message)
+        }
       }
     }
 
@@ -247,7 +427,7 @@ final class AppModel {
       errorMessage = nil
       statusMessage = "Mail refreshed"
     }
-    await refreshAll()
+    await refreshAll(refreshSelectedFilterCache: selectedFilterID != nil)
   }
 
   func pollAllMailForNewEmails() async -> [String] {
@@ -290,64 +470,73 @@ final class AppModel {
     return details
   }
 
-  private func refreshSelectedFilterCache(filterID: String) async {
-    guard selectedFilterID == filterID else { return }
-    do {
-      try await loadEmails(refreshFilterCache: true)
-      filters = try await apiClient.filters()
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
   func checkHealth() async {
     do {
       health = try await apiClient.health()
       errorMessage = nil
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
   func selectGlobalInbox() async {
+    clearSearchForNavigation()
     selectedAccountID = nil
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedGlobalFolder = nil
+    await refreshEmails()
+  }
+
+  func selectGlobalFolder(_ folder: GlobalMailboxFolder) async {
+    clearSearchForNavigation()
+    selectedAccountID = nil
+    selectedMailboxID = nil
+    selectedLabelID = nil
+    selectedFilterID = nil
+    selectedGlobalFolder = folder
     await refreshEmails()
   }
 
   func selectAccount(_ account: MailAccount) async {
+    clearSearchForNavigation()
     selectedAccountID = account.id
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedGlobalFolder = nil
     await refreshEmails()
   }
 
   func selectMailbox(_ mailbox: Mailbox) async {
+    clearSearchForNavigation()
     selectedAccountID = mailbox.accountId
     selectedMailboxID = mailbox.id
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedGlobalFolder = nil
     await refreshEmails()
   }
 
   func selectLabel(_ label: MailLabel) async {
+    clearSearchForNavigation()
     selectedAccountID = label.accountId ?? selectedAccountID
     selectedMailboxID = nil
     selectedLabelID = label.id
     selectedFilterID = nil
+    selectedGlobalFolder = nil
     await refreshEmails()
   }
 
   func selectFilter(_ filter: MailFilter) async {
+    clearSearchForNavigation()
     selectedAccountID = nil
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = filter.id
+    selectedGlobalFolder = nil
     await refreshEmails()
-    await refreshSelectedFilterCache(filterID: filter.id)
   }
 
   func createGlobalLabel(name: String, color: String, icon: String) async {
@@ -356,7 +545,7 @@ final class AppModel {
       labels = try await apiClient.labels()
       await selectLabel(label)
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -366,7 +555,7 @@ final class AppModel {
       labels = labels.map { $0.id == updated.id ? updated : $0 }
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -376,7 +565,7 @@ final class AppModel {
       filters = try await apiClient.filters()
       await selectFilter(filter)
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -394,7 +583,77 @@ final class AppModel {
         try await loadEmails(refreshFilterCache: true)
       }
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
+    }
+  }
+
+  func moveAccounts(from source: IndexSet, to destination: Int) {
+    let previousAccounts = accounts
+    accounts.move(fromOffsets: source, toOffset: destination)
+    persistAccountOrder(rollback: previousAccounts)
+  }
+
+  func moveAccount(id: String, before targetID: String) {
+    guard let sourceIndex = accounts.firstIndex(where: { $0.id == id }),
+          let targetIndex = accounts.firstIndex(where: { $0.id == targetID }),
+          sourceIndex != targetIndex
+    else { return }
+
+    let account = accounts.remove(at: sourceIndex)
+    let adjustedTargetIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
+    accounts.insert(account, at: adjustedTargetIndex)
+  }
+
+  func persistAccountOrder() {
+    persistAccountOrder(rollback: accounts)
+  }
+
+  private func persistAccountOrder(rollback previousAccounts: [MailAccount]) {
+    let orderedIds = accounts.map(\.id)
+    Task {
+      do {
+        accounts = try await apiClient.reorderAccounts(ids: orderedIds)
+        profile = try? await apiClient.profile()
+        mailboxes = try await apiClient.mailboxes()
+        errorMessage = nil
+      } catch {
+        accounts = previousAccounts
+        reportError(error)
+      }
+    }
+  }
+
+  func moveFilters(from source: IndexSet, to destination: Int) {
+    let previousFilters = filters
+    filters.move(fromOffsets: source, toOffset: destination)
+    persistFilterOrder(rollback: previousFilters)
+  }
+
+  func moveFilter(id: String, before targetID: String) {
+    guard let sourceIndex = filters.firstIndex(where: { $0.id == id }),
+          let targetIndex = filters.firstIndex(where: { $0.id == targetID }),
+          sourceIndex != targetIndex
+    else { return }
+
+    let filter = filters.remove(at: sourceIndex)
+    let adjustedTargetIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
+    filters.insert(filter, at: adjustedTargetIndex)
+  }
+
+  func persistFilterOrder() {
+    persistFilterOrder(rollback: filters)
+  }
+
+  private func persistFilterOrder(rollback previousFilters: [MailFilter]) {
+    let orderedIds = filters.map(\.id)
+    Task {
+      do {
+        filters = try await apiClient.reorderFilters(ids: orderedIds)
+        errorMessage = nil
+      } catch {
+        filters = previousFilters
+        reportError(error)
+      }
     }
   }
 
@@ -412,7 +671,7 @@ final class AppModel {
       statusMessage = "Filter deleted"
       errorMessage = nil
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -460,7 +719,7 @@ final class AppModel {
       }
     } catch {
       guard selectedEmailID == id else { return }
-      errorMessage = error.localizedDescription
+      reportError(error)
       selectedEmail = nil
       conversationEmails = []
     }
@@ -483,7 +742,7 @@ final class AppModel {
       ))
       await refreshAll()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -502,7 +761,7 @@ final class AppModel {
       statusMessage = nil
       return URL(string: response.authorizationURL)
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
       statusMessage = nil
       return nil
     }
@@ -528,7 +787,7 @@ final class AppModel {
       await refreshAll()
       return true
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
       statusMessage = nil
       return false
     }
@@ -544,7 +803,7 @@ final class AppModel {
       errorMessage = nil
       await refreshAll()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -578,7 +837,7 @@ final class AppModel {
       try await loadEmails()
       return true
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
       return false
     }
   }
@@ -595,7 +854,7 @@ final class AppModel {
       await refreshAll()
       return true
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
       return false
     }
   }
@@ -633,6 +892,25 @@ final class AppModel {
 
   func resetShortcuts() {
     shortcutBindings = MailShortcutBinding.defaults
+  }
+
+  func isGlobalFolderVisible(_ folder: GlobalMailboxFolder) -> Bool {
+    visibleGlobalFolders.contains(folder)
+  }
+
+  func setGlobalFolder(_ folder: GlobalMailboxFolder, isVisible: Bool) {
+    var visible = Set(visibleGlobalFolders)
+    if isVisible {
+      visible.insert(folder)
+    } else {
+      visible.remove(folder)
+    }
+
+    visibleGlobalFolders = GlobalMailboxFolder.allCases.filter { visible.contains($0) }
+
+    if !isVisible, selectedGlobalFolder == folder {
+      Task { await selectGlobalInbox() }
+    }
   }
 
   func shortcutConflict(for action: MailShortcutAction) -> MailShortcutAction? {
@@ -693,9 +971,10 @@ final class AppModel {
     do {
       let updated = try await apiClient.updateEmail(id: email.id, isRead: !email.isRead)
       applyEmailUpdate(updated)
+      try await refreshMailboxCounts()
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -844,7 +1123,7 @@ final class AppModel {
           conversationEmails = archive.previousConversationEmails
         }
       }
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -854,9 +1133,10 @@ final class AppModel {
       statusMessage = "Moved to Trash"
       errorMessage = nil
       applyEmailUpdate(updated)
+      try await refreshMailboxCounts()
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -866,9 +1146,10 @@ final class AppModel {
       statusMessage = "Moved to Spam"
       errorMessage = nil
       applyEmailUpdate(updated)
+      try await refreshMailboxCounts()
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -889,7 +1170,7 @@ final class AppModel {
       self.selectedEmail = try await apiClient.setLabel(emailId: selectedEmail.id, labelId: label.id, action: action)
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -899,7 +1180,7 @@ final class AppModel {
       self.selectedEmail = try await apiClient.updateEmail(id: selectedEmail.id, mailboxId: mailbox.id)
       await refreshAll()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -911,7 +1192,7 @@ final class AppModel {
       errorMessage = nil
       await refreshAll()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -924,7 +1205,7 @@ final class AppModel {
       errorMessage = nil
       await refreshAll()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
@@ -932,16 +1213,19 @@ final class AppModel {
     guard let selectedEmail else { return }
     do {
       self.selectedEmail = try await apiClient.updateEmail(id: selectedEmail.id, isRead: isRead, isStarred: isStarred)
+      if isRead != nil {
+        try await refreshMailboxCounts()
+      }
       try await loadEmails()
     } catch {
-      errorMessage = error.localizedDescription
+      reportError(error)
     }
   }
 
   private func blockStatusMessage(scope: BlockSenderScope, value: String, affectedCount: Int) -> String {
     let target = scope == .domain ? value : value
     let messageCount = affectedCount == 1 ? "1 message" : "\(affectedCount) messages"
-    return "Blocked \(target). Moved \(messageCount) to Spam."
+    return "Blocked \(target). Moved \(messageCount) to Blocked."
   }
 
   private func applyEmailUpdate(_ email: EmailDetail) {
@@ -951,7 +1235,17 @@ final class AppModel {
   }
 
   private var defaultMailboxRole: String? {
-    selectedMailboxID == nil && selectedLabelID == nil ? "inbox" : nil
+    if selectedGlobalFolder != nil {
+      return nil
+    }
+    if shouldLoadCompleteEmailResultSet {
+      return nil
+    }
+    return selectedMailboxID == nil && selectedLabelID == nil ? "inbox" : nil
+  }
+
+  private var shouldLoadCompleteEmailResultSet: Bool {
+    selectedFilterID != nil || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   private func shouldRemoveArchivedEmailFromCurrentList(emailId: String) -> Bool {
@@ -962,6 +1256,10 @@ final class AppModel {
     if let selectedMailboxID,
        let mailbox = mailboxes.first(where: { $0.id == selectedMailboxID }) {
       return mailbox.role == "inbox"
+    }
+
+    if let selectedGlobalFolder {
+      return selectedGlobalFolder != .archive
     }
 
     return defaultMailboxRole == "inbox"
@@ -1002,6 +1300,10 @@ private enum Defaults {
   static let theme = "email.theme"
   static let shortcutBindings = "email.shortcutBindings.v1"
   static let archiveUndoDurationSeconds = "email.archiveUndoDurationSeconds"
+  static let showsGlobalFoldersSection = "email.sidebar.showsGlobalFoldersSection"
+  static let visibleGlobalFolderRoles = "email.sidebar.visibleGlobalFolderRoles"
+  static let visibleGlobalFolderRolesVersion = "email.sidebar.visibleGlobalFolderRoles.version"
+  static let currentVisibleGlobalFolderRolesVersion = 2
   static let defaultArchiveUndoDurationSeconds = 4
   static let archiveUndoDurationRange = 1...15
 
@@ -1039,6 +1341,41 @@ private enum Defaults {
   static func saveShortcutBindings(_ bindings: [MailShortcutBinding]) {
     guard let data = try? JSONEncoder().encode(bindings) else { return }
     UserDefaults.standard.set(data, forKey: shortcutBindings)
+  }
+
+  static func loadShowsGlobalFoldersSection() -> Bool {
+    guard UserDefaults.standard.object(forKey: showsGlobalFoldersSection) != nil else {
+      return true
+    }
+    return UserDefaults.standard.bool(forKey: showsGlobalFoldersSection)
+  }
+
+  static func loadVisibleGlobalFolders() -> [GlobalMailboxFolder] {
+    guard UserDefaults.standard.object(forKey: visibleGlobalFolderRoles) != nil else {
+      UserDefaults.standard.set(currentVisibleGlobalFolderRolesVersion, forKey: visibleGlobalFolderRolesVersion)
+      return GlobalMailboxFolder.allCases
+    }
+
+    let rawValues = UserDefaults.standard.stringArray(forKey: visibleGlobalFolderRoles) ?? []
+    var decoded = Set(rawValues.compactMap(GlobalMailboxFolder.init(rawValue:)))
+    let version = UserDefaults.standard.integer(forKey: visibleGlobalFolderRolesVersion)
+    if version < currentVisibleGlobalFolderRolesVersion {
+      decoded.insert(.blocked)
+      UserDefaults.standard.set(currentVisibleGlobalFolderRolesVersion, forKey: visibleGlobalFolderRolesVersion)
+      let migratedRawValues = GlobalMailboxFolder.allCases
+        .filter { decoded.contains($0) }
+        .map(\.rawValue)
+      UserDefaults.standard.set(migratedRawValues, forKey: visibleGlobalFolderRoles)
+    }
+    return GlobalMailboxFolder.allCases.filter { decoded.contains($0) }
+  }
+
+  static func saveVisibleGlobalFolders(_ folders: [GlobalMailboxFolder]) {
+    let rawValues = GlobalMailboxFolder.allCases
+      .filter { folders.contains($0) }
+      .map(\.rawValue)
+    UserDefaults.standard.set(rawValues, forKey: visibleGlobalFolderRoles)
+    UserDefaults.standard.set(currentVisibleGlobalFolderRolesVersion, forKey: visibleGlobalFolderRolesVersion)
   }
 
   static func loadArchiveUndoDurationSeconds() -> Int {

@@ -68,6 +68,96 @@ test("search results are sorted by newest received date first", () => {
   }
 });
 
+test("persists account and filter sidebar order", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const databasePath = join(dir, "mail.sqlite");
+  let store = new MailStore({
+    databasePath,
+    filterQueryPlanner: fallbackFilterQueryPlan
+  });
+  let reopened;
+
+  try {
+    const first = store.createAccount({
+      provider: "gmail",
+      email: "first@example.com",
+      displayName: "First"
+    });
+    const second = store.createAccount({
+      provider: "icloud",
+      email: "second@example.com",
+      displayName: "Second"
+    });
+    const third = store.createAccount({
+      provider: "gmail",
+      email: "third@example.com",
+      displayName: "Third"
+    });
+
+    const receipts = store.createFilter({ name: "Receipts", criteria: { text: "receipt" } });
+    const invoices = store.createFilter({ name: "Invoices", criteria: { text: "invoice" } });
+    const unread = store.createFilter({ name: "Unread", criteria: { unread: true } });
+
+    assert.deepEqual(store.listAccounts().map(account => account.id), [first.id, second.id, third.id]);
+    assert.deepEqual(store.listFilters().map(filter => filter.id), [receipts.id, invoices.id, unread.id]);
+
+    store.reorderAccounts([third.id, first.id, second.id]);
+    store.reorderFilters([unread.id, receipts.id, invoices.id]);
+
+    assert.deepEqual(store.listAccounts().map(account => account.id), [third.id, first.id, second.id]);
+    assert.deepEqual(store.listFilters().map(filter => filter.id), [unread.id, receipts.id, invoices.id]);
+
+    store.close();
+    store = null;
+
+    reopened = new MailStore({ databasePath });
+    assert.deepEqual(reopened.listAccounts().map(account => account.id), [third.id, first.id, second.id]);
+    assert.deepEqual(reopened.listFilters().map(filter => filter.id), [unread.id, receipts.id, invoices.id]);
+  } finally {
+    reopened?.close();
+    store?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("search results can be paged past the first client page", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+
+    for (let index = 0; index < 260; index += 1) {
+      store.upsertProviderEmail(testProviderEmail({
+        id: `paged-search-${index}`,
+        accountId: account.id,
+        mailboxId: inbox.id,
+        providerUID: `provider-paged-search-${index}`,
+        senderName: "Paged Sender",
+        senderEmail: "paged@example.com",
+        subject: `receipt ${index}`,
+        bodyText: "receipt searchable body",
+        receivedAt: new Date(Date.UTC(2026, 4, 23, 10, index)).toISOString()
+      }));
+    }
+
+    const firstPage = store.listEmails({ q: "receipt", limit: 200 });
+    const secondPage = store.listEmails({ q: "receipt", limit: 200, offset: 200 });
+
+    assert.equal(firstPage.length, 200);
+    assert.equal(secondPage.length, 60);
+    assert.equal(new Set([...firstPage, ...secondPage].map(email => email.id)).size, 260);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("search indexes HTML body text and rebuilds stale indexes", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const databasePath = join(dir, "mail.sqlite");
@@ -319,6 +409,7 @@ test("archives messages into the account archive mailbox", () => {
     assert.equal(archived.mailboxRole, "archive");
     assert.equal(store.getEmail(saved.id).mailboxRole, "archive");
     assert.equal(store.listMailboxes(account.id).find(mailbox => mailbox.role === "inbox").unreadCount, 0);
+    assert.equal(store.listMailboxes(account.id).find(mailbox => mailbox.role === "archive").totalCount, 1);
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -612,6 +703,54 @@ ORDER BY e.received_at DESC`
 
     assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [first.id]);
     assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [later.id, first.id]);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("saved filter caches include every matching email", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: () => ({
+      name: "Bulk",
+      color: "blue",
+      icon: "tray.full",
+      source: "test",
+      sql: `SELECT e.id
+FROM emails e
+WHERE e.subject LIKE 'Bulk cached filter%'
+ORDER BY e.received_at DESC`
+    })
+  });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+
+    for (let index = 0; index < 5_050; index += 1) {
+      store.upsertProviderEmail(testProviderEmail({
+        id: `bulk-filter-${index}`,
+        accountId: account.id,
+        mailboxId: inbox.id,
+        providerUID: `provider-bulk-filter-${index}`,
+        senderName: "Bulk Sender",
+        senderEmail: "bulk@example.com",
+        subject: `Bulk cached filter ${index}`,
+        receivedAt: new Date(Date.UTC(2026, 4, 23, 10, index)).toISOString()
+      }));
+    }
+
+    const filter = store.createFilter({
+      naturalLanguage: "Create a bulk cached filter"
+    });
+
+    assert.equal(filter.cachedEmailIds.length, 5_050);
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -1035,7 +1174,7 @@ test("marks messages as spam", () => {
   }
 });
 
-test("blocks an exact sender and routes future messages to spam", () => {
+test("blocks an exact sender and routes future messages to blocked", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 
@@ -1067,7 +1206,7 @@ test("blocks an exact sender and routes future messages to spam", () => {
     assert.equal(result.rule.scope, "email");
     assert.equal(result.rule.value, "alerts@noise.example");
     assert.equal(result.affectedCount, 1);
-    assert.equal(result.email.mailboxRole, "spam");
+    assert.equal(result.email.mailboxRole, "blocked");
 
     const future = store.upsertProviderEmail(testProviderEmail({
       id: "blocked-future",
@@ -1078,8 +1217,43 @@ test("blocks an exact sender and routes future messages to spam", () => {
       senderEmail: "alerts@noise.example"
     }));
 
-    assert.equal(future.mailboxRole, "spam");
+    assert.equal(future.mailboxRole, "blocked");
+    assert.equal(store.mailboxForRole(account.id, "blocked").role, "blocked");
     assert.equal(store.listEmails({ mailboxId: inbox.id }).length, 1);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("repairs locally blocked messages out of spam into blocked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = store.upsertProviderEmail(testProviderEmail({
+      id: "blocked-spam-repair",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-blocked-spam-repair",
+      senderName: "Blocked Vendor",
+      senderEmail: "news@email.apple.com"
+    }));
+
+    store.blockSenderForEmail(email.id, "domain");
+    assert.equal(store.getEmail(email.id).mailboxRole, "blocked");
+
+    store.markEmailSpam(email.id);
+    assert.equal(store.getEmail(email.id).mailboxRole, "spam");
+
+    assert.equal(store.repairBlockedMessagesMailbox(account.id), 1);
+    assert.equal(store.getEmail(email.id).mailboxRole, "blocked");
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -1127,7 +1301,7 @@ test("blocks a sender domain and includes subdomains", () => {
       senderEmail: "team@vendor.example"
     }));
 
-    assert.equal(future.mailboxRole, "spam");
+    assert.equal(future.mailboxRole, "blocked");
     assert.equal(unrelated.mailboxRole, "inbox");
   } finally {
     store.close();

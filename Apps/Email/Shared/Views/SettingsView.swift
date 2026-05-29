@@ -73,6 +73,17 @@ private struct GeneralSettingsPane: View {
         .pickerStyle(.segmented)
       }
 
+      Section("Sidebar") {
+        Toggle("Show folders", isOn: $model.showsGlobalFoldersSection)
+
+        ForEach(GlobalMailboxFolder.allCases) { folder in
+          Toggle(isOn: globalFolderVisibilityBinding(for: folder)) {
+            Label(folder.title, systemImage: folder.systemImage)
+          }
+          .disabled(!model.showsGlobalFoldersSection)
+        }
+      }
+
       Section("App Icon") {
         AppIconSettingsSection()
       }
@@ -171,6 +182,17 @@ private struct GeneralSettingsPane: View {
       }
     }
     .formStyle(.grouped)
+  }
+
+  private func globalFolderVisibilityBinding(for folder: GlobalMailboxFolder) -> Binding<Bool> {
+    Binding(
+      get: {
+        model.isGlobalFolderVisible(folder)
+      },
+      set: { isVisible in
+        model.setGlobalFolder(folder, isVisible: isVisible)
+      }
+    )
   }
 
   #if os(macOS)
@@ -624,8 +646,9 @@ private struct AccountMailboxSummary: View {
                 .foregroundStyle(.secondary)
               Text(mailbox.name)
                 .lineLimit(1)
-              if mailbox.unreadCount > 0 {
-                Text("\(mailbox.unreadCount)")
+              let count = displayCount(for: mailbox)
+              if count > 0 {
+                Text("\(count)")
                   .font(.caption.monospacedDigit())
                   .foregroundStyle(.secondary)
               }
@@ -645,9 +668,17 @@ private struct AccountMailboxSummary: View {
     case "drafts": "doc"
     case "archive": "archivebox"
     case "spam": "exclamationmark.octagon"
+    case "blocked": "hand.raised"
     case "trash": "trash"
     default: "folder"
     }
+  }
+
+  private func displayCount(for mailbox: Mailbox) -> Int {
+    if mailbox.role == "inbox" {
+      return mailbox.unreadCount
+    }
+    return mailbox.totalCount ?? mailbox.unreadCount
   }
 }
 

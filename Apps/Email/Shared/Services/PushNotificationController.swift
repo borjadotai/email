@@ -23,6 +23,7 @@ final class PushNotificationController: NSObject, UNUserNotificationCenterDelega
   func start(model: AppModel) async {
     self.model = model
     installNotificationDelegate()
+    refreshApplicationBadge()
 
     if let pendingEmailID {
       self.pendingEmailID = nil
@@ -39,8 +40,29 @@ final class PushNotificationController: NSObject, UNUserNotificationCenterDelega
     }
   }
 
+  func setApplicationBadgeCount(_ count: Int) {
+    let badgeCount = max(0, count)
+    #if os(iOS)
+    UNUserNotificationCenter.current().setBadgeCount(badgeCount) { error in
+      if let error {
+        print("Badge update failed: \(error.localizedDescription)")
+      }
+    }
+    #elseif os(macOS)
+    NSApplication.shared.dockTile.badgeLabel = badgeCount > 0 ? "\(badgeCount)" : nil
+    NSApplication.shared.dockTile.display()
+    #endif
+  }
+
+  func refreshApplicationBadge() {
+    setApplicationBadgeCount(model?.globalUnreadCount ?? 0)
+  }
+
   func notifyNewEmails(_ emails: [EmailDetail]) async {
     guard !emails.isEmpty else { return }
+    let badgeCount = model?.globalUnreadCount ?? emails.count
+    setApplicationBadgeCount(badgeCount)
+
     let center = UNUserNotificationCenter.current()
     let settings = await center.notificationSettings()
     guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
@@ -50,6 +72,7 @@ final class PushNotificationController: NSObject, UNUserNotificationCenterDelega
       content.title = email.senderName.isEmpty ? email.senderEmail : email.senderName
       content.body = email.subject.isEmpty ? "(No subject)" : email.subject
       content.sound = .default
+      content.badge = NSNumber(value: max(1, badgeCount))
       content.userInfo = [
         "emailId": email.id,
         "threadId": email.threadId ?? "",

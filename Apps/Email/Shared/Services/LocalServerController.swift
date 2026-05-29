@@ -89,7 +89,7 @@ final class LocalServerController {
     }
 
     var request = URLRequest(url: url)
-    request.timeoutInterval = 0.6
+    request.timeoutInterval = 2.0
 
     do {
       let (_, response) = try await URLSession.shared.data(for: request)

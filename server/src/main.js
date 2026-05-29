@@ -71,10 +71,12 @@ async function runHistoryBackfillPass() {
 
 function historyBackfillComplete(account) {
   if (account.provider === "gmail") {
-    return account.providerMetadata.gmailBackfillComplete === true;
+    return account.providerMetadata.gmailBackfillComplete === true
+      && account.providerMetadata.gmailSystemBackfillComplete === true;
   }
   if (account.provider === "icloud") {
-    return account.providerMetadata.icloudBackfillComplete === true;
+    return account.providerMetadata.icloudBackfillComplete === true
+      && account.providerMetadata.icloudSystemBackfillComplete === true;
   }
   return true;
 }

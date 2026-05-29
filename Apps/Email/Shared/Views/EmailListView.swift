@@ -77,9 +77,8 @@ struct EmailListView: View {
         .transition(.move(edge: .top).combined(with: .opacity))
       }
 
-      if model.isLoading && model.emails.isEmpty {
-        ProgressView()
-          .frame(maxWidth: .infinity, minHeight: 220)
+      if model.isLoadingEmails && model.emails.isEmpty {
+        EmailListSkeletonRows()
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
       } else if filteredEmails.isEmpty {
@@ -88,6 +87,13 @@ struct EmailListView: View {
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
       } else {
+        if model.isLoadingEmails {
+          EmailListLoadingStatusRow(title: "Loading")
+            .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 8, trailing: 18))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+        }
+
         ForEach(Array(groupedEmails.enumerated()), id: \.element.id) { index, section in
           IOSDateSectionHeader(
             title: section.title,
@@ -111,11 +117,21 @@ struct EmailListView: View {
             .onTapGesture {
               select(email)
             }
+            .onAppear {
+              model.loadMoreEmailsIfNeeded(current: email)
+            }
             .mailRowSwipeActions(email: email, model: model)
             .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 9, trailing: 18))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
           }
+        }
+
+        if model.isLoadingMoreEmails {
+          EmailListLoadingStatusRow(title: "Loading more")
+            .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 18, trailing: 18))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
         }
       }
     }
@@ -132,14 +148,21 @@ struct EmailListView: View {
   #if os(macOS)
   private var macOSBody: some View {
     Group {
-      if model.isLoading && model.emails.isEmpty {
-        ProgressView()
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      if model.isLoadingEmails && model.emails.isEmpty {
+        EmailListSkeletonRows()
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       } else if model.emails.isEmpty {
         ContentUnavailableView("No Messages", systemImage: "tray")
       } else {
         ScrollViewReader { proxy in
           List {
+            if model.isLoadingEmails {
+              EmailListLoadingStatusRow(title: "Loading")
+                .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+
             ForEach(Array(model.emails.enumerated()), id: \.element.id) { index, email in
               EmailRow(
                 email: email,
@@ -158,7 +181,17 @@ struct EmailListView: View {
                 .onTapGesture {
                   select(email)
                 }
+                .onAppear {
+                  model.loadMoreEmailsIfNeeded(current: email)
+                }
                 .mailRowSwipeActions(email: email, model: model)
+            }
+
+            if model.isLoadingMoreEmails {
+              EmailListLoadingStatusRow(title: "Loading more")
+                .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 16, trailing: 14))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
           }
           .listStyle(.plain)
@@ -330,6 +363,76 @@ private extension View {
     #else
     self
     #endif
+  }
+}
+
+private struct EmailListLoadingStatusRow: View {
+  var title: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      ProgressView()
+        .controlSize(.small)
+      Text(title)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Spacer()
+    }
+    .padding(.vertical, 4)
+  }
+}
+
+private struct EmailListSkeletonRows: View {
+  private let rows = Array(0..<8)
+
+  var body: some View {
+    VStack(spacing: 0) {
+      ForEach(rows, id: \.self) { index in
+        EmailRowSkeleton()
+          .opacity(index < 3 ? 1 : 0.76)
+      }
+    }
+    .redacted(reason: .placeholder)
+    .allowsHitTesting(false)
+  }
+}
+
+private struct EmailRowSkeleton: View {
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack(alignment: .top, spacing: 12) {
+        Circle()
+          .fill(.secondary.opacity(0.22))
+          .frame(width: 34, height: 34)
+
+        VStack(alignment: .leading, spacing: 8) {
+          HStack {
+            RoundedRectangle(cornerRadius: 3)
+              .fill(.secondary.opacity(0.26))
+              .frame(width: 130, height: 11)
+
+            Spacer()
+
+            RoundedRectangle(cornerRadius: 3)
+              .fill(.secondary.opacity(0.18))
+              .frame(width: 44, height: 9)
+          }
+
+          RoundedRectangle(cornerRadius: 3)
+            .fill(.secondary.opacity(0.22))
+            .frame(height: 10)
+
+          RoundedRectangle(cornerRadius: 3)
+            .fill(.secondary.opacity(0.16))
+            .frame(height: 9)
+        }
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 14)
+
+      Divider()
+        .padding(.leading, 60)
+    }
   }
 }
 

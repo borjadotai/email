@@ -10,6 +10,7 @@ const SYSTEM_MAILBOXES = [
   ["Drafts", "drafts"],
   ["Archive", "archive"],
   ["Spam", "spam"],
+  ["Blocked", "blocked"],
   ["Trash", "trash"]
 ];
 
@@ -21,7 +22,7 @@ const SYSTEM_LABELS = [
 ];
 
 const SEARCH_INDEX_VERSION = "3";
-const FILTER_CACHE_LIMIT = 5_000;
+const FILTER_CACHE_VERSION = "2";
 const SEARCHABLE_BODY_TEXT_LIMIT = 250_000;
 const HTML_SEARCH_INPUT_LIMIT = 750_000;
 
@@ -55,6 +56,7 @@ export class MailStore {
         auth_type TEXT NOT NULL DEFAULT 'not_configured',
         status TEXT NOT NULL DEFAULT 'needs_auth',
         sync_history INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
         last_sync_at TEXT,
         provider_metadata_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
@@ -114,6 +116,7 @@ export class MailStore {
         query_error TEXT,
         cached_email_ids_json TEXT NOT NULL DEFAULT '[]',
         cache_updated_at TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -231,7 +234,9 @@ export class MailStore {
 
       CREATE INDEX IF NOT EXISTS idx_emails_account_received ON emails(account_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_mailbox_received ON emails(mailbox_id, received_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_tracking ON emails(tracking_id);
+      CREATE INDEX IF NOT EXISTS idx_mailboxes_role ON mailboxes(role, id);
       CREATE INDEX IF NOT EXISTS idx_emails_account_thread ON emails(account_id, thread_id)
         WHERE thread_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_emails_account_rfc_message_id ON emails(account_id, rfc_message_id)
@@ -251,6 +256,7 @@ export class MailStore {
         WHERE provider_uid IS NOT NULL;
     `);
     this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("accounts", "sort_order", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("labels", "icon", "TEXT NOT NULL DEFAULT 'tag'");
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
@@ -260,6 +266,12 @@ export class MailStore {
     this.ensureColumn("saved_filters", "query_error", "TEXT");
     this.ensureColumn("saved_filters", "cached_email_ids_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("saved_filters", "cache_updated_at", "TEXT");
+    this.ensureColumn("saved_filters", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order, created_at);
+      CREATE INDEX IF NOT EXISTS idx_saved_filters_sort ON saved_filters(sort_order, name);
+    `);
+    this.ensureSidebarSortOrders();
     this.ensureDefaultsForExistingAccounts();
     this.ensureLocalUser();
     this.linkUnownedAccountsToLocalUser();
@@ -268,7 +280,9 @@ export class MailStore {
     this.repairCrossAccountSentMisclassifications();
     this.repairLocalUserSenderNames();
     this.repairDuplicateProviderMessages();
+    this.repairBlockedMessagesMailbox();
     this.ensureSearchIndexVersion();
+    this.ensureFilterCacheVersion();
   }
 
   ensureColumn(table, column, definition) {
@@ -301,8 +315,11 @@ export class MailStore {
 
     this.transaction(() => {
       this.db.prepare(`
-        INSERT INTO accounts (id, provider, email, display_name, avatar_url, auth_type, status, sync_history, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO accounts (
+          id, provider, email, display_name, avatar_url, auth_type,
+          status, sync_history, sort_order, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         provider,
@@ -312,6 +329,7 @@ export class MailStore {
         input.authType ?? "not_configured",
         input.status ?? "connected",
         input.syncHistory === false ? 0 : 1,
+        this.nextSortOrder("accounts"),
         now
       );
       this.ensureDefaultsForAccount(id);
@@ -369,15 +387,21 @@ export class MailStore {
       SELECT a.id, a.provider, a.email, a.display_name AS displayName,
              ${accountAvatarSelect("a")},
              a.auth_type AS authType, a.status, a.sync_history AS syncHistory,
+             a.sort_order AS sortOrder,
              a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
              a.created_at AS createdAt
       FROM accounts a
-      ORDER BY a.created_at ASC
+      ORDER BY a.sort_order ASC, a.created_at ASC
     `).all().map(row => ({
       ...row,
       syncHistory: Boolean(row.syncHistory),
       providerMetadata: parseJSON(row.providerMetadataJSON, {})
     }));
+  }
+
+  reorderAccounts(ids) {
+    this.reorderRows("accounts", ids);
+    return this.listAccounts();
   }
 
   getProfile() {
@@ -413,6 +437,7 @@ export class MailStore {
       SELECT a.id, a.provider, a.email, a.display_name AS displayName,
              ${accountAvatarSelect("a")},
              a.auth_type AS authType, a.status, a.sync_history AS syncHistory,
+             a.sort_order AS sortOrder,
              a.last_sync_at AS lastSyncAt, a.provider_metadata_json AS providerMetadataJSON,
              a.created_at AS createdAt
       FROM accounts a
@@ -705,6 +730,15 @@ export class MailStore {
     return deleted;
   }
 
+  repairBlockedMessagesMailbox(accountId = null) {
+    const rules = this.listBlockedSenders(accountId);
+    let repaired = 0;
+    for (const rule of rules) {
+      repaired += this.moveBlockedMessagesToBlocked(rule.accountId, rule.scope, rule.value);
+    }
+    return repaired;
+  }
+
   updateAccountStatus(id, status, metadata = null) {
     const account = this.getAccount(id);
     if (!account) return null;
@@ -797,18 +831,25 @@ export class MailStore {
 
     return this.db.prepare(`
       SELECT m.id, m.account_id AS accountId, a.email AS accountEmail,
-             m.name, m.role, m.unread_count AS unreadCount
+             m.name, m.role, m.unread_count AS unreadCount,
+             COALESCE(mailbox_counts.total_count, 0) AS totalCount
       FROM mailboxes m
       JOIN accounts a ON a.id = m.account_id
+      LEFT JOIN (
+        SELECT mailbox_id, COUNT(*) AS total_count
+        FROM emails
+        GROUP BY mailbox_id
+      ) mailbox_counts ON mailbox_counts.mailbox_id = m.id
       ${where}
-      ORDER BY a.created_at ASC,
+      ORDER BY a.sort_order ASC, a.created_at ASC,
         CASE m.role
           WHEN 'inbox' THEN 0
           WHEN 'sent' THEN 1
           WHEN 'drafts' THEN 2
           WHEN 'archive' THEN 3
           WHEN 'spam' THEN 4
-          WHEN 'trash' THEN 5
+          WHEN 'blocked' THEN 5
+          WHEN 'trash' THEN 6
           ELSE 9
         END
     `).all(...args);
@@ -867,10 +908,16 @@ export class MailStore {
              query_source AS querySource, query_error AS queryError,
              cached_email_ids_json AS cachedEmailIdsJSON,
              cache_updated_at AS cacheUpdatedAt,
+             sort_order AS sortOrder,
              created_at AS createdAt, updated_at AS updatedAt
       FROM saved_filters
-      ORDER BY name ASC
+      ORDER BY sort_order ASC, name COLLATE NOCASE ASC
     `).all().map(row => this.publicFilter(row));
+  }
+
+  reorderFilters(ids) {
+    this.reorderRows("saved_filters", ids);
+    return this.listFilters();
   }
 
   getFilter(id) {
@@ -880,6 +927,7 @@ export class MailStore {
              query_source AS querySource, query_error AS queryError,
              cached_email_ids_json AS cachedEmailIdsJSON,
              cache_updated_at AS cacheUpdatedAt,
+             sort_order AS sortOrder,
              created_at AS createdAt, updated_at AS updatedAt
       FROM saved_filters
       WHERE id = ?
@@ -908,9 +956,9 @@ export class MailStore {
       INSERT INTO saved_filters (
         id, name, color, icon, natural_language, criteria_json,
         query_sql, query_source, query_error, cached_email_ids_json, cache_updated_at,
-        created_at, updated_at
+        sort_order, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       name,
@@ -923,6 +971,7 @@ export class MailStore {
       plan?.error ?? null,
       "[]",
       null,
+      this.nextSortOrder("saved_filters"),
       now,
       now
     );
@@ -1009,6 +1058,7 @@ export class MailStore {
       queryError: row.queryError,
       cachedEmailIds: parseJSON(row.cachedEmailIdsJSON, []),
       cacheUpdatedAt: row.cacheUpdatedAt,
+      sortOrder: row.sortOrder,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
     };
@@ -1118,8 +1168,7 @@ export class MailStore {
     const rows = this.db.prepare(`
       SELECT id
       FROM (${safeSQL}) filter_result
-      LIMIT ?
-    `).all(FILTER_CACHE_LIMIT);
+    `).all();
     return uniqueStrings(rows.map(row => row.id));
   }
 
@@ -1266,8 +1315,8 @@ export class MailStore {
       return;
     }
 
-    where.push(`e.id IN (${emailIds.map(() => "?").join(", ")})`);
-    args.push(...emailIds);
+    where.push("e.id IN (SELECT value FROM json_each(?))");
+    args.push(JSON.stringify(emailIds));
   }
 
   applyFilterCriteria({ criteria = {}, where, args }) {
@@ -1579,7 +1628,7 @@ export class MailStore {
       FROM blocked_senders
       WHERE account_id = ? AND scope = ? AND value = ?
     `).get(email.accountId, normalizedScope, value);
-    const affectedCount = this.moveBlockedMessagesToSpam(email.accountId, normalizedScope, value);
+    const affectedCount = this.moveBlockedMessagesToBlocked(email.accountId, normalizedScope, value);
 
     return {
       rule,
@@ -1849,6 +1898,69 @@ export class MailStore {
     }
   }
 
+  ensureSidebarSortOrders() {
+    this.ensureDenseSortOrder("accounts");
+    this.ensureDenseSortOrder("saved_filters");
+  }
+
+  ensureDenseSortOrder(table) {
+    const rows = this.db.prepare(`
+      SELECT id, sort_order AS sortOrder
+      FROM ${sidebarSortTable(table)}
+      ORDER BY ${sidebarSortOrderSQL(table)}
+    `).all();
+    if (rows.length === 0) return;
+
+    const alreadyDense = rows.every((row, index) => Number(row.sortOrder) === index);
+    if (alreadyDense) return;
+
+    const update = this.db.prepare(`UPDATE ${sidebarSortTable(table)} SET sort_order = ? WHERE id = ?`);
+    this.transaction(() => {
+      rows.forEach((row, index) => update.run(index, row.id));
+    });
+  }
+
+  nextSortOrder(table) {
+    const row = this.db.prepare(`
+      SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder
+      FROM ${sidebarSortTable(table)}
+    `).get();
+    return row?.nextSortOrder ?? 0;
+  }
+
+  reorderRows(table, ids) {
+    if (!Array.isArray(ids)) {
+      throw httpError(400, "ids must be a non-empty array.");
+    }
+
+    const tableName = sidebarSortTable(table);
+    const requestedIds = uniqueStrings(ids);
+    if (requestedIds.length === 0) {
+      throw httpError(400, "ids must be a non-empty array.");
+    }
+    const rows = this.db.prepare(`
+      SELECT id
+      FROM ${tableName}
+      ORDER BY ${sidebarSortOrderSQL(table)}
+    `).all();
+    const existingIds = rows.map(row => row.id);
+    const existingSet = new Set(existingIds);
+    const unknownId = requestedIds.find(id => !existingSet.has(id));
+    if (unknownId) {
+      throw httpError(400, `${sidebarSortLabel(table)} ${unknownId} does not exist.`);
+    }
+
+    const requestedSet = new Set(requestedIds);
+    const orderedIds = [
+      ...requestedIds,
+      ...existingIds.filter(id => !requestedSet.has(id))
+    ];
+    const update = this.db.prepare(`UPDATE ${tableName} SET sort_order = ? WHERE id = ?`);
+    this.transaction(() => {
+      orderedIds.forEach((id, index) => update.run(index, id));
+    });
+  }
+
   mailboxForRole(accountId, role) {
     const mailbox = this.db.prepare("SELECT id, name, role FROM mailboxes WHERE account_id = ? AND role = ?").get(accountId, role);
     if (!mailbox) throw httpError(404, `Mailbox ${role} not found.`);
@@ -1987,10 +2099,10 @@ export class MailStore {
       senderAvatarURL: optionalString(email.senderAvatarURL) || senderLogoURLForEmail(email.senderEmail)
     };
     const blockedRule = this.blockedSenderForEmail(resolvedEmail.accountId, resolvedEmail.senderEmail);
-    if (blockedRule && this.canRouteBlockedEmailToSpam(resolvedEmail.mailboxId)) {
+    if (blockedRule && this.canRouteBlockedEmailToBlocked(resolvedEmail.mailboxId)) {
       resolvedEmail = {
         ...resolvedEmail,
-        mailboxId: this.mailboxForRole(resolvedEmail.accountId, "spam").id
+        mailboxId: this.mailboxForRole(resolvedEmail.accountId, "blocked").id
       };
     }
     const providerUIDMatch = resolvedEmail.providerUID
@@ -2116,6 +2228,19 @@ export class MailStore {
     this.setSetting("search.indexVersion", SEARCH_INDEX_VERSION);
   }
 
+  ensureFilterCacheVersion() {
+    const version = this.getSetting("filters.cacheVersion", "0");
+    if (version === FILTER_CACHE_VERSION) return;
+
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE saved_filters
+      SET cached_email_ids_json = '[]', cache_updated_at = NULL, updated_at = ?
+      WHERE query_sql IS NOT NULL
+    `).run(now);
+    this.setSetting("filters.cacheVersion", FILTER_CACHE_VERSION);
+  }
+
   rebuildEmailFTS() {
     const rows = this.db.prepare(`
       SELECT id, account_id AS accountId, subject, sender_name AS senderName,
@@ -2151,13 +2276,13 @@ export class MailStore {
     }) ?? null;
   }
 
-  canRouteBlockedEmailToSpam(mailboxId) {
+  canRouteBlockedEmailToBlocked(mailboxId) {
     const role = this.mailboxRole(mailboxId);
-    return role !== "sent" && role !== "drafts" && role !== "trash" && role !== "spam";
+    return role !== "sent" && role !== "drafts" && role !== "trash" && role !== "blocked";
   }
 
-  moveBlockedMessagesToSpam(accountId, scope, value) {
-    const spamMailbox = this.mailboxForRole(accountId, "spam");
+  moveBlockedMessagesToBlocked(accountId, scope, value) {
+    const blockedMailbox = this.mailboxForRole(accountId, "blocked");
     const matchSQL = blockedSenderMatchSQL(scope);
     const matchArgs = blockedSenderMatchArgs(scope, value);
     const touchedMailboxes = this.db.prepare(`
@@ -2165,7 +2290,7 @@ export class MailStore {
       FROM emails e
       JOIN mailboxes m ON m.id = e.mailbox_id
       WHERE e.account_id = ?
-        AND m.role NOT IN ('sent', 'drafts', 'trash')
+        AND m.role NOT IN ('sent', 'drafts', 'trash', 'blocked')
         AND ${matchSQL}
     `).all(accountId, ...matchArgs);
     const result = this.db.prepare(`
@@ -2176,15 +2301,15 @@ export class MailStore {
         FROM emails e
         JOIN mailboxes m ON m.id = e.mailbox_id
         WHERE e.account_id = ?
-          AND m.role NOT IN ('sent', 'drafts', 'trash')
+          AND m.role NOT IN ('sent', 'drafts', 'trash', 'blocked')
           AND ${matchSQL}
       )
-    `).run(spamMailbox.id, accountId, ...matchArgs);
+    `).run(blockedMailbox.id, accountId, ...matchArgs);
 
     for (const mailbox of touchedMailboxes) {
       this.refreshMailboxUnread(mailbox.mailboxId);
     }
-    this.refreshMailboxUnread(spamMailbox.id);
+    this.refreshMailboxUnread(blockedMailbox.id);
     return result.changes ?? 0;
   }
 
@@ -2309,6 +2434,35 @@ function accountAvatarSelect(alias) {
       )
     ) AS avatarURL
   `;
+}
+
+function sidebarSortTable(table) {
+  if (table === "accounts" || table === "saved_filters") {
+    return table;
+  }
+  throw httpError(500, `Unsupported sidebar sort table ${table}.`);
+}
+
+function sidebarSortOrderSQL(table) {
+  switch (sidebarSortTable(table)) {
+    case "accounts":
+      return "sort_order ASC, created_at ASC, id ASC";
+    case "saved_filters":
+      return "sort_order ASC, name COLLATE NOCASE ASC, created_at ASC, id ASC";
+    default:
+      throw httpError(500, `Unsupported sidebar sort table ${table}.`);
+  }
+}
+
+function sidebarSortLabel(table) {
+  switch (sidebarSortTable(table)) {
+    case "accounts":
+      return "Account";
+    case "saved_filters":
+      return "Filter";
+    default:
+      return "Item";
+  }
 }
 
 function accountIdentityMatchSQL(emailAlias, accountAlias) {
