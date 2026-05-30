@@ -1,5 +1,6 @@
 .DS_Store
 .env
+.env.testflight
 AuthKey_*.p8
 node_modules/
 
@@ -11,7 +12,11 @@ server/data/
 
 # Apple build output and user state
 DerivedData*/
+build/
 .build/
 dist/
+*.xcarchive
+*.xcdistributionlogs
+*.ipa
 *.xcuserstate
 xcuserdata/

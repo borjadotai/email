@@ -23,6 +23,9 @@ const SYSTEM_LABELS = [
 
 const SEARCH_INDEX_VERSION = "3";
 const FILTER_CACHE_VERSION = "2";
+const CONTACT_INDEX_VERSION = "1";
+const CONTACT_INDEX_SYNC_REBUILD_LIMIT = 5_000;
+const CONTACT_INDEX_REBUILD_BATCH_SIZE = 500;
 const SEARCHABLE_BODY_TEXT_LIMIT = 250_000;
 const HTML_SEARCH_INPUT_LIMIT = 750_000;
 
@@ -232,6 +235,29 @@ export class MailStore {
         fts_rowid INTEGER NOT NULL UNIQUE
       );
 
+      CREATE TABLE IF NOT EXISTS email_contact_edges (
+        email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+        normalized_email TEXT NOT NULL,
+        email TEXT NOT NULL,
+        display_name TEXT,
+        avatar_url TEXT,
+        direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+        contacted_at TEXT NOT NULL,
+        PRIMARY KEY(email_id, normalized_email, direction)
+      );
+
+      CREATE TABLE IF NOT EXISTS email_contacts (
+        normalized_email TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        display_name TEXT,
+        avatar_url TEXT,
+        inbound_count INTEGER NOT NULL DEFAULT 0,
+        outbound_count INTEGER NOT NULL DEFAULT 0,
+        last_contacted_at TEXT NOT NULL,
+        search_text TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_emails_account_received ON emails(account_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_mailbox_received ON emails(mailbox_id, received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC);
@@ -251,6 +277,11 @@ export class MailStore {
       CREATE INDEX IF NOT EXISTS idx_blocked_senders_account ON blocked_senders(account_id, scope, value);
       CREATE INDEX IF NOT EXISTS idx_push_tokens_active ON push_tokens(platform, bundle_id, environment)
         WHERE disabled_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_email_contact_edges_email ON email_contact_edges(email_id);
+      CREATE INDEX IF NOT EXISTS idx_email_contact_edges_normalized ON email_contact_edges(normalized_email);
+      CREATE INDEX IF NOT EXISTS idx_email_contacts_email ON email_contacts(email);
+      CREATE INDEX IF NOT EXISTS idx_email_contacts_search ON email_contacts(search_text);
+      CREATE INDEX IF NOT EXISTS idx_email_contacts_recent ON email_contacts(last_contacted_at DESC);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_account_provider_uid
         ON emails(account_id, provider_uid)
         WHERE provider_uid IS NOT NULL;
@@ -283,6 +314,7 @@ export class MailStore {
     this.repairBlockedMessagesMailbox();
     this.ensureSearchIndexVersion();
     this.ensureFilterCacheVersion();
+    this.ensureContactIndexVersion();
   }
 
   ensureColumn(table, column, definition) {
@@ -303,6 +335,10 @@ export class MailStore {
       VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `).run(key, String(value), new Date().toISOString());
+  }
+
+  deleteSetting(key) {
+    this.db.prepare("DELETE FROM settings WHERE key = ?").run(key);
   }
 
   createAccount(input) {
@@ -1308,6 +1344,38 @@ export class MailStore {
     }));
   }
 
+  searchContacts(query, limit = 8) {
+    const normalizedQuery = normalizeContactSearchQuery(query);
+    if (normalizedQuery.length < 2) return [];
+
+    const cappedLimit = clampInt(limit, 1, 20, 8);
+    const prefix = `${escapeLike(normalizedQuery)}%`;
+    const contains = `%${escapeLike(normalizedQuery)}%`;
+    const rows = this.db.prepare(`
+      SELECT normalized_email AS normalizedEmail, email, display_name AS displayName,
+             avatar_url AS avatarURL, inbound_count AS inboundCount,
+             outbound_count AS outboundCount, last_contacted_at AS lastContactedAt
+      FROM email_contacts
+      WHERE search_text LIKE ? ESCAPE '\\'
+      ORDER BY
+        CASE
+          WHEN normalized_email = ? THEN 0
+          WHEN normalized_email LIKE ? ESCAPE '\\' THEN 1
+          WHEN lower(coalesce(display_name, '')) LIKE ? ESCAPE '\\' THEN 2
+          ELSE 3
+        END,
+        outbound_count DESC,
+        inbound_count DESC,
+        last_contacted_at DESC
+      LIMIT ?
+    `).all(contains, normalizedQuery, prefix, prefix, cappedLimit);
+
+    return rows.map(row => ({
+      ...row,
+      avatarURL: row.avatarURL || senderLogoURLForEmail(row.email)
+    }));
+  }
+
   applyFilterCache({ filter, where, args }) {
     const emailIds = Array.isArray(filter.cachedEmailIds) ? filter.cachedEmailIds : [];
     if (emailIds.length === 0) {
@@ -2089,6 +2157,7 @@ export class MailStore {
     }
 
     this.insertEmailFTS(email);
+    this.replaceEmailContactEdges(email);
   }
 
   upsertProviderEmail(email) {
@@ -2167,6 +2236,7 @@ export class MailStore {
         this.deleteEmailFTS(existing.id);
         this.insertEmailFTS({ ...resolvedEmail, id: existing.id });
       }
+      this.replaceEmailContactEdges({ ...resolvedEmail, id: existing.id });
       if (Array.isArray(resolvedEmail.attachments)) {
         this.replaceEmailAttachments(existing.id, resolvedEmail.attachments);
       }
@@ -2211,6 +2281,152 @@ export class MailStore {
     this.db.prepare("DELETE FROM email_fts WHERE email_id = ?").run(emailId);
   }
 
+  replaceEmailContactEdges(email, { refresh = true } = {}) {
+    const touched = new Set(
+      this.db.prepare("SELECT normalized_email AS normalizedEmail FROM email_contact_edges WHERE email_id = ?")
+        .all(email.id)
+        .map(row => row.normalizedEmail)
+    );
+    this.db.prepare("DELETE FROM email_contact_edges WHERE email_id = ?").run(email.id);
+
+    const insert = this.db.prepare(`
+      INSERT OR REPLACE INTO email_contact_edges (
+        email_id, normalized_email, email, display_name, avatar_url, direction, contacted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const edge of contactEdgesForEmail(email, this)) {
+      touched.add(edge.normalizedEmail);
+      insert.run(
+        email.id,
+        edge.normalizedEmail,
+        edge.email,
+        edge.displayName,
+        edge.avatarURL,
+        edge.direction,
+        edge.contactedAt
+      );
+    }
+
+    if (refresh) {
+      this.refreshContacts([...touched]);
+    }
+  }
+
+  rebuildContactsFromEdges() {
+    const now = new Date().toISOString();
+    this.db.prepare("DELETE FROM email_contacts").run();
+    this.db.prepare(`
+      WITH aggregate AS (
+        SELECT normalized_email AS normalizedEmail,
+               SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inboundCount,
+               SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outboundCount,
+               MAX(contacted_at) AS lastContactedAt
+        FROM email_contact_edges
+        GROUP BY normalized_email
+      ),
+      ranked AS (
+        SELECT normalized_email AS normalizedEmail,
+               email,
+               display_name AS displayName,
+               avatar_url AS avatarURL,
+               ROW_NUMBER() OVER (
+                 PARTITION BY normalized_email
+                 ORDER BY
+                   CASE WHEN display_name IS NULL OR display_name = '' THEN 1 ELSE 0 END,
+                   direction = 'outbound' DESC,
+                   contacted_at DESC
+               ) AS rank
+        FROM email_contact_edges
+      )
+      INSERT INTO email_contacts (
+        normalized_email, email, display_name, avatar_url, inbound_count,
+        outbound_count, last_contacted_at, search_text, updated_at
+      )
+      SELECT aggregate.normalizedEmail,
+             COALESCE(ranked.email, aggregate.normalizedEmail),
+             NULLIF(ranked.displayName, ''),
+             NULLIF(ranked.avatarURL, ''),
+             aggregate.inboundCount,
+             aggregate.outboundCount,
+             aggregate.lastContactedAt,
+             trim(
+               aggregate.normalizedEmail || ' ' ||
+               lower(COALESCE(ranked.email, '')) || ' ' ||
+               lower(COALESCE(ranked.displayName, ''))
+             ),
+             ?
+      FROM aggregate
+      LEFT JOIN ranked
+        ON ranked.normalizedEmail = aggregate.normalizedEmail
+       AND ranked.rank = 1
+    `).run(now);
+  }
+
+  refreshContacts(normalizedEmails) {
+    const uniqueEmails = uniqueStrings(normalizedEmails);
+    if (uniqueEmails.length === 0) return;
+
+    const aggregate = this.db.prepare(`
+      SELECT normalized_email AS normalizedEmail,
+             SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inboundCount,
+             SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outboundCount,
+             MAX(contacted_at) AS lastContactedAt
+      FROM email_contact_edges
+      WHERE normalized_email = ?
+      GROUP BY normalized_email
+    `);
+    const best = this.db.prepare(`
+      SELECT email, display_name AS displayName, avatar_url AS avatarURL
+      FROM email_contact_edges
+      WHERE normalized_email = ?
+      ORDER BY
+        CASE WHEN display_name IS NULL OR display_name = '' THEN 1 ELSE 0 END,
+        direction = 'outbound' DESC,
+        contacted_at DESC
+      LIMIT 1
+    `);
+    const upsert = this.db.prepare(`
+      INSERT INTO email_contacts (
+        normalized_email, email, display_name, avatar_url, inbound_count,
+        outbound_count, last_contacted_at, search_text, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(normalized_email) DO UPDATE SET
+        email = excluded.email,
+        display_name = excluded.display_name,
+        avatar_url = excluded.avatar_url,
+        inbound_count = excluded.inbound_count,
+        outbound_count = excluded.outbound_count,
+        last_contacted_at = excluded.last_contacted_at,
+        search_text = excluded.search_text,
+        updated_at = excluded.updated_at
+    `);
+    const remove = this.db.prepare("DELETE FROM email_contacts WHERE normalized_email = ?");
+
+    for (const normalizedEmail of uniqueEmails) {
+      const counts = aggregate.get(normalizedEmail);
+      if (!counts) {
+        remove.run(normalizedEmail);
+        continue;
+      }
+      const preferred = best.get(normalizedEmail);
+      const displayName = optionalString(preferred?.displayName);
+      const email = preferred?.email || normalizedEmail;
+      const avatarURL = optionalString(preferred?.avatarURL);
+      const searchText = `${normalizedEmail} ${email.toLowerCase()} ${displayName?.toLowerCase() ?? ""}`.trim();
+      upsert.run(
+        normalizedEmail,
+        email,
+        displayName,
+        avatarURL,
+        counts.inboundCount ?? 0,
+        counts.outboundCount ?? 0,
+        counts.lastContactedAt,
+        searchText,
+        new Date().toISOString()
+      );
+    }
+  }
+
   emailFTSSnapshot(emailId) {
     return this.db.prepare(`
       SELECT subject, sender_name AS senderName, sender_email AS senderEmail,
@@ -2241,6 +2457,91 @@ export class MailStore {
     this.setSetting("filters.cacheVersion", FILTER_CACHE_VERSION);
   }
 
+  ensureContactIndexVersion() {
+    const version = this.getSetting("contacts.indexVersion", "0");
+    if (version === CONTACT_INDEX_VERSION) return;
+
+    const emailCount = this.db.prepare("SELECT COUNT(*) AS count FROM emails").get().count ?? 0;
+    if (emailCount > CONTACT_INDEX_SYNC_REBUILD_LIMIT) {
+      this.setSetting("contacts.indexRebuildPending", CONTACT_INDEX_VERSION);
+      return;
+    }
+
+    this.rebuildEmailContacts();
+    this.setSetting("contacts.indexVersion", CONTACT_INDEX_VERSION);
+    this.deleteSetting("contacts.indexRebuildPending");
+  }
+
+  startDeferredContactIndexRebuild({ batchSize = CONTACT_INDEX_REBUILD_BATCH_SIZE, logger = null } = {}) {
+    if (this.getSetting("contacts.indexVersion", "0") === CONTACT_INDEX_VERSION) {
+      return { started: false, reason: "current" };
+    }
+    if (this.contactIndexRebuildRunning) {
+      return { started: false, reason: "running" };
+    }
+
+    const total = this.db.prepare("SELECT COUNT(*) AS count FROM emails").get().count ?? 0;
+    this.contactIndexRebuildRunning = true;
+    this.db.prepare("DELETE FROM email_contacts").run();
+    this.db.prepare("DELETE FROM email_contact_edges").run();
+
+    let processed = 0;
+    let lastRowID = 0;
+    const selectBatch = this.db.prepare(`
+      SELECT rowid AS rowID, id, account_id AS accountId, sender_name AS senderName,
+             sender_email AS senderEmail, sender_avatar_url AS senderAvatarURL,
+             recipients_json AS recipientsJSON, cc_json AS ccJSON, bcc_json AS bccJSON,
+             sent_at AS sentAt, received_at AS receivedAt
+      FROM emails
+      WHERE rowid > ?
+      ORDER BY rowid ASC
+      LIMIT ?
+    `);
+
+    const runBatch = () => {
+      try {
+        const rows = selectBatch.all(lastRowID, batchSize);
+        if (rows.length === 0) {
+          this.rebuildContactsFromEdges();
+          this.setSetting("contacts.indexVersion", CONTACT_INDEX_VERSION);
+          this.deleteSetting("contacts.indexRebuildPending");
+          this.contactIndexRebuildRunning = false;
+          logger?.(`contact index rebuild completed processed=${processed}`);
+          return;
+        }
+
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          for (const row of rows) {
+            lastRowID = row.rowID;
+            this.replaceEmailContactEdges({
+              ...row,
+              recipients: parseJSON(row.recipientsJSON, []),
+              cc: parseJSON(row.ccJSON, []),
+              bcc: parseJSON(row.bccJSON, [])
+            }, { refresh: false });
+          }
+          this.db.exec("COMMIT");
+        } catch (error) {
+          this.db.exec("ROLLBACK");
+          throw error;
+        }
+
+        processed += rows.length;
+        if (processed === rows.length || processed % (batchSize * 10) === 0) {
+          logger?.(`contact index rebuild progress processed=${processed} total=${total}`);
+        }
+        setTimeout(runBatch, 25);
+      } catch (error) {
+        this.contactIndexRebuildRunning = false;
+        logger?.(`contact index rebuild failed: ${error.message}`);
+      }
+    };
+
+    setTimeout(runBatch, 0);
+    return { started: true, total };
+  }
+
   rebuildEmailFTS() {
     const rows = this.db.prepare(`
       SELECT id, account_id AS accountId, subject, sender_name AS senderName,
@@ -2257,6 +2558,28 @@ export class MailStore {
         recipients: parseJSON(row.recipientsJSON, [])
       });
     }
+  }
+
+  rebuildEmailContacts() {
+    const rows = this.db.prepare(`
+      SELECT id, account_id AS accountId, sender_name AS senderName,
+             sender_email AS senderEmail, sender_avatar_url AS senderAvatarURL,
+             recipients_json AS recipientsJSON, cc_json AS ccJSON, bcc_json AS bccJSON,
+             sent_at AS sentAt, received_at AS receivedAt
+      FROM emails
+    `).all();
+
+    this.db.prepare("DELETE FROM email_contacts").run();
+    this.db.prepare("DELETE FROM email_contact_edges").run();
+    for (const row of rows) {
+      this.replaceEmailContactEdges({
+        ...row,
+        recipients: parseJSON(row.recipientsJSON, []),
+        cc: parseJSON(row.ccJSON, []),
+        bcc: parseJSON(row.bccJSON, [])
+      }, { refresh: false });
+    }
+    this.rebuildContactsFromEdges();
   }
 
   refreshMailboxUnread(mailboxId) {
@@ -2491,8 +2814,83 @@ function replyReferences(email) {
   return [...new Set(values.map(item => String(item).trim()).filter(Boolean))];
 }
 
+function contactEdgesForEmail(email, store) {
+  const edges = [];
+  const contactedAt = email.sentAt ?? email.receivedAt ?? email.createdAt ?? new Date().toISOString();
+
+  const sender = parseContactAddress(email.senderEmail, email.senderName);
+  if (sender && !store.isLocalUserEmail(sender.email)) {
+    edges.push({
+      ...sender,
+      avatarURL: optionalString(email.senderAvatarURL),
+      direction: "inbound",
+      contactedAt
+    });
+  }
+
+  for (const value of [
+    ...normalizeAddressList(email.recipients),
+    ...normalizeAddressList(email.cc),
+    ...normalizeAddressList(email.bcc)
+  ]) {
+    const recipient = parseContactAddress(value);
+    if (!recipient || store.isLocalUserEmail(recipient.email)) continue;
+    edges.push({
+      ...recipient,
+      avatarURL: null,
+      direction: "outbound",
+      contactedAt
+    });
+  }
+
+  const deduped = new Map();
+  for (const edge of edges) {
+    const key = `${edge.direction}:${edge.normalizedEmail}`;
+    const existing = deduped.get(key);
+    if (!existing || (!existing.displayName && edge.displayName)) {
+      deduped.set(key, edge);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function parseContactAddress(value, fallbackName = null) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const bracketMatch = trimmed.match(/^\s*(?:"?([^"<>]*)"?\s*)?<([^<>@\s]+@[^<>\s]+)>\s*$/u);
+  const rawEmail = (bracketMatch?.[2] ?? trimmed).replace(/^mailto:/iu, "").trim();
+  const emailMatch = rawEmail.match(/[^\s,;<>]+@[^\s,;<>]+/u);
+  const email = emailMatch?.[0]?.replace(/[.)\]]+$/u, "");
+  if (!email || !email.includes("@")) return null;
+
+  const rawName = bracketMatch?.[1] ?? fallbackName;
+  const displayName = optionalString(rawName)
+    ?.replace(/^"+|"+$/gu, "")
+    .trim();
+  const normalizedEmail = email.toLowerCase();
+  return {
+    normalizedEmail,
+    email,
+    displayName: displayName && displayName.toLowerCase() !== normalizedEmail ? displayName : null
+  };
+}
+
 function uniqueStrings(values) {
   return [...new Set(values.map(item => String(item ?? "").trim()).filter(Boolean))];
+}
+
+function normalizeContactSearchQuery(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, " ")
+    .slice(0, 80);
+}
+
+function escapeLike(value) {
+  return String(value).replace(/[\\%_]/gu, character => `\\${character}`);
 }
 
 function clampInt(value, min, max, fallback) {

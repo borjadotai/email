@@ -305,20 +305,26 @@ private struct AppIconChoiceButton: View {
 enum AppIconPreference: String, CaseIterable, Identifiable {
   case closed
   case open
+  case closedWhite
+  case openWhite
 
   var id: String { rawValue }
 
   var title: String {
     switch self {
-    case .closed: "Closed"
-    case .open: "Open"
+    case .closed: "Closed Black"
+    case .open: "Open Black"
+    case .closedWhite: "Closed White"
+    case .openWhite: "Open White"
     }
   }
 
   var accessibilityLabel: String {
     switch self {
-    case .closed: "Closed envelope app icon"
-    case .open: "Open envelope app icon"
+    case .closed: "Closed black envelope app icon"
+    case .open: "Open black envelope app icon"
+    case .closedWhite: "Closed white envelope app icon"
+    case .openWhite: "Open white envelope app icon"
     }
   }
 
@@ -326,6 +332,8 @@ enum AppIconPreference: String, CaseIterable, Identifiable {
     switch self {
     case .closed: "AppIconPreviewClosed"
     case .open: "AppIconPreviewOpen"
+    case .closedWhite: "AppIconPreviewClosedWhite"
+    case .openWhite: "AppIconPreviewOpenWhite"
     }
   }
 
@@ -333,6 +341,8 @@ enum AppIconPreference: String, CaseIterable, Identifiable {
     switch self {
     case .closed: nil
     case .open: "AppIconOpen"
+    case .closedWhite: "AppIconClosedWhite"
+    case .openWhite: "AppIconOpenWhite"
     }
   }
 }
@@ -343,8 +353,8 @@ enum AppIconController {
 
   static func currentPreference() -> AppIconPreference {
     #if os(iOS)
-    if UIApplication.shared.alternateIconName == AppIconPreference.open.alternateIconName {
-      return .open
+    if let preference = AppIconPreference.allCases.first(where: { $0.alternateIconName == UIApplication.shared.alternateIconName }) {
+      return preference
     }
     #endif
 
@@ -462,43 +472,7 @@ private struct AccountSettingsSection: View {
         AccountStatusBadge(status: account.status)
       }
 
-      LabeledContent("Image") {
-        HStack(spacing: 12) {
-          AvatarView(
-            name: displayName,
-            email: account.email,
-            urlString: avatarPreviewURL,
-            size: 52
-          )
-
-          VStack(alignment: .trailing, spacing: 8) {
-            PhotosPicker(selection: $selectedAvatarItem, matching: .images) {
-              Label("Choose Image", systemImage: "photo")
-            }
-
-            Button {
-              avatarURL = ""
-              selectedAvatarItem = nil
-            } label: {
-              Label("Remove Image", systemImage: "xmark.circle")
-            }
-            .disabled(avatarURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          }
-        }
-      }
-
-      TextField("Image URL", text: avatarURLFieldBinding)
-        #if os(iOS)
-        .textInputAutocapitalization(.never)
-        .keyboardType(.URL)
-        #endif
-        .disabled(isEmbeddedAvatar)
-
-      if isEmbeddedAvatar {
-        Text("Custom image selected.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+      accountImageSettings
 
       TextField("Display name", text: $displayName)
         #if os(iOS)
@@ -556,6 +530,88 @@ private struct AccountSettingsSection: View {
         await loadAvatarImage(item)
       }
     }
+  }
+
+  @ViewBuilder
+  private var accountImageSettings: some View {
+    #if os(iOS)
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 12) {
+        AvatarView(
+          name: displayName,
+          email: account.email,
+          urlString: avatarPreviewURL,
+          size: 40
+        )
+
+        PhotosPicker(selection: $selectedAvatarItem, matching: .images) {
+          Label("Choose", systemImage: "photo")
+        }
+        .buttonStyle(.borderless)
+
+        Spacer(minLength: 8)
+
+        Button {
+          avatarURL = ""
+          selectedAvatarItem = nil
+        } label: {
+          Image(systemName: "xmark.circle")
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .disabled(avatarURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityLabel("Remove image")
+      }
+
+      TextField("Image URL", text: avatarURLFieldBinding, axis: .horizontal)
+        .textInputAutocapitalization(.never)
+        .keyboardType(.URL)
+        .autocorrectionDisabled()
+        .lineLimit(1)
+        .disabled(isEmbeddedAvatar)
+
+      if isEmbeddedAvatar {
+        Text("Custom image selected.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .padding(.vertical, 2)
+    #else
+    LabeledContent("Image") {
+      HStack(spacing: 12) {
+        AvatarView(
+          name: displayName,
+          email: account.email,
+          urlString: avatarPreviewURL,
+          size: 52
+        )
+
+        VStack(alignment: .trailing, spacing: 8) {
+          PhotosPicker(selection: $selectedAvatarItem, matching: .images) {
+            Label("Choose Image", systemImage: "photo")
+          }
+
+          Button {
+            avatarURL = ""
+            selectedAvatarItem = nil
+          } label: {
+            Label("Remove Image", systemImage: "xmark.circle")
+          }
+          .disabled(avatarURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      }
+    }
+
+    TextField("Image URL", text: avatarURLFieldBinding)
+      .disabled(isEmbeddedAvatar)
+
+    if isEmbeddedAvatar {
+      Text("Custom image selected.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    #endif
   }
 
   private var isSaving: Bool {

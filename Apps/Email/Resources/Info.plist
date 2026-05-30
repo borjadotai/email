@@ -13,6 +13,10 @@
   <string>$(EMAIL_DEFAULT_SERVER_URL)</string>
   <key>EmailAPNSEnvironment</key>
   <string>$(APNS_ENVIRONMENT)</string>
+  <key>NSUserActivityTypes</key>
+  <array>
+    <string>INSendMessageIntent</string>
+  </array>
   <key>SUAllowsAutomaticUpdates</key>
   <true/>
   <key>SUAutomaticallyUpdate</key>

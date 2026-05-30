@@ -10,30 +10,45 @@ struct SidebarView: View {
   @State private var accountDropTargetID: String?
   @State private var filterDropTargetID: String?
   @State private var sidebarInteractionResetToken = 0
+  #if os(iOS)
+  @State private var editMode: EditMode = .inactive
+  #endif
   var onAddAccount: () -> Void
   var onShowMessages: () -> Void
 
   var body: some View {
-    List {
-      allInboxesSection
-      accountsSection
-      globalFoldersSection
-      filtersSection
-      foldersSection
-      labelsSection
+    ZStack {
+      sidebarSurfaceBackground
+        .ignoresSafeArea()
+
+      List {
+        allInboxesSection
+        accountsSection
+        globalFoldersSection
+        filtersSection
+        foldersSection
+        labelsSection
+      }
+      .listStyle(.sidebar)
+      .sidebarScrollBackground()
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .clipped()
     }
-    .listStyle(.sidebar)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .clipped()
     .navigationTitle("Email")
+    .sidebarNavigationChrome()
+    #if os(iOS)
+    .environment(\.editMode, $editMode)
+    #endif
     .toolbar {
-      ToolbarItem {
-        Button(action: onAddAccount) {
-          Image(systemName: "plus")
-        }
-        .help("Add account")
+      sidebarToolbar
+    }
+    #if os(iOS)
+    .onChange(of: canEditSidebarItems) { _, canEdit in
+      if !canEdit {
+        editMode = .inactive
       }
     }
+    #endif
     .confirmationDialog(
       "Delete Filter?",
       isPresented: isDeleteFilterConfirmationPresented,
@@ -68,6 +83,59 @@ struct SidebarView: View {
     )
   }
 
+  @ToolbarContentBuilder
+  private var sidebarToolbar: some ToolbarContent {
+    #if os(iOS)
+    ToolbarItemGroup(placement: .topBarTrailing) {
+      if canEditSidebarItems {
+        Button(isEditingSidebar ? "Done" : "Edit") {
+          toggleSidebarEditing()
+        }
+      }
+
+      Button(action: onAddAccount) {
+        Image(systemName: "plus")
+      }
+      .accessibilityLabel("Add account")
+    }
+    #else
+    ToolbarItem {
+      Button(action: onAddAccount) {
+        Image(systemName: "plus")
+      }
+      .help("Add account")
+    }
+    #endif
+  }
+
+  private var canEditSidebarItems: Bool {
+    model.accounts.count > 1 || (activeSidebarAccountID == nil && !model.filters.isEmpty)
+  }
+
+  private var isEditingSidebar: Bool {
+    #if os(iOS)
+    editMode.isEditing
+    #else
+    false
+    #endif
+  }
+
+  private func toggleSidebarEditing() {
+    #if os(iOS)
+    withAnimation(.snappy(duration: 0.18)) {
+      editMode = editMode.isEditing ? .inactive : .active
+    }
+    #endif
+  }
+
+  private var sidebarSurfaceBackground: Color {
+    #if os(iOS)
+    Color(uiColor: .systemGroupedBackground)
+    #else
+    Color.clear
+    #endif
+  }
+
   @ViewBuilder
   private var allInboxesSection: some View {
     Section {
@@ -92,63 +160,75 @@ struct SidebarView: View {
     if !model.accounts.isEmpty {
       Section("Accounts") {
         ForEach(model.accounts) { account in
-          SidebarButton(
-            title: account.displayName,
-            subtitle: account.email,
-            systemImage: account.provider.systemImage,
-            avatarName: account.displayName,
-            avatarEmail: account.email,
-            avatarURL: account.avatarURL,
-            count: unreadCount(for: account),
-            isSelected: model.selectedAccountID == account.id
-              && model.selectedMailboxID == nil
-              && model.selectedLabelID == nil
-              && model.selectedFilterID == nil
-              && model.selectedGlobalFolder == nil,
-            isReorderable: true,
-            isDragging: draggingAccountID == account.id,
-            showsInsertionLine: accountDropTargetID == account.id,
-            resetToken: sidebarInteractionResetToken
-          ) {
-            selectAccount(account)
-          }
-          .onDrag {
-            withAnimation(.snappy(duration: 0.16)) {
-              draggingAccountID = account.id
-            }
-            return NSItemProvider(object: account.id as NSString)
-          } preview: {
-            SidebarDragPreview(
-              title: account.displayName,
-              subtitle: account.email,
-              systemImage: account.provider.systemImage,
-              avatarName: account.displayName,
-              avatarEmail: account.email,
-              avatarURL: account.avatarURL,
-              count: unreadCount(for: account)
-            )
-          }
-          .onDrop(
-            of: [.text],
-            delegate: SidebarReorderDropDelegate(
-              targetID: account.id,
-              draggingID: $draggingAccountID,
-              dropTargetID: $accountDropTargetID,
-              move: { sourceID, targetID in
-                model.moveAccount(id: sourceID, before: targetID)
-              },
-              persist: {
-                model.persistAccountOrder()
-              },
-              cleanup: {
-                clearSidebarDragState()
-              }
-            )
-          )
+          accountSidebarRow(account)
         }
         .onMove(perform: moveAccounts)
       }
     }
+  }
+
+  @ViewBuilder
+  private func accountSidebarRow(_ account: MailAccount) -> some View {
+    let row = SidebarButton(
+      title: account.displayName,
+      subtitle: account.email,
+      systemImage: account.provider.systemImage,
+      avatarName: account.displayName,
+      avatarEmail: account.email,
+      avatarURL: account.avatarURL,
+      count: unreadCount(for: account),
+      isSelected: model.selectedAccountID == account.id
+        && model.selectedMailboxID == nil
+        && model.selectedLabelID == nil
+        && model.selectedFilterID == nil
+        && model.selectedGlobalFolder == nil,
+      isReorderable: model.accounts.count > 1,
+      isEditing: isEditingSidebar,
+      isDragging: draggingAccountID == account.id,
+      showsInsertionLine: accountDropTargetID == account.id,
+      resetToken: sidebarInteractionResetToken
+    ) {
+      selectAccount(account)
+    }
+
+    #if os(macOS)
+    row
+      .onDrag {
+        withAnimation(.snappy(duration: 0.16)) {
+          draggingAccountID = account.id
+        }
+        return NSItemProvider(object: account.id as NSString)
+      } preview: {
+        SidebarDragPreview(
+          title: account.displayName,
+          subtitle: account.email,
+          systemImage: account.provider.systemImage,
+          avatarName: account.displayName,
+          avatarEmail: account.email,
+          avatarURL: account.avatarURL,
+          count: unreadCount(for: account)
+        )
+      }
+      .onDrop(
+        of: [.text],
+        delegate: SidebarReorderDropDelegate(
+          targetID: account.id,
+          draggingID: $draggingAccountID,
+          dropTargetID: $accountDropTargetID,
+          move: { sourceID, targetID in
+            model.moveAccount(id: sourceID, before: targetID)
+          },
+          persist: {
+            model.persistAccountOrder()
+          },
+          cleanup: {
+            clearSidebarDragState()
+          }
+        )
+      )
+    #else
+    row
+    #endif
   }
 
   @ViewBuilder
@@ -177,70 +257,7 @@ struct SidebarView: View {
     if activeSidebarAccountID == nil {
       Section("Filters") {
         ForEach(model.filters) { filter in
-          FilterSidebarRow(
-            filter: filter,
-            isSelected: model.selectedFilterID == filter.id && model.selectedGlobalFolder == nil,
-            isDragging: draggingFilterID == filter.id,
-            showsInsertionLine: filterDropTargetID == filter.id,
-            resetToken: sidebarInteractionResetToken,
-            onSelect: {
-              selectFilter(filter)
-            },
-            onEdit: {
-              filterEditor = .edit(filter)
-            },
-            onDelete: {
-              filterPendingDeletion = filter
-            }
-          )
-          .contextMenu {
-            Button("Edit Filter") {
-              filterEditor = .edit(filter)
-            }
-            Button("Delete Filter", role: .destructive) {
-              filterPendingDeletion = filter
-            }
-          }
-          .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) {
-              filterPendingDeletion = filter
-            } label: {
-              Label("Delete", systemImage: "trash")
-            }
-          }
-          .accessibilityAction(named: "Delete Filter") {
-            filterPendingDeletion = filter
-          }
-          .onDrag {
-            withAnimation(.snappy(duration: 0.16)) {
-              draggingFilterID = filter.id
-            }
-            return NSItemProvider(object: filter.id as NSString)
-          } preview: {
-            SidebarDragPreview(
-              title: filter.name,
-              subtitle: nil,
-              systemImage: filter.systemImage,
-              tint: filter.swiftUIColor
-            )
-          }
-          .onDrop(
-            of: [.text],
-            delegate: SidebarReorderDropDelegate(
-              targetID: filter.id,
-              draggingID: $draggingFilterID,
-              dropTargetID: $filterDropTargetID,
-              move: { sourceID, targetID in
-                model.moveFilter(id: sourceID, before: targetID)
-              },
-              persist: {
-                model.persistFilterOrder()
-              },
-              cleanup: {
-                clearSidebarDragState()
-              }
-            )
-          )
+          filterSidebarRow(filter)
         }
         .onMove(perform: moveFilters)
 
@@ -255,6 +272,82 @@ struct SidebarView: View {
         }
       }
     }
+  }
+
+  @ViewBuilder
+  private func filterSidebarRow(_ filter: MailFilter) -> some View {
+    let row = FilterSidebarRow(
+      filter: filter,
+      isSelected: model.selectedFilterID == filter.id && model.selectedGlobalFolder == nil,
+      isReorderable: model.filters.count > 1,
+      isEditing: isEditingSidebar,
+      isDragging: draggingFilterID == filter.id,
+      showsInsertionLine: filterDropTargetID == filter.id,
+      resetToken: sidebarInteractionResetToken,
+      onSelect: {
+        selectFilter(filter)
+      },
+      onEdit: {
+        filterEditor = .edit(filter)
+      },
+      onDelete: {
+        filterPendingDeletion = filter
+      }
+    )
+    .contextMenu {
+      Button("Edit Filter") {
+        filterEditor = .edit(filter)
+      }
+      Button("Delete Filter", role: .destructive) {
+        filterPendingDeletion = filter
+      }
+    }
+    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+      Button(role: .destructive) {
+        filterPendingDeletion = filter
+      } label: {
+        Label("Delete", systemImage: "trash")
+      }
+    }
+    .accessibilityAction(named: "Delete Filter") {
+      filterPendingDeletion = filter
+    }
+
+    #if os(macOS)
+    row
+      .onDrag {
+        withAnimation(.snappy(duration: 0.16)) {
+          draggingFilterID = filter.id
+        }
+        return NSItemProvider(object: filter.id as NSString)
+      } preview: {
+        SidebarDragPreview(
+          title: filter.name,
+          subtitle: nil,
+          systemImage: filter.systemImage,
+          tint: filter.swiftUIColor
+        )
+      }
+      .onDrop(
+        of: [.text],
+        delegate: SidebarReorderDropDelegate(
+          targetID: filter.id,
+          draggingID: $draggingFilterID,
+          dropTargetID: $filterDropTargetID,
+          move: { sourceID, targetID in
+            model.moveFilter(id: sourceID, before: targetID)
+          },
+          persist: {
+            model.persistFilterOrder()
+          },
+          cleanup: {
+            clearSidebarDragState()
+          }
+        )
+      )
+    #else
+    row
+    #endif
   }
 
   @ViewBuilder
@@ -615,6 +708,42 @@ private var sheetCardBackground: Color {
   #endif
 }
 
+private extension View {
+  @ViewBuilder
+  func sidebarScrollBackground() -> some View {
+    #if os(iOS)
+    self
+      .scrollContentBackground(.hidden)
+      .background(Color(uiColor: .systemGroupedBackground))
+    #else
+    self
+    #endif
+  }
+
+  @ViewBuilder
+  func sidebarNavigationChrome() -> some View {
+    #if os(iOS)
+    self
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbarBackground(Color(uiColor: .systemGroupedBackground), for: .navigationBar)
+      .toolbarBackground(.visible, for: .navigationBar)
+    #else
+    self
+    #endif
+  }
+
+  @ViewBuilder
+  func sidebarListRowChrome() -> some View {
+    #if os(iOS)
+    self
+      .listRowInsets(EdgeInsets(top: 4, leading: 24, bottom: 4, trailing: 18))
+      .listRowSeparator(.hidden)
+    #else
+    self
+    #endif
+  }
+}
+
 private struct SidebarReorderDropDelegate: DropDelegate {
   var targetID: String
   @Binding var draggingID: String?
@@ -657,6 +786,8 @@ private struct SidebarReorderDropDelegate: DropDelegate {
 private struct FilterSidebarRow: View {
   var filter: MailFilter
   var isSelected: Bool
+  var isReorderable: Bool
+  var isEditing = false
   var isDragging = false
   var showsInsertionLine = false
   var resetToken = 0
@@ -684,9 +815,11 @@ private struct FilterSidebarRow: View {
       .buttonStyle(.plain)
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      if isHovered || isSelected {
-        SidebarDragHandle()
-          .transition(.opacity.combined(with: .scale(scale: 0.84)))
+      if showsInlineActions {
+        if isReorderable {
+          SidebarDragHandle()
+            .transition(.opacity.combined(with: .scale(scale: 0.84)))
+        }
 
         Button(action: onEdit) {
           Image(systemName: "pencil")
@@ -720,6 +853,7 @@ private struct FilterSidebarRow: View {
     .opacity(isDragging ? 0.82 : 1)
     .animation(.snappy(duration: 0.18), value: isDragging)
     .animation(.snappy(duration: 0.18), value: showsInsertionLine)
+    .animation(.snappy(duration: 0.18), value: showsInlineActions)
     .overlay(alignment: .top) {
       if showsInsertionLine && !isDragging {
         SidebarInsertionLine()
@@ -731,6 +865,15 @@ private struct FilterSidebarRow: View {
         isHovered: isHovered
       )
     )
+    .sidebarListRowChrome()
+  }
+
+  private var showsInlineActions: Bool {
+    #if os(iOS)
+    isEditing
+    #else
+    isEditing || isHovered || isSelected
+    #endif
   }
 }
 
@@ -745,6 +888,7 @@ private struct SidebarButton: View {
   var count: Int = 0
   var isSelected: Bool
   var isReorderable = false
+  var isEditing = false
   var isDragging = false
   var showsInsertionLine = false
   var resetToken = 0
@@ -763,7 +907,7 @@ private struct SidebarButton: View {
         avatarURL: avatarURL,
         tint: tint,
         count: count,
-        showsDragHandle: isReorderable && isHovered
+        showsDragHandle: isReorderable && (isEditing || isHovered)
       )
       .contentShape(Rectangle())
     }
@@ -791,6 +935,7 @@ private struct SidebarButton: View {
         isHovered: isHovered
       )
     )
+    .sidebarListRowChrome()
   }
 }
 
@@ -840,27 +985,28 @@ private struct SidebarRowContent: View {
   var showsDragHandle: Bool
 
   var body: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: rowSpacing) {
       if let avatarName, let avatarEmail {
         AvatarView(
           name: avatarName,
           email: avatarEmail,
           urlString: avatarURL,
-          size: 24
+          size: avatarSize
         )
-        .frame(width: 24)
+        .frame(width: iconWidth)
       } else {
         Image(systemName: systemImage)
           .foregroundStyle(tint)
-          .frame(width: 24)
+          .frame(width: iconWidth)
       }
 
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
+          .font(titleFont)
           .lineLimit(1)
         if let subtitle, !subtitle.isEmpty {
           Text(subtitle)
-            .font(.caption)
+            .font(subtitleFont)
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
@@ -880,6 +1026,46 @@ private struct SidebarRowContent: View {
           .transition(.opacity.combined(with: .scale(scale: 0.84)))
       }
     }
+  }
+
+  private var avatarSize: CGFloat {
+    #if os(iOS)
+    22
+    #else
+    24
+    #endif
+  }
+
+  private var iconWidth: CGFloat {
+    #if os(iOS)
+    22
+    #else
+    24
+    #endif
+  }
+
+  private var rowSpacing: CGFloat {
+    #if os(iOS)
+    9
+    #else
+    10
+    #endif
+  }
+
+  private var titleFont: Font {
+    #if os(iOS)
+    .system(size: 16, weight: .regular)
+    #else
+    .body
+    #endif
+  }
+
+  private var subtitleFont: Font {
+    #if os(iOS)
+    .system(size: 13)
+    #else
+    .caption
+    #endif
   }
 }
 

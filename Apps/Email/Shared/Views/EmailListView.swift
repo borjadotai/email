@@ -2,9 +2,7 @@ import SwiftUI
 
 struct EmailListView: View {
   @Environment(AppModel.self) private var model
-  #if os(iOS)
-  @State private var selectedFilter: InboxFilter = .all
-  #endif
+  @State private var isToolbarRefreshing = false
   @State private var selectionTask: Task<Void, Never>?
   #if os(macOS)
   @FocusState private var isMessageListFocused: Bool
@@ -24,18 +22,18 @@ struct EmailListView: View {
     .toolbar {
       ToolbarItemGroup {
         Button {
-          Task { await model.refreshVisibleMail() }
+          refreshFromToolbar()
         } label: {
-          if model.isRefreshingMail {
+          if showsToolbarRefreshProgress {
             ProgressView()
               .controlSize(.small)
           } else {
             Image(systemName: "arrow.clockwise")
           }
         }
-        .disabled(model.isRefreshingMail)
+        .disabled(model.isRefreshingMail || isToolbarRefreshing)
         .help("Refresh")
-        .accessibilityLabel(model.isRefreshingMail ? "Refreshing mail" : "Refresh")
+        .accessibilityLabel(showsToolbarRefreshProgress ? "Refreshing mail" : "Refresh")
 
         Button(action: onCompose) {
           Image(systemName: "square.and.pencil")
@@ -60,24 +58,21 @@ struct EmailListView: View {
     List {
       IOSInboxHeader(
         title: iOSInboxTitle,
-        selectedFilter: $selectedFilter
+        filters: model.filters,
+        selectedFilterID: model.selectedFilterID,
+        showsFilters: showsSavedFilterPills,
+        onSelectAll: {
+          Task { await model.selectGlobalInbox() }
+        },
+        onSelectFilter: { filter in
+          Task { await model.selectFilter(filter) }
+        }
       )
       .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 6, trailing: 0))
       .listRowSeparator(.hidden)
       .listRowBackground(Color.clear)
 
-      if model.isRefreshingMail {
-        IOSRefreshStatusRow(
-          scopeTitle: refreshScopeTitle,
-          startedAt: model.refreshStartedAt
-        )
-        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 10, trailing: 18))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .transition(.move(edge: .top).combined(with: .opacity))
-      }
-
-      if model.isLoadingEmails && model.emails.isEmpty {
+      if model.isLoadingEmails && model.emails.isEmpty && !model.isRefreshingMail {
         EmailListSkeletonRows()
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
@@ -87,7 +82,7 @@ struct EmailListView: View {
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
       } else {
-        if model.isLoadingEmails {
+        if model.isLoadingEmails && !model.isRefreshingMail {
           EmailListLoadingStatusRow(title: "Loading")
             .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 8, trailing: 18))
             .listRowSeparator(.hidden)
@@ -244,6 +239,23 @@ struct EmailListView: View {
     }
   }
 
+  private var showsToolbarRefreshProgress: Bool {
+    #if os(iOS)
+    isToolbarRefreshing
+    #else
+    model.isRefreshingMail || isToolbarRefreshing
+    #endif
+  }
+
+  private func refreshFromToolbar() {
+    guard !isToolbarRefreshing else { return }
+    Task { @MainActor in
+      isToolbarRefreshing = true
+      defer { isToolbarRefreshing = false }
+      await model.refreshVisibleMail()
+    }
+  }
+
   #if os(macOS)
   private func selectEmail(for direction: MoveCommandDirection) {
     switch direction {
@@ -277,7 +289,6 @@ struct EmailListView: View {
   #if os(iOS)
   private var filteredEmails: [EmailSummary] {
     model.emails
-      .filter { selectedFilter.matches($0) }
       .sorted { first, second in
         emailDate(first) > emailDate(second)
       }
@@ -295,20 +306,25 @@ struct EmailListView: View {
   }
 
   private var iOSInboxTitle: String {
-    "Inbox"
+    model.navigationTitle
   }
 
-  private var refreshScopeTitle: String {
-    if let syncingAccountID = model.syncingAccountID,
-       let account = model.accounts.first(where: { $0.id == syncingAccountID }) {
-      return account.displayName
+  private var showsSavedFilterPills: Bool {
+    guard model.selectedGlobalFolder == nil,
+          model.selectedMailboxID == nil,
+          model.selectedLabelID == nil else {
+      return false
     }
 
-    return model.navigationTitle
+    return !model.filters.isEmpty
   }
 
   private var emptyTitle: String {
-    selectedFilter == .all ? "No Messages" : "No \(selectedFilter.title) Messages"
+    guard let selectedFilterID = model.selectedFilterID,
+          let filter = model.filters.first(where: { $0.id == selectedFilterID }) else {
+      return "No Messages"
+    }
+    return "No \(filter.name) Messages"
   }
 
   private func emailDate(_ email: EmailSummary) -> Date {
@@ -515,7 +531,11 @@ private struct EmailRow: View {
 #if os(iOS)
 private struct IOSInboxHeader: View {
   var title: String
-  @Binding var selectedFilter: InboxFilter
+  var filters: [MailFilter]
+  var selectedFilterID: String?
+  var showsFilters: Bool
+  var onSelectAll: () -> Void
+  var onSelectFilter: (MailFilter) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -527,82 +547,53 @@ private struct IOSInboxHeader: View {
         .padding(.horizontal, 20)
         .accessibilityAddTraits(.isHeader)
 
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 12) {
-          ForEach(InboxFilter.allCases) { filter in
+      if showsFilters {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 12) {
             Button {
               withAnimation(.snappy(duration: 0.2)) {
-                selectedFilter = filter
+                onSelectAll()
               }
             } label: {
-              Text(filter.title)
+              Text("All")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(filter == selectedFilter ? Color.primary : Color.primary.opacity(0.92))
+                .foregroundStyle(selectedFilterID == nil ? Color.primary : Color.primary.opacity(0.92))
                 .padding(.horizontal, 17)
                 .padding(.vertical, 8)
-                .background(pillFill(for: filter), in: Capsule())
+                .background(pillFill(isSelected: selectedFilterID == nil), in: Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityAddTraits(filter == selectedFilter ? .isSelected : [])
+            .accessibilityAddTraits(selectedFilterID == nil ? .isSelected : [])
+
+            ForEach(filters) { filter in
+              Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                  onSelectFilter(filter)
+                }
+              } label: {
+                Text(filter.name)
+                  .font(.system(size: 16, weight: .semibold))
+                  .foregroundStyle(filter.id == selectedFilterID ? Color.primary : Color.primary.opacity(0.92))
+                  .padding(.horizontal, 17)
+                  .padding(.vertical, 8)
+                  .background(pillFill(isSelected: filter.id == selectedFilterID), in: Capsule())
+              }
+              .buttonStyle(.plain)
+              .accessibilityAddTraits(filter.id == selectedFilterID ? .isSelected : [])
+            }
           }
+          .padding(.horizontal, 20)
         }
-        .padding(.horizontal, 20)
+        .scrollClipDisabled()
       }
-      .scrollClipDisabled()
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private func pillFill(for filter: InboxFilter) -> Color {
-    filter == selectedFilter
+  private func pillFill(isSelected: Bool) -> Color {
+    isSelected
       ? Color.cyan.opacity(0.38)
       : Color.secondary.opacity(0.10)
-  }
-}
-
-private struct IOSRefreshStatusRow: View {
-  var scopeTitle: String
-  var startedAt: Date?
-
-  var body: some View {
-    TimelineView(.periodic(from: startedAt ?? Date(), by: 1)) { timeline in
-      HStack(spacing: 10) {
-        ProgressView()
-          .controlSize(.small)
-          .frame(width: 20, height: 20)
-
-        VStack(alignment: .leading, spacing: 1) {
-          Text("Refreshing \(scopeTitle)")
-            .font(.system(size: 14.5, weight: .semibold))
-            .foregroundStyle(.primary)
-            .lineLimit(1)
-
-          Text(elapsedText(now: timeline.date))
-            .font(.system(size: 13))
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-            .lineLimit(1)
-        }
-
-        Spacer(minLength: 8)
-      }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 9)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Refreshing \(scopeTitle)")
-      .accessibilityValue(elapsedText(now: timeline.date))
-    }
-  }
-
-  private func elapsedText(now: Date) -> String {
-    let startedAt = startedAt ?? now
-    let elapsedSeconds = max(0, Int(now.timeIntervalSince(startedAt)))
-    let minutes = elapsedSeconds / 60
-    let seconds = elapsedSeconds % 60
-    let paddedSeconds = seconds < 10 ? "0\(seconds)" : "\(seconds)"
-    return "\(minutes):\(paddedSeconds) elapsed"
   }
 }
 
@@ -702,53 +693,6 @@ private struct IOSMailRow: View {
   private var subjectText: String {
     let trimmed = email.subject.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? "(No subject)" : trimmed
-  }
-}
-
-private enum InboxFilter: String, CaseIterable, Identifiable {
-  case all
-  case primary
-  case promotions
-  case social
-  case updates
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .all: "All"
-    case .primary: "Primary"
-    case .promotions: "Promotions"
-    case .social: "Social"
-    case .updates: "Updates"
-    }
-  }
-
-  func matches(_ email: EmailSummary) -> Bool {
-    switch self {
-    case .all:
-      return true
-    case .primary:
-      return !Self.categoryText(for: email).contains("category_")
-        && !Self.hasCategoryLabel(email, terms: ["promotions", "social", "updates"])
-    case .promotions:
-      return Self.hasCategoryLabel(email, terms: ["category_promotions", "promotions", "promotion"])
-    case .social:
-      return Self.hasCategoryLabel(email, terms: ["category_social", "social"])
-    case .updates:
-      return Self.hasCategoryLabel(email, terms: ["category_updates", "updates", "notifications"])
-    }
-  }
-
-  private static func hasCategoryLabel(_ email: EmailSummary, terms: [String]) -> Bool {
-    let text = categoryText(for: email)
-    return terms.contains { text.contains($0) }
-  }
-
-  private static func categoryText(for email: EmailSummary) -> String {
-    ([email.mailboxName, email.importance] + email.labels.map(\.name))
-      .joined(separator: " ")
-      .lowercased()
   }
 }
 

@@ -293,6 +293,35 @@ struct SendMessageRequest: Encodable {
   var replyToEmailID: String?
 }
 
+struct RecipientSuggestion: Codable, Identifiable, Hashable {
+  var normalizedEmail: String
+  var email: String
+  var displayName: String?
+  var avatarURL: String?
+  var inboundCount: Int
+  var outboundCount: Int
+  var lastContactedAt: String
+
+  var id: String { normalizedEmail }
+
+  var title: String {
+    let trimmedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmedName?.isEmpty == false ? trimmedName! : email
+  }
+
+  var subtitle: String {
+    email
+  }
+
+  var formattedAddress: String {
+    let trimmedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let trimmedName, !trimmedName.isEmpty, trimmedName.lowercased() != email.lowercased() else {
+      return email
+    }
+    return "\(trimmedName) <\(email)>"
+  }
+}
+
 struct ComposeDraft: Hashable {
   var accountId: String
   var to: String

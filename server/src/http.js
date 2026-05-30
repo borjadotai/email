@@ -1,5 +1,6 @@
 import { createServer as createHTTPServer } from "node:http";
 import { Buffer } from "node:buffer";
+import { summarizePushNotificationResult } from "./pushNotifications.js";
 import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
@@ -148,7 +149,8 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     requireProviders(providers);
     const body = await readJSON(req);
     const sync = await providers.syncAccount(accountSyncMatch[1], {
-      limit: body.limit
+      limit: body.limit,
+      quick: body.quick === true || url.searchParams.get("quick") === "1"
     });
     events.emit("emails.changed", { accountId: accountSyncMatch[1] });
     await sendPushNotifications(pushNotifications, sync.newEmails);
@@ -232,6 +234,12 @@ async function route({ req, res, store, providers, pushNotifications, events, co
   if (req.method === "GET" && path === "/api/emails") {
     const emails = store.listEmails(Object.fromEntries(url.searchParams.entries()));
     sendJSON(res, 200, { emails });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/contacts/suggest") {
+    const contacts = store.searchContacts(url.searchParams.get("q"), url.searchParams.get("limit"));
+    sendJSON(res, 200, { contacts });
     return;
   }
 
@@ -480,8 +488,8 @@ async function sendPushNotifications(pushNotifications, newEmails = []) {
   if (!pushNotifications || !Array.isArray(newEmails) || newEmails.length === 0) return;
   try {
     const result = await pushNotifications.sendNewEmailNotifications(newEmails);
-    if (result.sent > 0) {
-      console.log(`${new Date().toISOString()} push notifications sent=${result.sent}`);
+    if (result.sent > 0 || result.skipped > 0) {
+      console.log(`${new Date().toISOString()} push notifications ${summarizePushNotificationResult(result)}`);
     }
   } catch (error) {
     console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);

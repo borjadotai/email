@@ -149,6 +149,7 @@ if [[ -n "$MAC_PROVISIONING_PROFILE" ]]; then
   MAC_APNS_ENTITLEMENTS="$DIST_DIR/EmailMac.codesign.entitlements"
   /usr/bin/plutil -create xml1 "$MAC_APNS_ENTITLEMENTS"
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.aps-environment string $MAC_APNS_ENVIRONMENT" "$MAC_APNS_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.developer.usernotifications.communication bool true" "$MAC_APNS_ENTITLEMENTS"
 fi
 
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-${EMAIL_CODESIGN_IDENTITY:-}}"

@@ -29,36 +29,20 @@ struct ComposeView: View {
     #endif
   }
 
+  #if os(iOS)
   private var iOSBody: some View {
     NavigationStack {
-      Form {
-        Section {
-          Picker("From", selection: $accountId) {
-            ForEach(model.accounts) { account in
-              Text(account.email)
-                .tag(account.id)
-            }
-          }
-
-          recipientFields
-          TextField("Subject", text: $subject)
+      ScrollView {
+        VStack(spacing: 16) {
+          iOSAddressCard
+          iOSEditorCard
+          iOSTrackingCard
         }
-
-        Section {
-          ComposerEditor(
-            mode: $editorMode,
-            bodyHTML: $bodyHTML,
-            bodyText: $bodyText,
-            rawHTML: $rawHTML
-          )
-          .frame(minHeight: 320)
-        }
-
-        Section {
-          Toggle("Track opens", isOn: $trackOpens)
-        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 18)
       }
-      .formStyle(.grouped)
+      .background(Color(uiColor: .systemGroupedBackground))
+      .scrollDismissesKeyboard(.interactively)
       .navigationTitle("New Message")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -77,10 +61,53 @@ struct ComposeView: View {
       }
       .onAppear(perform: loadInitialState)
     }
-    #if os(macOS)
-    .frame(minWidth: 680, minHeight: 660)
-    #endif
   }
+
+  private var iOSAddressCard: some View {
+    VStack(spacing: 0) {
+      LabeledContent("From") {
+        Picker("From", selection: $accountId) {
+          ForEach(model.accounts) { account in
+            Text(account.email)
+              .tag(account.id)
+          }
+        }
+        .labelsHidden()
+      }
+      .padding(.vertical, 12)
+
+      Divider()
+
+      recipientFields
+        .padding(.vertical, 12)
+
+      Divider()
+
+      TextField("Subject", text: $subject)
+        .padding(.vertical, 12)
+    }
+    .padding(.horizontal, 14)
+    .background(ComposerSurface.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var iOSEditorCard: some View {
+    ComposerEditor(
+      mode: $editorMode,
+      bodyHTML: $bodyHTML,
+      bodyText: $bodyText,
+      rawHTML: $rawHTML
+    )
+    .frame(height: 390)
+    .background(ComposerSurface.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var iOSTrackingCard: some View {
+    Toggle("Track opens", isOn: $trackOpens)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 12)
+      .background(ComposerSurface.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+  #endif
 
   #if os(macOS)
   private var macOSBody: some View {
@@ -162,13 +189,11 @@ struct ComposeView: View {
       if showCarbonCopyFields || !cc.isEmpty || !bcc.isEmpty {
         Divider()
         macOSFieldRow(label: "Cc") {
-          TextField("", text: $cc)
-            .textFieldStyle(.plain)
+          RecipientSuggestionField("", text: $cc)
         }
         Divider()
         macOSFieldRow(label: "Bcc") {
-          TextField("", text: $bcc)
-            .textFieldStyle(.plain)
+          RecipientSuggestionField("", text: $bcc)
         }
       }
 
@@ -218,8 +243,7 @@ struct ComposeView: View {
         .transition(.opacity.combined(with: .move(edge: .leading)))
       }
 
-      TextField("", text: $to)
-        .textFieldStyle(.plain)
+      RecipientSuggestionField("", text: $to)
         .frame(maxWidth: .infinity)
     }
     .padding(.vertical, 13)
@@ -262,11 +286,7 @@ struct ComposeView: View {
           .accessibilityLabel(showCarbonCopyFields ? "Hide Cc and Bcc" : "Show Cc and Bcc")
         }
 
-        TextField("To", text: $to)
-          #if os(iOS)
-          .textInputAutocapitalization(.never)
-          .keyboardType(.emailAddress)
-          #endif
+        RecipientSuggestionField("To", text: $to)
       }
       #if os(macOS)
       .onHover { isHovering in
@@ -277,17 +297,9 @@ struct ComposeView: View {
       #endif
 
       if showCarbonCopyFields || !cc.isEmpty || !bcc.isEmpty {
-        TextField("Cc", text: $cc)
-          #if os(iOS)
-          .textInputAutocapitalization(.never)
-          .keyboardType(.emailAddress)
-          #endif
+        RecipientSuggestionField("Cc", text: $cc)
 
-        TextField("Bcc", text: $bcc)
-          #if os(iOS)
-          .textInputAutocapitalization(.never)
-          .keyboardType(.emailAddress)
-          #endif
+        RecipientSuggestionField("Bcc", text: $bcc)
       }
     }
   }
@@ -354,6 +366,153 @@ struct ComposeView: View {
       model.composeDraft = nil
       dismiss()
     }
+  }
+}
+
+private struct RecipientSuggestionField: View {
+  @Environment(AppModel.self) private var model
+  var placeholder: String
+  @Binding var text: String
+
+  @FocusState private var isFocused: Bool
+  @State private var suggestions: [RecipientSuggestion] = []
+  @State private var suggestionTask: Task<Void, Never>?
+
+  init(_ placeholder: String, text: Binding<String>) {
+    self.placeholder = placeholder
+    self._text = text
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      TextField(placeholder, text: $text)
+        #if os(iOS)
+        .textInputAutocapitalization(.never)
+        .keyboardType(.emailAddress)
+        .autocorrectionDisabled()
+        #else
+        .textFieldStyle(.plain)
+        #endif
+        .focused($isFocused)
+        .onChange(of: text) { _, value in
+          scheduleSuggestions(for: value)
+        }
+        .onChange(of: isFocused) { _, focused in
+          if focused {
+            scheduleSuggestions(for: text)
+          } else {
+            suggestionTask?.cancel()
+            suggestions = []
+          }
+        }
+
+      if isFocused && !suggestions.isEmpty {
+        VStack(spacing: 0) {
+          ForEach(suggestions) { suggestion in
+            Button {
+              accept(suggestion)
+            } label: {
+              HStack(spacing: 10) {
+                AvatarView(
+                  name: suggestion.title,
+                  email: suggestion.email,
+                  urlString: suggestion.avatarURL,
+                  size: 28,
+                  prefersLogo: true
+                )
+
+                VStack(alignment: .leading, spacing: 1) {
+                  Text(suggestion.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                  Text(suggestion.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+              }
+              .padding(.horizontal, 10)
+              .padding(.vertical, 7)
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if suggestion.id != suggestions.last?.id {
+              Divider()
+                .padding(.leading, 48)
+            }
+          }
+        }
+        .background(ComposerSurface.suggestionBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(ComposerSurface.borderColor, lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
+      }
+    }
+    .onDisappear {
+      suggestionTask?.cancel()
+    }
+  }
+
+  private func scheduleSuggestions(for value: String) {
+    suggestionTask?.cancel()
+    let query = currentRecipientQuery(in: value)
+    guard isFocused, query.count >= 2 else {
+      suggestions = []
+      return
+    }
+
+    suggestionTask = Task {
+      try? await Task.sleep(for: .milliseconds(260))
+      guard !Task.isCancelled else { return }
+      let results = await model.recipientSuggestions(matching: query)
+      guard !Task.isCancelled else { return }
+      let usedEmails = selectedRecipientEmails(in: value)
+      let filtered = results.filter { !usedEmails.contains($0.email.lowercased()) }
+      await MainActor.run {
+        suggestions = Array(filtered.prefix(6))
+      }
+    }
+  }
+
+  private func accept(_ suggestion: RecipientSuggestion) {
+    text = replacingCurrentRecipientToken(in: text, with: suggestion.formattedAddress)
+    suggestions = []
+  }
+
+  private func currentRecipientQuery(in value: String) -> String {
+    let token = value.components(separatedBy: CharacterSet(charactersIn: ",;")).last ?? value
+    let addressFragment = token.split(separator: "<", omittingEmptySubsequences: false).last.map(String.init) ?? token
+    return addressFragment
+      .replacingOccurrences(of: ">", with: "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func replacingCurrentRecipientToken(in value: String, with replacement: String) -> String {
+    var parts = value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+    if parts.isEmpty {
+      return "\(replacement), "
+    }
+    parts[parts.count - 1] = replacement
+    return parts
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: ", ") + ", "
+  }
+
+  private func selectedRecipientEmails(in value: String) -> Set<String> {
+    let values = value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+    return Set(values.compactMap { item in
+      let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let start = trimmed.lastIndex(of: "<"), let end = trimmed.lastIndex(of: ">"), start < end {
+        return String(trimmed[trimmed.index(after: start)..<end]).lowercased()
+      }
+      return trimmed.contains("@") ? trimmed.lowercased() : nil
+    })
   }
 }
 
@@ -453,6 +612,22 @@ struct ComposerEditor: View {
   }
 
   private var editorToolbar: some View {
+    #if os(iOS)
+    ScrollView(.horizontal, showsIndicators: false) {
+      editorToolbarContent
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+    .background(ComposerSurface.toolbarBackground)
+    #else
+    editorToolbarContent
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .background(ComposerSurface.toolbarBackground)
+    #endif
+  }
+
+  private var editorToolbarContent: some View {
     HStack(spacing: 8) {
       Picker("Editor mode", selection: $mode) {
         ForEach(ComposerEditorMode.allCases) { mode in
@@ -481,9 +656,6 @@ struct ComposerEditor: View {
 
       editorButton("Clear Formatting", systemImage: "eraser", command: .clearFormatting)
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(ComposerSurface.toolbarBackground)
   }
 
   private func editorButton(_ title: String, systemImage: String, command: ComposerEditorCommandKind) -> some View {
@@ -564,6 +736,8 @@ private extension RichTextWebEditor {
       webView.isOpaque = false
       webView.backgroundColor = .clear
       webView.scrollView.backgroundColor = .clear
+      webView.scrollView.contentInsetAdjustmentBehavior = .never
+      webView.scrollView.keyboardDismissMode = .interactive
       #endif
       webView.loadHTMLString(Self.document(html: html.wrappedValue), baseURL: nil)
       return webView
@@ -616,20 +790,25 @@ private extension RichTextWebEditor {
           :root { color-scheme: light dark; }
           html, body {
             margin: 0;
+            width: 100%;
             min-height: 100%;
             background: transparent;
             color: CanvasText;
             font: -apple-system-body;
+            overflow-x: hidden;
           }
           body {
-            padding: 16px;
+            padding: 14px;
             box-sizing: border-box;
           }
           #editor {
-            min-height: 224px;
+            min-height: 232px;
             outline: none;
             line-height: 1.45;
             word-break: break-word;
+            overflow-wrap: anywhere;
+            -webkit-user-select: text;
+            user-select: text;
           }
           #editor:empty::before {
             content: "Write your message...";
@@ -694,6 +873,14 @@ enum ComposerSurface {
     Color(nsColor: .windowBackgroundColor).opacity(0.72)
     #else
     Color(uiColor: .secondarySystemGroupedBackground)
+    #endif
+  }
+
+  static var suggestionBackground: Color {
+    #if os(macOS)
+    Color(nsColor: .controlBackgroundColor)
+    #else
+    Color(uiColor: .tertiarySystemGroupedBackground)
     #endif
   }
 

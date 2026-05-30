@@ -19,22 +19,44 @@ export class PushNotificationService {
   }
 
   async sendNewEmailNotifications(emails = []) {
-    if (!this.isConfigured || emails.length === 0) return { sent: 0, skipped: emails.length };
+    if (!Array.isArray(emails) || emails.length === 0) return { sent: 0, skipped: 0, skippedReasons: {} };
+    if (!this.isConfigured) {
+      return {
+        sent: 0,
+        skipped: emails.length,
+        skippedReasons: { apnsNotConfigured: emails.length }
+      };
+    }
 
     let sent = 0;
     let skipped = 0;
+    const skippedReasons = {};
+    const tokens = this.store.listPushTokens();
+    if (tokens.length === 0) {
+      return {
+        sent: 0,
+        skipped: emails.length,
+        skippedReasons: { noPushTokens: emails.length }
+      };
+    }
+
+    const badge = this.store.inboxUnreadCount();
+    const markSkipped = reason => {
+      skipped += 1;
+      skippedReasons[reason] = (skippedReasons[reason] ?? 0) + 1;
+    };
+
     for (const email of emails) {
-      if (!shouldNotifyForEmail(email)) {
-        skipped += 1;
+      const skipReason = notificationSkipReason(email);
+      if (skipReason) {
+        markSkipped(skipReason);
         continue;
       }
 
-      const tokens = this.store.listPushTokens();
-      const badge = this.store.inboxUnreadCount();
       for (const token of tokens) {
         const topic = topicForToken(token, this.apns.config);
         if (!topic) {
-          skipped += 1;
+          markSkipped("missingTopic");
           continue;
         }
 
@@ -50,12 +72,13 @@ export class PushNotificationService {
           if (isPermanentAPNSError(error)) {
             this.store.disablePushToken(token.id, error.reason ?? error.message);
           }
+          markSkipped(error.reason ? `apns:${error.reason}` : "apnsSendFailed");
           console.warn(`${new Date().toISOString()} push send failed token=${token.id}: ${error.message}`);
         }
       }
     }
 
-    return { sent, skipped };
+    return { sent, skipped, skippedReasons };
   }
 
   async sendTestNotification() {
@@ -89,6 +112,16 @@ export class PushNotificationService {
 
     return { sent, skipped, configured: true };
   }
+}
+
+export function summarizePushNotificationResult(result = {}) {
+  const sent = Number.isFinite(result.sent) ? result.sent : 0;
+  const skipped = Number.isFinite(result.skipped) ? result.skipped : 0;
+  const reasons = Object.entries(result.skippedReasons ?? {})
+    .filter(([, count]) => Number(count) > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(",");
+  return `sent=${sent} skipped=${skipped}${reasons ? ` skipReasons=${reasons}` : ""}`;
 }
 
 class APNsClient {
@@ -221,8 +254,11 @@ function testNotificationPayload() {
   };
 }
 
-function shouldNotifyForEmail(email) {
-  return email?.id && email.mailboxRole === "inbox" && !email.isRead;
+function notificationSkipReason(email) {
+  if (!email?.id) return "missingEmailId";
+  if (email.mailboxRole !== "inbox") return `mailbox:${email.mailboxRole ?? "unknown"}`;
+  if (email.isRead) return "read";
+  return null;
 }
 
 function notificationSender(email) {

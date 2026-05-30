@@ -170,16 +170,19 @@ export class ProviderService {
     return { account: this.store.getAccount(account.id), sync };
   }
 
-  async syncAccount(accountId, { limit = this.initialSyncLimit() } = {}) {
+  async syncAccount(accountId, { limit = this.initialSyncLimit(), quick = false } = {}) {
     const account = this.store.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
     const syncLimit = clampSyncLimit(limit, this.initialSyncLimit());
 
     switch (account.provider) {
       case "gmail":
-        return this.syncGmailAccount(account.id, { limit: syncLimit });
+        return this.syncGmailAccount(account.id, { limit: syncLimit, quick });
       case "icloud":
-        return this.syncICloudAccount(account.id, { limit: Math.min(syncLimit, 200) });
+        return this.syncICloudAccount(account.id, {
+          limit: Math.min(syncLimit, 200),
+          includeSystemFolders: !quick
+        });
       default:
         throw httpError(400, `Unsupported provider ${account.provider}.`);
     }
@@ -562,11 +565,15 @@ export class ProviderService {
     }
   }
 
-  async syncGmailAccount(accountId, { limit = 100 } = {}) {
+  async syncGmailAccount(accountId, { limit = 100, quick = false } = {}) {
     const account = this.store.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
     const client = this.authorizedGmailClient(account);
     const gmail = google.gmail({ version: "v1", auth: client });
+
+    if (quick) {
+      return this.syncGmailInboxQuick(account, gmail, { limit });
+    }
 
     const labels = await gmail.users.labels.list({ userId: "me" });
     const userLabels = new Map();
@@ -624,6 +631,110 @@ export class ProviderService {
     });
 
     return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+  }
+
+  async syncGmailInboxQuick(account, gmail, { limit = 10 } = {}) {
+    const historyId = account.providerMetadata.gmailHistoryId;
+    if (historyId) {
+      try {
+        return await this.syncGmailInboxHistory(account, gmail, {
+          startHistoryId: historyId,
+          limit
+        });
+      } catch (error) {
+        if (!isGmailHistoryCursorExpired(error)) {
+          throw error;
+        }
+      }
+    }
+
+    return this.syncRecentGmailInbox(account, gmail, { limit });
+  }
+
+  async syncGmailInboxHistory(account, gmail, { startHistoryId, limit = 10 } = {}) {
+    const messageIds = [];
+    const seenIds = new Set();
+    let pageToken = undefined;
+    let latestHistoryId = startHistoryId;
+
+    do {
+      const response = await gmail.users.history.list({
+        userId: "me",
+        startHistoryId,
+        historyTypes: ["messageAdded"],
+        labelId: "INBOX",
+        pageToken,
+        maxResults: 100
+      });
+      latestHistoryId = response.data.historyId ?? latestHistoryId;
+
+      for (const history of response.data.history ?? []) {
+        for (const added of history.messagesAdded ?? []) {
+          const message = added.message ?? {};
+          const id = message.id;
+          if (!id || seenIds.has(id)) continue;
+          seenIds.add(id);
+          messageIds.push(id);
+          if (messageIds.length >= limit) break;
+        }
+        if (messageIds.length >= limit) break;
+      }
+
+      pageToken = messageIds.length >= limit ? undefined : response.data.nextPageToken;
+    } while (pageToken);
+
+    const { imported, newEmails } = await this.importGmailMessageIds(account, gmail, messageIds, {
+      includeAttachmentData: false
+    });
+    this.store.markAccountSynced(account.id, {
+      gmailHistoryId: latestHistoryId
+    });
+
+    return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+  }
+
+  async syncRecentGmailInbox(account, gmail, { limit = 10 } = {}) {
+    const [list, profile] = await Promise.all([
+      gmail.users.messages.list({
+        userId: "me",
+        labelIds: ["INBOX"],
+        maxResults: Math.min(50, Math.max(1, limit)),
+        includeSpamTrash: false
+      }),
+      gmail.users.getProfile({ userId: "me" })
+    ]);
+    const messageIds = (list.data.messages ?? []).map(message => message.id).filter(Boolean);
+    const { imported, newEmails } = await this.importGmailMessageIds(account, gmail, messageIds, {
+      includeAttachmentData: false
+    });
+
+    this.store.markAccountSynced(account.id, {
+      gmailHistoryId: profile.data.historyId ?? account.providerMetadata.gmailHistoryId ?? null,
+      gmailMessagesTotal: profile.data.messagesTotal ?? null,
+      gmailThreadsTotal: profile.data.threadsTotal ?? null
+    });
+
+    return { provider: "gmail", imported, newEmailIds: newEmails.map(email => email.id), newEmails };
+  }
+
+  async importGmailMessageIds(account, gmail, messageIds, { includeAttachmentData = true } = {}) {
+    let imported = 0;
+    const newEmails = [];
+
+    for (const id of messageIds) {
+      const saved = await this.importGmailMessage({
+        account,
+        gmail,
+        id,
+        includeAttachmentData
+      });
+      if (saved.wasNew) {
+        newEmails.push(saved);
+      }
+      imported += 1;
+    }
+
+    return { imported, newEmails };
   }
 
   async syncGmailSystemFolders(account, gmail, userLabels, { limit = 100 } = {}) {
@@ -691,7 +802,7 @@ export class ProviderService {
     return saved;
   }
 
-  async syncICloudAccount(accountId, { limit = 100 } = {}) {
+  async syncICloudAccount(accountId, { limit = 100, includeSystemFolders = true } = {}) {
     const account = this.store.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
     const password = this.secretStore.get(secretKey(account.id, "icloud.app_password"));
@@ -746,11 +857,13 @@ export class ProviderService {
         lock.release();
       }
 
-      const systemSync = await this.syncICloudSystemFolders(account, client, {
-        limit: Math.min(25, Math.max(10, Math.ceil(limit / 4)))
-      });
-      imported += systemSync.imported;
-      newEmails.push(...systemSync.newEmails);
+      if (includeSystemFolders) {
+        const systemSync = await this.syncICloudSystemFolders(account, client, {
+          limit: Math.min(25, Math.max(10, Math.ceil(limit / 4)))
+        });
+        imported += systemSync.imported;
+        newEmails.push(...systemSync.newEmails);
+      }
     } finally {
       await safeLogout(client, user);
     }
@@ -1648,6 +1761,15 @@ function requiredString(value, name) {
 
 function optionalString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isGmailHistoryCursorExpired(error) {
+  const status = error?.code ?? error?.response?.status;
+  if (status === 404) return true;
+  if (status !== 400 && status !== 412) return false;
+
+  const message = String(error?.message ?? error?.response?.data?.error ?? "");
+  return /history|precondition/iu.test(message);
 }
 
 function clampSyncLimit(value, fallback) {

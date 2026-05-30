@@ -324,6 +324,53 @@ test("sends replies in the original conversation thread", () => {
   }
 });
 
+test("indexes senders and outbound recipients for recipient suggestions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    store.upsertProviderEmail(testProviderEmail({
+      id: "contact-inbound",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-contact-inbound",
+      senderName: "LinkedIn Jobs",
+      senderEmail: "jobs@linkedin.com",
+      recipients: [account.email],
+      receivedAt: "2026-05-23T10:00:00.000Z"
+    }));
+    store.sendMessage({
+      accountId: account.id,
+      to: "Alice Example <alice@example.com>",
+      cc: "teammate@example.com",
+      subject: "Hello",
+      bodyText: "Hi",
+      trackOpens: false
+    });
+
+    const linkedIn = store.searchContacts("lin", 5);
+    assert.equal(linkedIn[0].email, "jobs@linkedin.com");
+    assert.equal(linkedIn[0].displayName, "LinkedIn Jobs");
+    assert.equal(linkedIn[0].inboundCount, 1);
+
+    const alice = store.searchContacts("ali", 5);
+    assert.equal(alice[0].email, "alice@example.com");
+    assert.equal(alice[0].displayName, "Alice Example");
+    assert.equal(alice[0].outboundCount, 1);
+
+    assert.equal(store.searchContacts("pe", 5).some(contact => contact.email === account.email), false);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("groups conversation messages across connected accounts with RFC headers", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

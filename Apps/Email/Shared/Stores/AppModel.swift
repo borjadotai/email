@@ -60,7 +60,6 @@ final class AppModel {
   var isLoadingMoreEmails = false
   var hasMoreEmails = false
   var isRefreshingMail = false
-  var refreshStartedAt: Date?
   var isSending = false
   var isConnectingAccount = false
   var syncingAccountID: String?
@@ -404,30 +403,23 @@ final class AppModel {
   func refreshVisibleMail() async {
     guard !isRefreshingMail else { return }
     isRefreshingMail = true
-    refreshStartedAt = Date()
     let accountIds = visibleAccountIDsForRefresh()
     defer {
       isRefreshingMail = false
-      refreshStartedAt = nil
       syncingAccountID = nil
     }
 
     if accountIds.isEmpty {
-      await refreshAll()
+      do {
+        try await reloadVisibleMailAfterSync(refreshFilterCache: selectedFilterID != nil)
+      } catch {
+        reportError(error)
+      }
       return
     }
 
-    var syncErrors: [String] = []
-    for accountId in accountIds {
-      syncingAccountID = accountId
-      do {
-        _ = try await apiClient.syncAccount(id: accountId, limit: 50)
-      } catch {
-        if let message = errorDescriptionForReporting(error) {
-          syncErrors.append(message)
-        }
-      }
-    }
+    syncingAccountID = accountIds.count == 1 ? accountIds.first : nil
+    let syncErrors = await quickSyncAccounts(accountIds)
 
     if let firstError = syncErrors.first {
       errorMessage = firstError
@@ -435,7 +427,14 @@ final class AppModel {
       errorMessage = nil
       statusMessage = "Mail refreshed"
     }
-    await refreshAll(refreshSelectedFilterCache: selectedFilterID != nil)
+
+    do {
+      try await reloadVisibleMailAfterSync(refreshFilterCache: selectedFilterID != nil)
+    } catch {
+      if syncErrors.isEmpty {
+        reportError(error)
+      }
+    }
   }
 
   func pollAllMailForNewEmails() async -> [String] {
@@ -453,7 +452,7 @@ final class AppModel {
     var newEmailIDs: [String] = []
     for accountID in accountIDs {
       do {
-        let result = try await apiClient.syncAccount(id: accountID, limit: 50)
+        let result = try await apiClient.syncAccount(id: accountID, limit: 10, quick: true)
         newEmailIDs.append(contentsOf: result.newEmailIds ?? [])
       } catch {
         continue
@@ -462,6 +461,35 @@ final class AppModel {
 
     await refreshAll(reportErrors: false)
     return uniqueEmailIDs(newEmailIDs)
+  }
+
+  private func reloadVisibleMailAfterSync(refreshFilterCache: Bool = false) async throws {
+    mailboxes = try await apiClient.mailboxes()
+    try await loadEmails(refreshFilterCache: refreshFilterCache)
+  }
+
+  private func quickSyncAccounts(_ accountIds: [String]) async -> [String] {
+    let client = apiClient
+    return await withTaskGroup(of: String?.self) { group in
+      for accountId in accountIds {
+        group.addTask {
+          do {
+            _ = try await client.syncAccount(id: accountId, limit: 10, quick: true)
+            return nil
+          } catch {
+            return error.localizedDescription
+          }
+        }
+      }
+
+      var errors: [String] = []
+      for await error in group {
+        if let error {
+          errors.append(error)
+        }
+      }
+      return errors
+    }
   }
 
   func emailDetails(for ids: [String]) async -> [EmailDetail] {
@@ -918,6 +946,17 @@ final class AppModel {
     } catch {
       reportError(error)
       return false
+    }
+  }
+
+  func recipientSuggestions(matching query: String) async -> [RecipientSuggestion] {
+    let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmedQuery.count >= 2 else { return [] }
+
+    do {
+      return try await apiClient.recipientSuggestions(query: trimmedQuery)
+    } catch {
+      return []
     }
   }
 

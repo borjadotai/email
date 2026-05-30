@@ -1,7 +1,7 @@
 import { resolveConfig } from "./config.js";
 import { createServer } from "./http.js";
 import { ProviderService } from "./providerAdapters.js";
-import { PushNotificationService } from "./pushNotifications.js";
+import { PushNotificationService, summarizePushNotificationResult } from "./pushNotifications.js";
 import { KeychainSecretStore } from "./secretStore.js";
 import { MailStore } from "./store.js";
 
@@ -30,6 +30,12 @@ const { server, events } = createServer({
 server.listen(config.port, config.host, () => {
   console.log(`Email server listening at http://${config.host}:${config.port}`);
   console.log(`SQLite database: ${config.databasePath}`);
+  const contactIndex = store.startDeferredContactIndexRebuild({
+    logger: message => console.log(`${new Date().toISOString()} ${message}`)
+  });
+  if (contactIndex.started) {
+    console.log(`${new Date().toISOString()} contact index rebuild scheduled total=${contactIndex.total}`);
+  }
 });
 
 let historyBackfillRunning = false;
@@ -101,8 +107,17 @@ async function runAutoSyncPass() {
 
       try {
         const sync = await providers.syncAccount(current.id, {
-          limit: config.autoSyncLimit
+          limit: config.autoSyncLimit,
+          quick: true
         });
+        const newEmailCount = Array.isArray(sync.newEmails)
+          ? sync.newEmails.length
+          : Array.isArray(sync.newEmailIds)
+            ? sync.newEmailIds.length
+            : 0;
+        if ((sync.imported ?? 0) > 0 || newEmailCount > 0) {
+          console.log(`${new Date().toISOString()} auto sync account=${current.id} provider=${sync.provider} imported=${sync.imported ?? 0} new=${newEmailCount}`);
+        }
         if (sync.imported > 0) {
           events.emit("emails.changed", { accountId: current.id, autoSync: true });
         }
@@ -120,8 +135,8 @@ async function sendPushNotifications(newEmails = []) {
   if (!Array.isArray(newEmails) || newEmails.length === 0) return;
   try {
     const result = await pushNotifications.sendNewEmailNotifications(newEmails);
-    if (result.sent > 0) {
-      console.log(`${new Date().toISOString()} push notifications sent=${result.sent}`);
+    if (result.sent > 0 || result.skipped > 0) {
+      console.log(`${new Date().toISOString()} push notifications ${summarizePushNotificationResult(result)}`);
     }
   } catch (error) {
     console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);

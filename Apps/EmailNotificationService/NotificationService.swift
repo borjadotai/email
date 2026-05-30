@@ -1,7 +1,12 @@
 import Foundation
 import Intents
-import UIKit
 import UserNotifications
+
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 final class NotificationService: UNNotificationServiceExtension {
   private static let defaultAppName = "Email"
@@ -103,9 +108,11 @@ final class NotificationService: UNNotificationServiceExtension {
       sender: sender,
       attachments: nil
     )
+    #if !os(macOS)
     if let senderImage {
       intent.setImage(senderImage, forParameterNamed: \.sender)
     }
+    #endif
     let interaction = INInteraction(intent: intent, response: nil)
     interaction.direction = .incoming
     interaction.donate(completion: nil)
@@ -173,6 +180,8 @@ final class NotificationService: UNNotificationServiceExtension {
 
   private static func generatedAvatarData(senderName: String, senderEmail: String?) -> Data? {
     let initials = initials(for: senderName, email: senderEmail)
+
+    #if canImport(UIKit)
     let renderer = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128))
     let image = renderer.image { context in
       let bounds = CGRect(x: 0, y: 0, width: 128, height: 128)
@@ -192,6 +201,35 @@ final class NotificationService: UNNotificationServiceExtension {
       initials.draw(with: textRect, options: [.usesLineFragmentOrigin], attributes: attributes, context: nil)
     }
     return image.pngData()
+    #elseif canImport(AppKit)
+    let bounds = CGRect(x: 0, y: 0, width: 128, height: 128)
+    let image = NSImage(size: bounds.size)
+    image.lockFocus()
+
+    NSBezierPath(roundedRect: bounds, xRadius: 30, yRadius: 30).addClip()
+    NSColor.controlBackgroundColor.setFill()
+    bounds.fill()
+
+    let paragraphStyle = NSMutableParagraphStyle()
+    paragraphStyle.alignment = .center
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: NSFont.systemFont(ofSize: 44, weight: .semibold),
+      .foregroundColor: NSColor.secondaryLabelColor,
+      .paragraphStyle: paragraphStyle
+    ]
+    let textRect = CGRect(x: 0, y: 35, width: 128, height: 58)
+    initials.draw(with: textRect, options: [.usesLineFragmentOrigin], attributes: attributes, context: nil)
+    image.unlockFocus()
+
+    guard let tiffData = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiffData)
+    else {
+      return nil
+    }
+    return bitmap.representation(using: .png, properties: [:])
+    #else
+    return nil
+    #endif
   }
 
   private static func initials(for senderName: String, email: String?) -> String {

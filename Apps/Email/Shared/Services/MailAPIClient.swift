@@ -49,6 +49,10 @@ struct SendResponse: Decodable {
   var trackingPixelURL: String?
 }
 
+struct RecipientSuggestionsResponse: Decodable {
+  var contacts: [RecipientSuggestion]
+}
+
 struct BlockSenderResponse: Decodable {
   var rule: BlockedSenderRule
   var affectedCount: Int
@@ -91,7 +95,7 @@ enum MailAPIError: LocalizedError {
   }
 }
 
-struct MailAPIClient {
+struct MailAPIClient: Sendable {
   var baseURL: URL
   var session: URLSession = .shared
 
@@ -161,11 +165,18 @@ struct MailAPIClient {
     try await request("api/auth/icloud/connect", method: "POST", body: input)
   }
 
-  func syncAccount(id: String, limit: Int? = nil) async throws -> ProviderSyncResult {
+  func syncAccount(id: String, limit: Int? = nil, quick: Bool = false) async throws -> ProviderSyncResult {
     struct SyncRequest: Encodable {
       var limit: Int?
+      var quick: Bool?
     }
-    let response: SyncResponse = try await request("api/accounts/\(id)/sync", method: "POST", body: SyncRequest(limit: limit))
+    let query = quick ? [URLQueryItem(name: "quick", value: "1")] : []
+    let response: SyncResponse = try await request(
+      "api/accounts/\(id)/sync",
+      method: "POST",
+      query: query,
+      body: SyncRequest(limit: limit, quick: quick ? true : nil)
+    )
     return response.sync
   }
 
@@ -376,6 +387,17 @@ struct MailAPIClient {
     try await request("api/messages/send", method: "POST", body: message)
   }
 
+  func recipientSuggestions(query: String, limit: Int = 8) async throws -> [RecipientSuggestion] {
+    let response: RecipientSuggestionsResponse = try await request(
+      "api/contacts/suggest",
+      query: [
+        URLQueryItem(name: "q", value: query),
+        URLQueryItem(name: "limit", value: String(limit))
+      ]
+    )
+    return response.contacts
+  }
+
   func registerPushToken(_ input: PushTokenRegistrationRequest) async throws -> PushTokenRegistrationResponse {
     try await request("api/push/tokens", method: "POST", body: input)
   }
@@ -440,7 +462,7 @@ struct MailAPIClient {
 
     var request = URLRequest(url: url)
     request.httpMethod = method
-    request.timeoutInterval = timeout(for: path)
+    request.timeoutInterval = timeout(for: path, query: query)
     if let bodyData {
       request.httpBody = bodyData
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -463,8 +485,11 @@ struct MailAPIClient {
     return try decoder.decode(T.self, from: data)
   }
 
-  private func timeout(for path: String) -> TimeInterval {
+  private func timeout(for path: String, query: [URLQueryItem]) -> TimeInterval {
     if path == "api/auth/icloud/connect" || path.hasSuffix("/sync") {
+      if query.contains(where: { $0.name == "quick" && $0.value == "1" }) {
+        return 5
+      }
       return 180
     }
     return 30
