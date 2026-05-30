@@ -1344,6 +1344,54 @@ export class MailStore {
     }));
   }
 
+  countUnreadInboxEmails({ accountId = null } = {}) {
+    const args = [];
+    const accountFilter = accountId ? "AND e.account_id = ?" : "";
+    if (accountId) {
+      args.push(accountId);
+    }
+
+    return this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM emails e
+      JOIN mailboxes m ON m.id = e.mailbox_id
+      WHERE m.role = 'inbox'
+        AND e.is_read = 0
+        ${accountFilter}
+    `).get(...args)?.count ?? 0;
+  }
+
+  listUnreadInboxEmailsForTriage({ accountId = null, limit = 50 } = {}) {
+    const cappedLimit = clampInt(limit, 1, 100, 50);
+    const args = [];
+    const accountFilter = accountId ? "AND e.account_id = ?" : "";
+    if (accountId) {
+      args.push(accountId);
+    }
+
+    const rows = this.db.prepare(`
+      SELECT e.id, e.account_id AS accountId, a.email AS accountEmail,
+             e.sender_name AS senderName, e.sender_email AS senderEmail,
+             e.sender_avatar_url AS senderAvatarURL, e.subject, e.snippet,
+             e.body_text AS bodyText, e.received_at AS receivedAt,
+             e.importance, e.has_attachments AS hasAttachments
+      FROM emails e
+      JOIN accounts a ON a.id = e.account_id
+      JOIN mailboxes m ON m.id = e.mailbox_id
+      WHERE m.role = 'inbox'
+        AND e.is_read = 0
+        ${accountFilter}
+      ORDER BY e.received_at DESC
+      LIMIT ?
+    `).all(...args, cappedLimit);
+
+    return rows.map(row => ({
+      ...row,
+      senderAvatarURL: row.senderAvatarURL || senderLogoURLForEmail(row.senderEmail),
+      hasAttachments: Boolean(row.hasAttachments)
+    }));
+  }
+
   searchContacts(query, limit = 8) {
     const normalizedQuery = normalizeContactSearchQuery(query);
     if (normalizedQuery.length < 2) return [];

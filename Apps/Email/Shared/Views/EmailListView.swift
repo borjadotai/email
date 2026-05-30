@@ -8,6 +8,7 @@ struct EmailListView: View {
   @FocusState private var isMessageListFocused: Bool
   #endif
   var onCompose: () -> Void
+  var onTriage: () -> Void
   var onSettings: () -> Void
   var onShowDetail: () -> Void
 
@@ -21,6 +22,18 @@ struct EmailListView: View {
     }
     .toolbar {
       ToolbarItemGroup {
+        Button(action: onTriage) {
+          if model.isLoadingInboxTriage {
+            ProgressView()
+              .controlSize(.small)
+          } else {
+            Image(systemName: "sparkles")
+          }
+        }
+        .disabled(!model.canTriageCurrentInbox || model.currentInboxUnreadCount == 0 || model.isLoadingInboxTriage)
+        .help("Triage unread mail")
+        .accessibilityLabel("Triage unread mail")
+
         Button {
           refreshFromToolbar()
         } label: {

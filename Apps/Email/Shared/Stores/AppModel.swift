@@ -80,6 +80,9 @@ final class AppModel {
   var isSearchPresented = false
   var isArchiving = false
   var pendingArchive: PendingArchiveNotification?
+  var inboxTriage: InboxTriageResult?
+  var isLoadingInboxTriage = false
+  var inboxTriageErrorMessage: String?
 
   var archiveUndoDurationSeconds: Int {
     didSet {
@@ -127,6 +130,7 @@ final class AppModel {
   @ObservationIgnored private var emailListLoadGeneration = 0
   @ObservationIgnored private var markingReadEmailIDs: Set<String> = []
   @ObservationIgnored private var notificationSelectedEmailID: String?
+  @ObservationIgnored private var inboxTriagePrefetchTask: Task<Void, Never>?
   @ObservationIgnored private let initialEmailPageSize = 30
   @ObservationIgnored private let nextEmailPageSize = 80
 
@@ -179,6 +183,37 @@ final class AppModel {
       .reduce(0) { $0 + $1.unreadCount }
   }
 
+  var canTriageCurrentInbox: Bool {
+    if selectedLabelID != nil || selectedFilterID != nil {
+      return false
+    }
+    if selectedGlobalFolder != nil {
+      return false
+    }
+    if let selectedMailboxID,
+       let mailbox = mailboxes.first(where: { $0.id == selectedMailboxID }) {
+      return mailbox.role == "inbox"
+    }
+    return true
+  }
+
+  var currentInboxUnreadCount: Int {
+    guard canTriageCurrentInbox else { return 0 }
+
+    if let selectedMailboxID,
+       let mailbox = mailboxes.first(where: { $0.id == selectedMailboxID }) {
+      return mailbox.role == "inbox" ? mailbox.unreadCount : 0
+    }
+
+    if let selectedAccountID {
+      return mailboxes
+        .filter { $0.accountId == selectedAccountID && $0.role == "inbox" }
+        .reduce(0) { $0 + $1.unreadCount }
+    }
+
+    return globalUnreadCount
+  }
+
   var enabledGlobalFolders: [GlobalMailboxFolder] {
     guard showsGlobalFoldersSection else { return [] }
     let visible = Set(visibleGlobalFolders)
@@ -227,6 +262,7 @@ final class AppModel {
       labels = try await apiClient.labels()
       filters = try await apiClient.filters()
       try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
+      prefetchInboxTriageIfNeeded()
     } catch {
       if reportErrors {
         reportError(error)
@@ -395,8 +431,47 @@ final class AppModel {
   func refreshEmails(refreshFilterCache: Bool = false) async {
     do {
       try await loadEmails(refreshFilterCache: refreshFilterCache)
+      prefetchInboxTriageIfNeeded()
     } catch {
       reportError(error)
+    }
+  }
+
+  func loadInboxTriage(force: Bool = false) async {
+    guard !isLoadingInboxTriage else { return }
+    let accountID = inboxTriageAccountIDForCurrentScope
+    if inboxTriage?.scope.accountId != accountID {
+      inboxTriage = nil
+    }
+    isLoadingInboxTriage = true
+    inboxTriageErrorMessage = nil
+    defer { isLoadingInboxTriage = false }
+
+    do {
+      inboxTriage = try await apiClient.inboxTriage(
+        accountId: accountID,
+        force: force,
+        limit: 50
+      )
+      errorMessage = nil
+    } catch {
+      inboxTriageErrorMessage = error.localizedDescription
+    }
+  }
+
+  func prefetchInboxTriageIfNeeded() {
+    guard globalUnreadCount >= 10, inboxTriagePrefetchTask == nil else { return }
+    let client = apiClient
+    inboxTriagePrefetchTask = Task { @MainActor in
+      defer { inboxTriagePrefetchTask = nil }
+      do {
+        let result = try await client.inboxTriage(accountId: nil, force: false, limit: 50)
+        if inboxTriage?.id == nil {
+          inboxTriage = result
+        }
+      } catch {
+        // Prefetch is opportunistic; the explicit button will surface errors.
+      }
     }
   }
 
@@ -466,6 +541,7 @@ final class AppModel {
   private func reloadVisibleMailAfterSync(refreshFilterCache: Bool = false) async throws {
     mailboxes = try await apiClient.mailboxes()
     try await loadEmails(refreshFilterCache: refreshFilterCache)
+    prefetchInboxTriageIfNeeded()
   }
 
   private func quickSyncAccounts(_ accountIds: [String]) async -> [String] {
@@ -1343,6 +1419,17 @@ final class AppModel {
       return nil
     }
     return selectedMailboxID == nil && selectedLabelID == nil ? "inbox" : nil
+  }
+
+  private var inboxTriageAccountIDForCurrentScope: String? {
+    if let selectedAccountID {
+      return selectedAccountID
+    }
+    if let selectedMailboxID,
+       let mailbox = mailboxes.first(where: { $0.id == selectedMailboxID }) {
+      return mailbox.accountId
+    }
+    return nil
   }
 
   private var shouldLoadCompleteEmailResultSet: Bool {

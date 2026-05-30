@@ -3,12 +3,14 @@ import SwiftUI
 enum AppSheet: Identifiable {
   case addAccount
   case compose
+  case inboxTriage
   case settings
 
   var id: String {
     switch self {
     case .addAccount: "addAccount"
     case .compose: "compose"
+    case .inboxTriage: "inboxTriage"
     case .settings: "settings"
     }
   }
@@ -37,6 +39,7 @@ struct RootView: View {
     } content: {
       EmailListView(
         onCompose: { sheet = .compose },
+        onTriage: { sheet = .inboxTriage },
         onSettings: { sheet = .settings },
         onShowDetail: { setPreferredCompactColumn(.detail) }
       )
@@ -92,18 +95,8 @@ struct RootView: View {
     }
     .animation(.snappy(duration: 0.24), value: model.pendingArchive?.id)
     .animation(.linear(duration: 0.18), value: model.pendingArchive?.secondsRemaining)
-    .sheet(item: $sheet) { sheet in
-      switch sheet {
-      case .addAccount:
-        AddAccountView()
-          .environment(model)
-      case .compose:
-        ComposeView()
-          .environment(model)
-      case .settings:
-        SettingsView()
-          .environment(model)
-      }
+    .sheet(item: $sheet) { activeSheet in
+      sheetView(activeSheet)
     }
     .alert("Server unavailable", isPresented: errorBinding) {
       Button("OK") {
@@ -136,6 +129,29 @@ struct RootView: View {
     #else
     _ = column
     #endif
+  }
+
+  @ViewBuilder
+  private func sheetView(_ activeSheet: AppSheet) -> some View {
+    switch activeSheet {
+    case .addAccount:
+      AddAccountView()
+        .environment(model)
+    case .compose:
+      ComposeView()
+        .environment(model)
+    case .inboxTriage:
+      InboxTriageSheet(onOpenEmail: openTriageEmail)
+        .environment(model)
+    case .settings:
+      SettingsView()
+        .environment(model)
+    }
+  }
+
+  private func openTriageEmail() {
+    sheet = nil
+    setPreferredCompactColumn(.detail)
   }
 
   private func configureMailPolling(for phase: ScenePhase) {

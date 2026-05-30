@@ -42,6 +42,8 @@
 		100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* Services/SoftwareUpdateController.swift */; };
 		100000000000000000000125 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
 		100000000000000000000126 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
+		100000000000000000000127 /* Views/InboxTriageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000215 /* Views/InboxTriageSheet.swift */; };
+		100000000000000000000128 /* Views/InboxTriageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000215 /* Views/InboxTriageSheet.swift */; };
 		100000000000000000001101 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000001201 /* NotificationService.swift */; };
 		100000000000000000001102 /* EmailNotificationService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 100000000000000000001210 /* EmailNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		100000000000000000002101 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000001201 /* NotificationService.swift */; };
@@ -69,6 +71,7 @@
 		100000000000000000000212 /* Services/LocalServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalServerController.swift; sourceTree = "<group>"; };
 		100000000000000000000213 /* Services/SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SoftwareUpdateController.swift; sourceTree = "<group>"; };
 		100000000000000000000214 /* Services/PushNotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PushNotificationController.swift; sourceTree = "<group>"; };
+		100000000000000000000215 /* Views/InboxTriageSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/InboxTriageSheet.swift; sourceTree = "<group>"; };
 		100000000000000000001201 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		100000000000000000001202 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		100000000000000000001210 /* EmailNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EmailNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -194,6 +197,7 @@
 				100000000000000000000208 /* Views/RootView.swift */,
 				100000000000000000000209 /* Views/SidebarView.swift */,
 				10000000000000000000020A /* Views/EmailListView.swift */,
+				100000000000000000000215 /* Views/InboxTriageSheet.swift */,
 				10000000000000000000020B /* Views/EmailPreviewView.swift */,
 				10000000000000000000020C /* Views/ComposeView.swift */,
 				10000000000000000000020D /* Views/AddAccountView.swift */,
@@ -399,6 +403,7 @@
 				100000000000000000000108 /* Views/RootView.swift in Sources */,
 				100000000000000000000109 /* Views/SidebarView.swift in Sources */,
 				10000000000000000000010A /* Views/EmailListView.swift in Sources */,
+				100000000000000000000127 /* Views/InboxTriageSheet.swift in Sources */,
 				10000000000000000000010B /* Views/EmailPreviewView.swift in Sources */,
 				10000000000000000000010C /* Views/ComposeView.swift in Sources */,
 				10000000000000000000010D /* Views/AddAccountView.swift in Sources */,
@@ -421,6 +426,7 @@
 				100000000000000000000118 /* Views/RootView.swift in Sources */,
 				100000000000000000000119 /* Views/SidebarView.swift in Sources */,
 				10000000000000000000011A /* Views/EmailListView.swift in Sources */,
+				100000000000000000000128 /* Views/InboxTriageSheet.swift in Sources */,
 				10000000000000000000011B /* Views/EmailPreviewView.swift in Sources */,
 				10000000000000000000011C /* Views/ComposeView.swift in Sources */,
 				10000000000000000000011D /* Views/AddAccountView.swift in Sources */,

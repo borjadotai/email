@@ -1,5 +1,6 @@
 import { resolveConfig } from "./config.js";
 import { createServer } from "./http.js";
+import { InboxTriageService } from "./inboxTriage.js";
 import { ProviderService } from "./providerAdapters.js";
 import { PushNotificationService, summarizePushNotificationResult } from "./pushNotifications.js";
 import { KeychainSecretStore } from "./secretStore.js";
@@ -18,10 +19,12 @@ const providers = new ProviderService({
   secretStore: new KeychainSecretStore()
 });
 const pushNotifications = new PushNotificationService({ store, config });
+const inboxTriage = new InboxTriageService({ store });
 const { server, events } = createServer({
   store,
   providers,
   pushNotifications,
+  inboxTriage,
   host: config.host,
   port: config.port,
   publicBaseURL: config.publicBaseURL
@@ -122,6 +125,7 @@ async function runAutoSyncPass() {
           events.emit("emails.changed", { accountId: current.id, autoSync: true });
         }
         await sendPushNotifications(sync.newEmails);
+        prefetchInboxTriage();
       } catch (error) {
         console.warn(`${new Date().toISOString()} auto sync failed account=${current.id}: ${error.message}`);
       }
@@ -140,6 +144,14 @@ async function sendPushNotifications(newEmails = []) {
     }
   } catch (error) {
     console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);
+  }
+}
+
+function prefetchInboxTriage() {
+  try {
+    inboxTriage.prefetchIfUseful();
+  } catch (error) {
+    console.warn(`${new Date().toISOString()} inbox triage prefetch failed: ${error.message}`);
   }
 }
 

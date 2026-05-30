@@ -36,6 +36,10 @@ struct ThreadResponse: Decodable {
   var emails: [EmailDetail]
 }
 
+struct InboxTriageResponse: Decodable {
+  var triage: InboxTriageResult
+}
+
 struct AccountResponse: Decodable {
   var account: MailAccount
 }
@@ -318,6 +322,20 @@ struct MailAPIClient: Sendable {
     return response.emails
   }
 
+  func inboxTriage(accountId: String? = nil, force: Bool = false, limit: Int = 50) async throws -> InboxTriageResult {
+    struct TriageRequest: Encodable {
+      var accountId: String?
+      var force: Bool
+      var limit: Int
+    }
+    let response: InboxTriageResponse = try await request(
+      "api/inbox/triage",
+      method: "POST",
+      body: TriageRequest(accountId: accountId, force: force, limit: limit)
+    )
+    return response.triage
+  }
+
   func updateEmail(id: String, isRead: Bool? = nil, isStarred: Bool? = nil, mailboxId: String? = nil) async throws -> EmailDetail {
     struct Patch: Encodable {
       var isRead: Bool?
@@ -486,6 +504,9 @@ struct MailAPIClient: Sendable {
   }
 
   private func timeout(for path: String, query: [URLQueryItem]) -> TimeInterval {
+    if path == "api/inbox/triage" {
+      return 70
+    }
     if path == "api/auth/icloud/connect" || path.hasSuffix("/sync") {
       if query.contains(where: { $0.name == "quick" && $0.value == "1" }) {
         return 5

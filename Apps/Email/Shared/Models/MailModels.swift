@@ -196,6 +196,55 @@ struct EmailDetail: Codable, Identifiable, Hashable {
   var attachments: [EmailAttachment]?
 }
 
+struct InboxTriageResult: Codable, Identifiable, Hashable {
+  var id: String
+  var scope: InboxTriageScope
+  var generatedAt: String
+  var source: String
+  var error: String?
+  var isCached: Bool
+  var unreadCount: Int
+  var analyzedCount: Int
+  var limit: Int
+  var summaryBullets: [String]
+  var sections: [InboxTriageSection]
+}
+
+struct InboxTriageScope: Codable, Hashable {
+  var accountId: String?
+  var mailboxRole: String
+  var unreadOnly: Bool
+}
+
+struct InboxTriageSection: Codable, Identifiable, Hashable {
+  var id: String
+  var title: String
+  var intent: InboxTriageIntent
+  var count: Int
+  var emails: [InboxTriageEmail]
+}
+
+enum InboxTriageIntent: String, Codable, Hashable {
+  case read
+  case archive
+}
+
+struct InboxTriageEmail: Codable, Identifiable, Hashable {
+  var id: String
+  var accountId: String
+  var accountEmail: String
+  var senderName: String
+  var senderEmail: String
+  var senderAvatarURL: String?
+  var subject: String
+  var snippet: String
+  var receivedAt: String
+  var intent: InboxTriageIntent
+  var reason: String
+  var priority: String
+  var summaryBullets: [String]
+}
+
 enum BlockSenderScope: String, Codable, CaseIterable, Identifiable {
   case email
   case domain

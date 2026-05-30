@@ -5,14 +5,14 @@ import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 
-export function createServer({ store, providers, pushNotifications, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
+export function createServer({ store, providers, pushNotifications, inboxTriage, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
   const configuredBaseURL = normalizedBaseURL(publicBaseURL);
   const fallbackBaseURL = normalizedBaseURL(`http://${host}:${port}`);
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, providers, pushNotifications, events, configuredBaseURL, fallbackBaseURL });
+      await route({ req, res, store, providers, pushNotifications, inboxTriage, events, configuredBaseURL, fallbackBaseURL });
     } catch (error) {
       const status = error.status ?? 500;
       console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
@@ -31,7 +31,7 @@ export function createServer({ store, providers, pushNotifications, host = "127.
   return { server, events };
 }
 
-async function route({ req, res, store, providers, pushNotifications, events, configuredBaseURL, fallbackBaseURL }) {
+async function route({ req, res, store, providers, pushNotifications, inboxTriage, events, configuredBaseURL, fallbackBaseURL }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
   const baseURL = requestBaseURL(req, configuredBaseURL, fallbackBaseURL);
@@ -154,6 +154,7 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     });
     events.emit("emails.changed", { accountId: accountSyncMatch[1] });
     await sendPushNotifications(pushNotifications, sync.newEmails);
+    prefetchInboxTriage(inboxTriage);
     sendJSON(res, 200, { sync: publicSyncResult(sync) });
     return;
   }
@@ -234,6 +235,20 @@ async function route({ req, res, store, providers, pushNotifications, events, co
   if (req.method === "GET" && path === "/api/emails") {
     const emails = store.listEmails(Object.fromEntries(url.searchParams.entries()));
     sendJSON(res, 200, { emails });
+    return;
+  }
+
+  if ((req.method === "GET" || req.method === "POST") && path === "/api/inbox/triage") {
+    if (!inboxTriage) {
+      throw httpError(503, "Inbox triage is not configured.");
+    }
+    const body = req.method === "POST" ? await readJSON(req) : {};
+    const triage = await inboxTriage.analyze({
+      accountId: body.accountId ?? url.searchParams.get("accountId"),
+      limit: body.limit ?? url.searchParams.get("limit"),
+      force: body.force === true || url.searchParams.get("force") === "1"
+    });
+    sendJSON(res, 200, { triage });
     return;
   }
 
@@ -482,6 +497,14 @@ function normalizedBaseURL(value) {
 function publicSyncResult(sync = {}) {
   const { newEmails, ...publicSync } = sync;
   return publicSync;
+}
+
+function prefetchInboxTriage(inboxTriage) {
+  try {
+    inboxTriage?.prefetchIfUseful?.();
+  } catch (error) {
+    console.warn(`${new Date().toISOString()} inbox triage prefetch failed: ${error.message}`);
+  }
 }
 
 async function sendPushNotifications(pushNotifications, newEmails = []) {
