@@ -91,6 +91,9 @@ struct AvatarView: View {
 
   private var tileFill: Color {
     guard prefersLogo else { return .clear }
+    if loadedImage?.preservesTransparency == true {
+      return .clear
+    }
     return loadedImage?.backgroundColor ?? Color.secondary.opacity(0.10)
   }
 
@@ -102,6 +105,7 @@ struct AvatarView: View {
 private struct LoadedAvatarImage {
   var image: PlatformImage
   var backgroundColor: Color?
+  var preservesTransparency: Bool
 }
 
 private enum AvatarDataURL {
@@ -129,7 +133,8 @@ private enum AvatarDataURL {
 
     return LoadedAvatarImage(
       image: image,
-      backgroundColor: AvatarBackgroundSampler.backgroundColor(from: image)
+      backgroundColor: AvatarBackgroundSampler.backgroundColor(from: image),
+      preservesTransparency: AvatarBackgroundSampler.preservesTransparency(from: image)
     )
   }
 }
@@ -156,7 +161,8 @@ private final class AvatarImageCache {
 
     let loaded = LoadedAvatarImage(
       image: image,
-      backgroundColor: AvatarBackgroundSampler.backgroundColor(from: image)
+      backgroundColor: AvatarBackgroundSampler.backgroundColor(from: image),
+      preservesTransparency: AvatarBackgroundSampler.preservesTransparency(from: image)
     )
     cache[url] = loaded
     return loaded
@@ -205,6 +211,10 @@ private enum AvatarBackgroundSampler {
       return nil
     }
 
+    if sample.hasTransparentBackground {
+      return nil
+    }
+
     if let edgeColor = dominantColor(in: sample.edgePixels, minimumCoverage: 0.16) {
       return edgeColor.color
     }
@@ -216,6 +226,15 @@ private enum AvatarBackgroundSampler {
     return visibleColor.coverage < 0.26
       ? visibleColor.color.opacity(0.16)
       : visibleColor.color
+  }
+
+  static func preservesTransparency(from image: PlatformImage) -> Bool {
+    guard let cgImage = image.avatarCGImage,
+          let sample = RasterSample(cgImage: cgImage, maxDimension: 36)
+    else {
+      return false
+    }
+    return sample.hasTransparentBackground
   }
 
   private static func dominantColor(in pixels: [SampledPixel], minimumCoverage: Double) -> DominantColor? {
@@ -248,6 +267,7 @@ private enum AvatarBackgroundSampler {
 private struct RasterSample {
   var edgePixels: [SampledPixel]
   var visiblePixels: [SampledPixel]
+  var hasTransparentBackground: Bool
 
   init?(cgImage: CGImage, maxDimension: Int) {
     let largestDimension = max(cgImage.width, cgImage.height)
@@ -281,10 +301,25 @@ private struct RasterSample {
     var edgePixels: [SampledPixel] = []
     var visiblePixels: [SampledPixel] = []
     let edgeBand = max(1, min(width, height) / 8)
+    var edgePixelCount = 0
+    var transparentEdgePixelCount = 0
+    var visiblePixelCount = 0
+    var transparentVisiblePixelCount = 0
 
     for y in 0..<height {
       for x in 0..<width {
         let offset = y * bytesPerRow + x * bytesPerPixel
+        let isEdgePixel = x < edgeBand || y < edgeBand || x >= width - edgeBand || y >= height - edgeBand
+        visiblePixelCount += 1
+        if data[offset + 3] <= SampledPixel.minimumVisibleAlpha {
+          transparentVisiblePixelCount += 1
+          if isEdgePixel {
+            edgePixelCount += 1
+            transparentEdgePixelCount += 1
+          }
+          continue
+        }
+
         guard let pixel = SampledPixel(
           red: data[offset],
           green: data[offset + 1],
@@ -295,7 +330,8 @@ private struct RasterSample {
         }
 
         visiblePixels.append(pixel)
-        if x < edgeBand || y < edgeBand || x >= width - edgeBand || y >= height - edgeBand {
+        if isEdgePixel {
+          edgePixelCount += 1
           edgePixels.append(pixel)
         }
       }
@@ -303,6 +339,9 @@ private struct RasterSample {
 
     self.edgePixels = edgePixels
     self.visiblePixels = visiblePixels
+    let edgeTransparency = Double(transparentEdgePixelCount) / Double(max(edgePixelCount, 1))
+    let visibleTransparency = Double(transparentVisiblePixelCount) / Double(max(visiblePixelCount, 1))
+    self.hasTransparentBackground = edgeTransparency >= 0.28 || visibleTransparency >= 0.35
   }
 }
 
@@ -311,10 +350,11 @@ private struct SampledPixel {
   var green: Int
   var blue: Int
   var weight: Int
+  static let minimumVisibleAlpha: UInt8 = 24
 
   init?(red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8) {
     let alphaValue = Int(alpha)
-    guard alphaValue > 24 else {
+    guard alpha > Self.minimumVisibleAlpha else {
       return nil
     }
 

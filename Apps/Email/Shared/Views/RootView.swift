@@ -70,6 +70,7 @@ struct RootView: View {
       sheet = .settings
     }
     .onChange(of: model.notificationNavigationRequestCount) { _, _ in
+      sheet = nil
       setPreferredCompactColumn(.detail)
     }
     .onChange(of: scenePhase) { _, newPhase in

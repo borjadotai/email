@@ -5,6 +5,8 @@ import { connect } from "node:http2";
 const APNS_DEVELOPMENT_ORIGIN = "https://api.sandbox.push.apple.com";
 const APNS_PRODUCTION_ORIGIN = "https://api.push.apple.com";
 const TOKEN_TTL_MS = 45 * 60 * 1000;
+const NOTIFICATION_APP_NAME = "Email";
+const NOTIFICATION_THREAD_ID = "email.inbox";
 
 export class PushNotificationService {
   constructor({ store, config }) {
@@ -54,6 +56,38 @@ export class PushNotificationService {
     }
 
     return { sent, skipped };
+  }
+
+  async sendTestNotification() {
+    if (!this.isConfigured) return { sent: 0, skipped: 0, configured: false };
+
+    let sent = 0;
+    let skipped = 0;
+    const tokens = this.store.listPushTokens();
+    for (const token of tokens) {
+      const topic = topicForToken(token, this.apns.config);
+      if (!topic) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        await this.apns.send({
+          token: token.token,
+          topic,
+          environment: token.environment,
+          payload: testNotificationPayload()
+        });
+        sent += 1;
+      } catch (error) {
+        if (isPermanentAPNSError(error)) {
+          this.store.disablePushToken(token.id, error.reason ?? error.message);
+        }
+        console.warn(`${new Date().toISOString()} test push failed token=${token.id}: ${error.message}`);
+      }
+    }
+
+    return { sent, skipped, configured: true };
   }
 }
 
@@ -137,24 +171,86 @@ class APNsClient {
 }
 
 function notificationPayload(email, badge) {
+  const sender = notificationSender(email);
+  const subject = notificationSubject(email);
+  const preview = notificationPreview(email);
+
   return {
     aps: {
       alert: {
-        title: email.senderName || email.senderEmail || "New email",
-        body: email.subject || "(No subject)"
+        title: NOTIFICATION_APP_NAME,
+        subtitle: sender,
+        body: subject
       },
       badge,
       sound: "default",
-      "thread-id": email.threadId || email.id
+      "mutable-content": 1,
+      "thread-id": NOTIFICATION_THREAD_ID
     },
     emailId: email.id,
     threadId: email.threadId,
-    accountId: email.accountId
+    accountId: email.accountId,
+    senderName: sender,
+    senderEmail: email.senderEmail,
+    senderAvatarURL: email.senderAvatarURL,
+    appName: NOTIFICATION_APP_NAME,
+    subject,
+    snippet: preview
+  };
+}
+
+function testNotificationPayload() {
+  return {
+    aps: {
+      alert: {
+        title: NOTIFICATION_APP_NAME,
+        subtitle: "Apple Developer",
+        body: "Notification formatting"
+      },
+      "mutable-content": 1,
+      "thread-id": NOTIFICATION_THREAD_ID,
+      sound: "default"
+    },
+    kind: "pushTest",
+    senderName: "Apple Developer",
+    senderEmail: "news@developer.apple.com",
+    senderAvatarURL: "https://www.google.com/s2/favicons?domain=apple.com&sz=128",
+    appName: NOTIFICATION_APP_NAME,
+    subject: "Notification formatting",
+    snippet: "APNs is configured correctly and sender icons are enabled."
   };
 }
 
 function shouldNotifyForEmail(email) {
   return email?.id && email.mailboxRole === "inbox" && !email.isRead;
+}
+
+function notificationSender(email) {
+  return nonEmptyString(email.senderName) || nonEmptyString(email.senderEmail) || "New email";
+}
+
+function notificationSubject(email) {
+  return nonEmptyString(email.subject) || "(No subject)";
+}
+
+function notificationPreview(email) {
+  return firstLine(email.snippet) || firstLine(email.bodyText) || "Open Email to read this message.";
+}
+
+function firstLine(value) {
+  const normalized = nonEmptyString(value);
+  if (!normalized) return "";
+
+  const line = normalized
+    .split(/\r?\n/u)
+    .map(part => part.replace(/\s+/gu, " ").trim())
+    .find(Boolean);
+  return line ? line.slice(0, 180) : "";
+}
+
+function nonEmptyString(value) {
+  const string = typeof value === "string" ? value.trim() : "";
+  return string || null;
 }
 
 function topicForToken(token, config) {

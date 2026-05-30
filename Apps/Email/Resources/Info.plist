@@ -11,6 +11,8 @@
   <string>Email connects to your local development mail server.</string>
   <key>EmailDefaultServerURL</key>
   <string>$(EMAIL_DEFAULT_SERVER_URL)</string>
+  <key>EmailAPNSEnvironment</key>
+  <string>$(APNS_ENVIRONMENT)</string>
   <key>SUAllowsAutomaticUpdates</key>
   <true/>
   <key>SUAutomaticallyUpdate</key>

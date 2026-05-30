@@ -80,9 +80,10 @@ notification that opens the message.
 
 ### Push Notifications
 
-Remote APNs notifications are optional future plumbing. The server can store
-active tokens from `POST /api/push/tokens` and send a push when a sync imports
-new unread inbox mail.
+Remote APNs notifications require both Apple-side capabilities and an always-on
+server that discovers new mail. The apps register with APNs on launch, post
+their device token to `POST /api/push/tokens`, and the server sends a push when
+a sync imports new unread inbox mail.
 
 Required server settings:
 
@@ -93,10 +94,37 @@ APNS_PRIVATE_KEY_PATH=/absolute/path/AuthKey_XXXXXXXXXX.p8
 APNS_ENVIRONMENT=development
 APNS_IOS_TOPIC=com.borjadotai.email.ios
 APNS_MACOS_TOPIC=com.borjadotai.email.mac
+EMAIL_AUTO_SYNC=1
+EMAIL_AUTO_SYNC_INTERVAL_MS=60000
+EMAIL_AUTO_SYNC_LIMIT=50
 ```
 
-The Apple Developer account must have Push Notifications enabled for both bundle
-IDs, and the installed app must be signed with the `aps-environment` entitlement.
+Apple setup:
+
+1. In Certificates, Identifiers & Profiles, use explicit App IDs for
+   `com.borjadotai.email.ios` and `com.borjadotai.email.mac`.
+2. Enable Push Notifications on both App IDs.
+3. Regenerate/download provisioning profiles after enabling the capability.
+4. Create an APNs Auth Key with Push Notifications enabled, then put its Key ID,
+   Team ID, and `.p8` path in the server environment. Keep the `.p8` out of git.
+
+For iOS, Xcode automatic signing should refresh the provisioning profile once the
+capability is enabled. For direct macOS distribution, package with a Developer ID
+provisioning profile that includes the macOS APNs entitlement:
+
+```sh
+EMAIL_MAC_PROVISIONING_PROFILE=/absolute/path/EmailMac.provisionprofile \
+DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
+NOTARYTOOL_PROFILE=email-notary \
+npm run package:mac
+```
+
+After launching a signed app once so it can register its device token, send a
+test notification:
+
+```sh
+curl -X POST http://127.0.0.1:7331/api/push/test
+```
 
 ## Add Accounts
 
@@ -299,6 +327,17 @@ NOTARYTOOL_PROFILE=email-notary \
 npm run package:mac
 ```
 
+If the macOS build should receive APNs pushes, also pass a Developer ID
+provisioning profile for `com.borjadotai.email.mac` that includes Push
+Notifications:
+
+```sh
+EMAIL_MAC_PROVISIONING_PROFILE=/absolute/path/EmailMac.provisionprofile \
+DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
+NOTARYTOOL_PROFILE=email-notary \
+npm run package:mac
+```
+
 Create the notary profile once with:
 
 ```sh
@@ -396,5 +435,8 @@ Core endpoints live under `/api`:
 - `EMAIL_HISTORY_BACKFILL_LIMIT` controls how many older messages are imported per historical backfill pass. The default is `500`.
 - `EMAIL_HISTORY_BACKFILL_INTERVAL_MS` controls how often the server runs an automatic history backfill pass. The default is `60000`.
 - `EMAIL_AUTO_HISTORY_BACKFILL=0` disables automatic historical backfill.
+- `EMAIL_AUTO_SYNC=1` enables the always-on server to poll connected accounts for new recent mail and send APNs pushes for new unread inbox messages.
+- `EMAIL_AUTO_SYNC_INTERVAL_MS` controls that poll interval. The default is `60000`; values below `15000` are clamped.
+- `EMAIL_AUTO_SYNC_LIMIT` controls how many recent messages each automatic sync pass checks. The default is `50`.
 - `EMAIL_PUBLIC_BASE_URL` must point at a reachable server URL for Gmail OAuth callbacks and outbound open tracking pixels to work outside the local machine.
 - Normal sync keeps recent mail current. Historical backfill pages older Gmail and iCloud mailbox history into the local SQLite/FTS index so search and saved filters can cover the full account over time.

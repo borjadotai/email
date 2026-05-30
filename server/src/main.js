@@ -34,6 +34,8 @@ server.listen(config.port, config.host, () => {
 
 let historyBackfillRunning = false;
 let historyBackfillTimer = null;
+let autoSyncRunning = false;
+let autoSyncTimer = null;
 
 if (config.autoHistoryBackfill) {
   const intervalMs = Number.isFinite(config.historyBackfillIntervalMs)
@@ -41,6 +43,14 @@ if (config.autoHistoryBackfill) {
     : 60_000;
   historyBackfillTimer = setInterval(runHistoryBackfillPass, intervalMs);
   setTimeout(runHistoryBackfillPass, 5_000);
+}
+
+if (config.autoSync) {
+  const intervalMs = Number.isFinite(config.autoSyncIntervalMs)
+    ? Math.max(15_000, config.autoSyncIntervalMs)
+    : 60_000;
+  autoSyncTimer = setInterval(runAutoSyncPass, intervalMs);
+  setTimeout(runAutoSyncPass, 10_000);
 }
 
 async function runHistoryBackfillPass() {
@@ -81,10 +91,50 @@ function historyBackfillComplete(account) {
   return true;
 }
 
+async function runAutoSyncPass() {
+  if (autoSyncRunning) return;
+  autoSyncRunning = true;
+  try {
+    for (const account of store.listAccounts()) {
+      const current = store.getAccount(account.id);
+      if (!current || current.status !== "connected") continue;
+
+      try {
+        const sync = await providers.syncAccount(current.id, {
+          limit: config.autoSyncLimit
+        });
+        if (sync.imported > 0) {
+          events.emit("emails.changed", { accountId: current.id, autoSync: true });
+        }
+        await sendPushNotifications(sync.newEmails);
+      } catch (error) {
+        console.warn(`${new Date().toISOString()} auto sync failed account=${current.id}: ${error.message}`);
+      }
+    }
+  } finally {
+    autoSyncRunning = false;
+  }
+}
+
+async function sendPushNotifications(newEmails = []) {
+  if (!Array.isArray(newEmails) || newEmails.length === 0) return;
+  try {
+    const result = await pushNotifications.sendNewEmailNotifications(newEmails);
+    if (result.sent > 0) {
+      console.log(`${new Date().toISOString()} push notifications sent=${result.sent}`);
+    }
+  } catch (error) {
+    console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);
+  }
+}
+
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
   if (historyBackfillTimer) {
     clearInterval(historyBackfillTimer);
+  }
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
   }
   server.close(() => {
     store.close();

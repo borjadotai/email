@@ -18,6 +18,9 @@ export function resolveConfig(env = process.env) {
     historyBackfillLimit: Number.parseInt(env.EMAIL_HISTORY_BACKFILL_LIMIT ?? "500", 10),
     historyBackfillIntervalMs: Number.parseInt(env.EMAIL_HISTORY_BACKFILL_INTERVAL_MS ?? "60000", 10),
     autoHistoryBackfill: env.EMAIL_AUTO_HISTORY_BACKFILL !== "0",
+    autoSync: env.EMAIL_AUTO_SYNC === "1",
+    autoSyncIntervalMs: Number.parseInt(env.EMAIL_AUTO_SYNC_INTERVAL_MS ?? "60000", 10),
+    autoSyncLimit: Number.parseInt(env.EMAIL_AUTO_SYNC_LIMIT ?? "50", 10),
     seedDemo: env.EMAIL_SEED_DEMO === "1",
     publicBaseURL: env.EMAIL_PUBLIC_BASE_URL?.trim() || undefined,
     apns: {

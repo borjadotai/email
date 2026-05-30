@@ -37,6 +37,8 @@ Environment:
   APPLE_ID                   Apple ID fallback for notarytool.
   APPLE_TEAM_ID              Team ID fallback for notarytool.
   APPLE_APP_SPECIFIC_PASSWORD
+  EMAIL_MAC_PROVISIONING_PROFILE  Developer ID provisioning profile with Push Notifications.
+  EMAIL_MAC_APNS_ENVIRONMENT      APNs entitlement value for manual signing. Defaults to production.
   EMAIL_RELEASE_SERVER_URL   API endpoint baked into the app's default settings.
   NODE_BIN                   Optional Node 24+ binary to bundle.
 EOF
@@ -134,6 +136,21 @@ mkdir -p "$SERVER_BUNDLE/server"
 /usr/bin/ditto "$NODE_SOURCE" "$SERVER_BUNDLE/node"
 chmod 755 "$SERVER_BUNDLE/node"
 
+MAC_PROVISIONING_PROFILE="${EMAIL_MAC_PROVISIONING_PROFILE:-${MACOS_PROVISIONING_PROFILE:-}}"
+MAC_APNS_ENTITLEMENTS=""
+if [[ -n "$MAC_PROVISIONING_PROFILE" ]]; then
+  if [[ ! -f "$MAC_PROVISIONING_PROFILE" ]]; then
+    echo "Mac provisioning profile not found: $MAC_PROVISIONING_PROFILE" >&2
+    exit 1
+  fi
+  /usr/bin/ditto "$MAC_PROVISIONING_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
+
+  MAC_APNS_ENVIRONMENT="${EMAIL_MAC_APNS_ENVIRONMENT:-production}"
+  MAC_APNS_ENTITLEMENTS="$DIST_DIR/EmailMac.codesign.entitlements"
+  /usr/bin/plutil -create xml1 "$MAC_APNS_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.developer.aps-environment string $MAC_APNS_ENVIRONMENT" "$MAC_APNS_ENTITLEMENTS"
+fi
+
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-${EMAIL_CODESIGN_IDENTITY:-}}"
 if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
   SIGNING_DESCRIPTION="$SIGN_IDENTITY"
@@ -144,6 +161,13 @@ else
 fi
 
 echo "Signing final bundle with $SIGNING_DESCRIPTION"
+APP_CODESIGN_ARGS=("${CODESIGN_ARGS[@]}")
+if [[ -n "$MAC_APNS_ENTITLEMENTS" ]]; then
+  APP_CODESIGN_ARGS+=(--entitlements "$MAC_APNS_ENTITLEMENTS")
+  echo "Embedding macOS APNs provisioning profile and entitlements."
+elif [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then
+  echo "No EMAIL_MAC_PROVISIONING_PROFILE provided; macOS APNs will not work in this packaged app."
+fi
 
 sign_macho_files() {
   local root="$1"
@@ -173,7 +197,7 @@ sign_macho_files "$SERVER_BUNDLE"
 sign_macho_files "$APP_BUNDLE/Contents/Frameworks"
 sign_nested_bundles "$APP_BUNDLE/Contents/Frameworks"
 
-/usr/bin/codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE"
+/usr/bin/codesign "${APP_CODESIGN_ARGS[@]}" "$APP_BUNDLE"
 /usr/bin/codesign --verify --strict --deep --verbose=2 "$APP_BUNDLE"
 
 if [[ "$UNSIGNED" == "0" && -n "$SIGN_IDENTITY" ]]; then

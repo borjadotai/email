@@ -88,6 +88,16 @@ async function route({ req, res, store, providers, pushNotifications, events, co
     return;
   }
 
+  if (req.method === "POST" && path === "/api/push/test") {
+    if (!pushNotifications?.isConfigured) {
+      throw httpError(503, "APNs is not configured.");
+    }
+    sendJSON(res, 200, {
+      push: await pushNotifications.sendTestNotification()
+    });
+    return;
+  }
+
   if (req.method === "POST" && path === "/api/auth/gmail/start") {
     requireProviders(providers);
     console.log(`${new Date().toISOString()} POST /api/auth/gmail/start`);

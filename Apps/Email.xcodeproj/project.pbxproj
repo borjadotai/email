@@ -10,9 +10,6 @@
 		100000000000000000000101 /* App/EmailApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000201 /* App/EmailApp.swift */; };
 		100000000000000000000102 /* Models/MailModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000202 /* Models/MailModels.swift */; };
 		100000000000000000000103 /* Services/MailAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* Services/MailAPIClient.swift */; };
-		100000000000000000000120 /* Services/LocalServerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000212 /* Services/LocalServerController.swift */; };
-		100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* Services/SoftwareUpdateController.swift */; };
-		100000000000000000000125 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
 		100000000000000000000104 /* Stores/AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000204 /* Stores/AppModel.swift */; };
 		100000000000000000000105 /* Support/Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000205 /* Support/Formatters.swift */; };
 		100000000000000000000106 /* Views/AvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000206 /* Views/AvatarView.swift */; };
@@ -25,7 +22,6 @@
 		10000000000000000000010D /* Views/AddAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020D /* Views/AddAccountView.swift */; };
 		10000000000000000000010E /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020E /* Views/SettingsView.swift */; };
 		10000000000000000000010F /* ../Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020F /* ../Resources/Assets.xcassets */; };
-		100000000000000000000121 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000901 /* Sparkle */; };
 		100000000000000000000111 /* App/EmailApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000201 /* App/EmailApp.swift */; };
 		100000000000000000000112 /* Models/MailModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000202 /* Models/MailModels.swift */; };
 		100000000000000000000113 /* Services/MailAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* Services/MailAPIClient.swift */; };
@@ -40,17 +36,20 @@
 		10000000000000000000011C /* Views/ComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020C /* Views/ComposeView.swift */; };
 		10000000000000000000011D /* Views/AddAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020D /* Views/AddAccountView.swift */; };
 		10000000000000000000011E /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020E /* Views/SettingsView.swift */; };
-		100000000000000000000126 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
 		10000000000000000000011F /* ../Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020F /* ../Resources/Assets.xcassets */; };
+		100000000000000000000120 /* Services/LocalServerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000212 /* Services/LocalServerController.swift */; };
+		100000000000000000000121 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000901 /* Sparkle */; };
+		100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* Services/SoftwareUpdateController.swift */; };
+		100000000000000000000125 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
+		100000000000000000000126 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
+		100000000000000000001101 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000001201 /* NotificationService.swift */; };
+		100000000000000000001102 /* EmailNotificationService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 100000000000000000001210 /* EmailNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		100000000000000000000201 /* App/EmailApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/EmailApp.swift; sourceTree = "<group>"; };
 		100000000000000000000202 /* Models/MailModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/MailModels.swift; sourceTree = "<group>"; };
 		100000000000000000000203 /* Services/MailAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/MailAPIClient.swift; sourceTree = "<group>"; };
-		100000000000000000000212 /* Services/LocalServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalServerController.swift; sourceTree = "<group>"; };
-		100000000000000000000213 /* Services/SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SoftwareUpdateController.swift; sourceTree = "<group>"; };
-		100000000000000000000214 /* Services/PushNotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PushNotificationController.swift; sourceTree = "<group>"; };
 		100000000000000000000204 /* Stores/AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stores/AppModel.swift; sourceTree = "<group>"; };
 		100000000000000000000205 /* Support/Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Support/Formatters.swift; sourceTree = "<group>"; };
 		100000000000000000000206 /* Views/AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AvatarView.swift; sourceTree = "<group>"; };
@@ -65,7 +64,37 @@
 		10000000000000000000020F /* ../Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = ../Resources/Assets.xcassets; sourceTree = "<group>"; };
 		100000000000000000000210 /* Email.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Email.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000211 /* Email.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Email.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		100000000000000000000212 /* Services/LocalServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalServerController.swift; sourceTree = "<group>"; };
+		100000000000000000000213 /* Services/SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SoftwareUpdateController.swift; sourceTree = "<group>"; };
+		100000000000000000000214 /* Services/PushNotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PushNotificationController.swift; sourceTree = "<group>"; };
+		100000000000000000001201 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		100000000000000000001202 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		100000000000000000001210 /* EmailNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EmailNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXContainerItemProxy section */
+		100000000000000000001711 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 100000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 100000000000000000001501;
+			remoteInfo = EmailNotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		100000000000000000001604 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				100000000000000000001102 /* EmailNotificationService.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		100000000000000000000301 /* Frameworks */ = {
@@ -83,6 +112,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		100000000000000000001301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -90,6 +126,7 @@
 			isa = PBXGroup;
 			children = (
 				100000000000000000000402 /* Email */,
+				100000000000000000001404 /* EmailNotificationService */,
 				100000000000000000000403 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -107,6 +144,7 @@
 			children = (
 				100000000000000000000210 /* Email.app */,
 				100000000000000000000211 /* Email.app */,
+				100000000000000000001210 /* EmailNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -134,6 +172,15 @@
 				10000000000000000000020F /* ../Resources/Assets.xcassets */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		100000000000000000001404 /* EmailNotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000001201 /* NotificationService.swift */,
+				100000000000000000001202 /* Info.plist */,
+			);
+			path = EmailNotificationService;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -166,15 +213,34 @@
 				100000000000000000000602 /* Sources */,
 				100000000000000000000302 /* Frameworks */,
 				100000000000000000000604 /* Resources */,
+				100000000000000000001604 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				100000000000000000001712 /* PBXTargetDependency */,
 			);
 			name = EmailiOS;
 			productName = Email;
 			productReference = 100000000000000000000211 /* Email.app */;
 			productType = "com.apple.product-type.application";
+		};
+		100000000000000000001501 /* EmailNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 100000000000000000001805 /* Build configuration list for PBXNativeTarget "EmailNotificationService" */;
+			buildPhases = (
+				100000000000000000001601 /* Sources */,
+				100000000000000000001301 /* Frameworks */,
+				100000000000000000001603 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = EmailNotificationService;
+			productName = EmailNotificationService;
+			productReference = 100000000000000000001210 /* EmailNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -188,8 +254,21 @@
 				TargetAttributes = {
 					100000000000000000000501 = {
 						CreatedOnToolsVersion = 26.5;
+						SystemCapabilities = {
+							com.apple.Push = {
+								enabled = 1;
+							};
+						};
 					};
 					100000000000000000000502 = {
+						CreatedOnToolsVersion = 26.5;
+						SystemCapabilities = {
+							com.apple.Push = {
+								enabled = 1;
+							};
+						};
+					};
+					100000000000000000001501 = {
 						CreatedOnToolsVersion = 26.5;
 					};
 				};
@@ -212,6 +291,7 @@
 			targets = (
 				100000000000000000000501 /* EmailMac */,
 				100000000000000000000502 /* EmailiOS */,
+				100000000000000000001501 /* EmailNotificationService */,
 			);
 		};
 /* End PBXProject section */
@@ -230,6 +310,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				10000000000000000000011F /* ../Resources/Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		100000000000000000001603 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -282,26 +369,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		100000000000000000001601 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000001101 /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.9.2;
-			};
+/* Begin PBXTargetDependency section */
+		100000000000000000001712 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 100000000000000000001501 /* EmailNotificationService */;
+			targetProxy = 100000000000000000001711 /* PBXContainerItemProxy */;
 		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		100000000000000000000901 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
-/* End XCSwiftPackageProductDependency section */
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		100000000000000000000801 /* Debug */ = {
@@ -423,9 +507,11 @@
 		100000000000000000000803 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = Email/Resources/EmailMac.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -447,6 +533,7 @@
 				PRODUCT_NAME = Email;
 				SDKROOT = macosx;
 				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 			};
@@ -455,9 +542,11 @@
 		100000000000000000000804 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = Email/Resources/EmailMac.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -487,10 +576,12 @@
 		100000000000000000000805 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconOpen;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = "Email/Resources/Email-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
@@ -498,6 +589,44 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Email/Resources/Info-iOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Email;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Email connects to your local development mail server.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios;
+				PRODUCT_NAME = Email;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		100000000000000000000806 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APNS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconOpen;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = "Email/Resources/Email-iOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 32HQUBGF5H;
+				EMAIL_DEFAULT_SERVER_URL = "https://space.tailb90a7f.ts.net:8443";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Email/Resources/Info-iOS.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Email;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Email connects to your local development mail server.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -515,37 +644,59 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
-			name = Debug;
+			name = Release;
 		};
-		100000000000000000000806 /* Release */ = {
+		100000000000000000001803 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconOpen;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
-				EMAIL_DEFAULT_SERVER_URL = "https://space.tailb90a7f.ts.net:8443";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "Email/Resources/Info-iOS.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Email;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EmailNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios;
-				PRODUCT_NAME = Email;
+				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios.notificationservice;
+				PRODUCT_NAME = EmailNotificationService;
 				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		100000000000000000001804 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 32HQUBGF5H;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EmailNotificationService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios.notificationservice;
+				PRODUCT_NAME = EmailNotificationService;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -580,7 +731,35 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		100000000000000000001805 /* Build configuration list for PBXNativeTarget "EmailNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				100000000000000000001803 /* Debug */,
+				100000000000000000001804 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		100000000000000000000901 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 100000000000000000000900 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 100000000000000000000001 /* Project object */;
 }

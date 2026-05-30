@@ -126,6 +126,8 @@ final class AppModel {
   @ObservationIgnored private var activeEmailQuery: EmailQuery?
   @ObservationIgnored private var nextEmailOffset = 0
   @ObservationIgnored private var emailListLoadGeneration = 0
+  @ObservationIgnored private var markingReadEmailIDs: Set<String> = []
+  @ObservationIgnored private var notificationSelectedEmailID: String?
   @ObservationIgnored private let initialEmailPageSize = 30
   @ObservationIgnored private let nextEmailPageSize = 80
 
@@ -210,6 +212,7 @@ final class AppModel {
     guard !hasBootstrapped else { return }
     hasBootstrapped = true
     await refreshAll()
+    await PushNotificationController.shared.registerCurrentDeviceTokenIfAvailable()
   }
 
   func refreshAll(reportErrors: Bool = true, refreshSelectedFilterCache: Bool = false) async {
@@ -259,9 +262,11 @@ final class AppModel {
       reconcileSelectedEmailWithVisibleList()
     } else {
       emails = []
-      selectedEmailID = nil
-      selectedEmail = nil
-      conversationEmails = []
+      if selectedEmailID != notificationSelectedEmailID {
+        selectedEmailID = nil
+        selectedEmail = nil
+        conversationEmails = []
+      }
     }
 
     isLoadingEmails = true
@@ -337,6 +342,9 @@ final class AppModel {
   }
 
   private func reconcileSelectedEmailWithVisibleList() {
+    if selectedEmailID == notificationSelectedEmailID {
+      return
+    }
     if let selectedEmailID, emails.contains(where: { $0.id == selectedEmailID }) {
       return
     }
@@ -480,6 +488,7 @@ final class AppModel {
   }
 
   func selectGlobalInbox() async {
+    clearNotificationSelectionPin()
     clearSearchForNavigation()
     selectedAccountID = nil
     selectedMailboxID = nil
@@ -490,6 +499,7 @@ final class AppModel {
   }
 
   func selectGlobalFolder(_ folder: GlobalMailboxFolder) async {
+    clearNotificationSelectionPin()
     clearSearchForNavigation()
     selectedAccountID = nil
     selectedMailboxID = nil
@@ -500,6 +510,7 @@ final class AppModel {
   }
 
   func selectAccount(_ account: MailAccount) async {
+    clearNotificationSelectionPin()
     clearSearchForNavigation()
     selectedAccountID = account.id
     selectedMailboxID = nil
@@ -510,6 +521,7 @@ final class AppModel {
   }
 
   func selectMailbox(_ mailbox: Mailbox) async {
+    clearNotificationSelectionPin()
     clearSearchForNavigation()
     selectedAccountID = mailbox.accountId
     selectedMailboxID = mailbox.id
@@ -520,6 +532,7 @@ final class AppModel {
   }
 
   func selectLabel(_ label: MailLabel) async {
+    clearNotificationSelectionPin()
     clearSearchForNavigation()
     selectedAccountID = label.accountId ?? selectedAccountID
     selectedMailboxID = nil
@@ -530,6 +543,7 @@ final class AppModel {
   }
 
   func selectFilter(_ filter: MailFilter) async {
+    clearNotificationSelectionPin()
     clearSearchForNavigation()
     selectedAccountID = nil
     selectedMailboxID = nil
@@ -686,6 +700,9 @@ final class AppModel {
   }
 
   func beginSelectingEmail(id: String) {
+    if notificationSelectedEmailID != id {
+      clearNotificationSelectionPin()
+    }
     selectedEmailID = id
     if selectedEmail?.id != id {
       selectedEmail = nil
@@ -696,18 +713,19 @@ final class AppModel {
   func selectEmail(id: String) async {
     beginSelectingEmail(id: id)
     do {
-      var detail = try await apiClient.email(id: id)
+      let detail = try await apiClient.email(id: id)
       guard selectedEmailID == id else { return }
 
       if !detail.isRead {
-        detail = try await apiClient.updateEmail(id: detail.id, isRead: true)
-        guard selectedEmailID == id else { return }
-        await refreshAll(reportErrors: false)
-        guard selectedEmailID == id else { return }
+        markVisibleEmail(id: detail.id, isRead: true)
       }
 
       selectedEmail = detail
       conversationEmails = [detail]
+
+      if !detail.isRead {
+        markEmailReadInBackground(detail)
+      }
 
       do {
         let thread = try await apiClient.thread(emailId: detail.id)
@@ -726,10 +744,54 @@ final class AppModel {
   }
 
   func openEmailFromNotification(id: String) async {
-    await selectEmail(id: id)
+    clearSearchForNavigation()
+    notificationSelectedEmailID = id
+    beginSelectingEmail(id: id)
+    notificationNavigationRequestCount += 1
     if selectedEmailID == id {
-      notificationNavigationRequestCount += 1
+      await selectEmail(id: id)
     }
+  }
+
+  private func markEmailReadInBackground(_ email: EmailDetail) {
+    guard !markingReadEmailIDs.contains(email.id) else { return }
+    markingReadEmailIDs.insert(email.id)
+
+    Task { @MainActor in
+      defer { markingReadEmailIDs.remove(email.id) }
+
+      do {
+        let updated = try await apiClient.updateEmail(id: email.id, isRead: true)
+        markVisibleEmail(id: updated.id, isRead: true)
+        try? await refreshMailboxCounts()
+
+        guard selectedEmailID == updated.id else { return }
+        if selectedEmail?.id == updated.id, selectedEmail?.isRead == false {
+          selectedEmail = updated
+        }
+        conversationEmails = conversationEmails.map { message in
+          message.id == updated.id ? updated : message
+        }
+      } catch {
+        guard selectedEmailID == email.id else { return }
+        reportError(error)
+      }
+    }
+  }
+
+  private func markVisibleEmail(id: String, isRead: Bool) {
+    if let index = emails.firstIndex(where: { $0.id == id }) {
+      emails[index].isRead = isRead
+    }
+
+    for key in Array(emailListCache.keys) {
+      guard let index = emailListCache[key]?.firstIndex(where: { $0.id == id }) else { continue }
+      emailListCache[key]?[index].isRead = isRead
+    }
+  }
+
+  private func clearNotificationSelectionPin() {
+    notificationSelectedEmailID = nil
   }
 
   func addAccount(provider: MailProvider, email: String, displayName: String, syncHistory: Bool) async {
