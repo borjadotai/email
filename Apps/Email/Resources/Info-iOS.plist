@@ -10,6 +10,8 @@
 	<string>$(APNS_ENVIRONMENT)</string>
 	<key>EmailDefaultServerURL</key>
 	<string>$(EMAIL_DEFAULT_SERVER_URL)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
