@@ -115,6 +115,12 @@ final class AppModel {
     }
   }
 
+  var showsIOSRefreshButton: Bool {
+    didSet {
+      UserDefaults.standard.set(showsIOSRefreshButton, forKey: Defaults.showsIOSRefreshButton)
+    }
+  }
+
   var visibleGlobalFolders: [GlobalMailboxFolder] {
     didSet {
       Defaults.saveVisibleGlobalFolders(visibleGlobalFolders)
@@ -147,6 +153,7 @@ final class AppModel {
     archiveUndoDurationSeconds = Defaults.loadArchiveUndoDurationSeconds()
     shortcutBindings = Defaults.loadShortcutBindings()
     showsGlobalFoldersSection = Defaults.loadShowsGlobalFoldersSection()
+    showsIOSRefreshButton = Defaults.loadShowsIOSRefreshButton()
     visibleGlobalFolders = Defaults.loadVisibleGlobalFolders()
   }
 
@@ -1489,6 +1496,7 @@ private enum Defaults {
   static let shortcutBindings = "email.shortcutBindings.v1"
   static let archiveUndoDurationSeconds = "email.archiveUndoDurationSeconds"
   static let showsGlobalFoldersSection = "email.sidebar.showsGlobalFoldersSection"
+  static let showsIOSRefreshButton = "email.ios.showsRefreshButton"
   static let visibleGlobalFolderRoles = "email.sidebar.visibleGlobalFolderRoles"
   static let visibleGlobalFolderRolesVersion = "email.sidebar.visibleGlobalFolderRoles.version"
   static let currentVisibleGlobalFolderRolesVersion = 2
@@ -1536,6 +1544,13 @@ private enum Defaults {
       return true
     }
     return UserDefaults.standard.bool(forKey: showsGlobalFoldersSection)
+  }
+
+  static func loadShowsIOSRefreshButton() -> Bool {
+    guard UserDefaults.standard.object(forKey: showsIOSRefreshButton) != nil else {
+      return false
+    }
+    return UserDefaults.standard.bool(forKey: showsIOSRefreshButton)
   }
 
   static func loadVisibleGlobalFolders() -> [GlobalMailboxFolder] {

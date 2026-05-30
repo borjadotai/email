@@ -84,6 +84,16 @@ private struct GeneralSettingsPane: View {
         }
       }
 
+      #if os(iOS)
+      Section("Inbox") {
+        Toggle("Show refresh button", isOn: $model.showsIOSRefreshButton)
+
+        Text("Pull down on the inbox to refresh. Turn this on if you also want a toolbar button.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      #endif
+
       Section("App Icon") {
         AppIconSettingsSection()
       }

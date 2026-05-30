@@ -34,19 +34,13 @@ struct EmailListView: View {
         .help("Triage unread mail")
         .accessibilityLabel("Triage unread mail")
 
-        Button {
-          refreshFromToolbar()
-        } label: {
-          if showsToolbarRefreshProgress {
-            ProgressView()
-              .controlSize(.small)
-          } else {
-            Image(systemName: "arrow.clockwise")
-          }
+        #if os(iOS)
+        if model.showsIOSRefreshButton {
+          refreshToolbarButton
         }
-        .disabled(model.isRefreshingMail || isToolbarRefreshing)
-        .help("Refresh")
-        .accessibilityLabel(showsToolbarRefreshProgress ? "Refreshing mail" : "Refresh")
+        #else
+        refreshToolbarButton
+        #endif
 
         Button(action: onCompose) {
           Image(systemName: "square.and.pencil")
@@ -258,6 +252,22 @@ struct EmailListView: View {
     #else
     model.isRefreshingMail || isToolbarRefreshing
     #endif
+  }
+
+  private var refreshToolbarButton: some View {
+    Button {
+      refreshFromToolbar()
+    } label: {
+      if showsToolbarRefreshProgress {
+        ProgressView()
+          .controlSize(.small)
+      } else {
+        Image(systemName: "arrow.clockwise")
+      }
+    }
+    .disabled(model.isRefreshingMail || isToolbarRefreshing)
+    .help("Refresh")
+    .accessibilityLabel(showsToolbarRefreshProgress ? "Refreshing mail" : "Refresh")
   }
 
   private func refreshFromToolbar() {
