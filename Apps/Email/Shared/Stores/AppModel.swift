@@ -275,6 +275,26 @@ final class AppModel {
     return MailAPIClient(baseURL: URL(string: normalizedURLString) ?? fallback)
   }
 
+  private func replaceAccounts(_ newAccounts: [MailAccount], preserveExistingStats: Bool = true) {
+    guard preserveExistingStats else {
+      accounts = newAccounts
+      return
+    }
+
+    let existingStatsByID = Dictionary(uniqueKeysWithValues: accounts.compactMap { account -> (String, AccountMailStats)? in
+      guard let stats = account.stats else { return nil }
+      return (account.id, stats)
+    })
+
+    accounts = newAccounts.map { account in
+      var mergedAccount = account
+      if mergedAccount.stats == nil, let existingStats = existingStatsByID[account.id] {
+        mergedAccount.stats = existingStats
+      }
+      return mergedAccount
+    }
+  }
+
   var shouldStartBundledServer: Bool {
     Defaults.isLoopbackURL(serverURLString)
   }
@@ -318,7 +338,7 @@ final class AppModel {
     health = try await apiClient.health()
     authSettings = try? await apiClient.authSettings()
     profile = try? await apiClient.profile()
-    accounts = try await apiClient.accounts()
+    replaceAccounts(try await apiClient.accounts())
     mailboxes = try await apiClient.mailboxes()
     labels = try await apiClient.labels()
     filters = try await apiClient.filters()
@@ -473,7 +493,7 @@ final class AppModel {
   }
 
   private func refreshSidebarCounts() async throws {
-    accounts = try await apiClient.accounts()
+    replaceAccounts(try await apiClient.accounts())
     mailboxes = try await apiClient.mailboxes()
     filters = try await apiClient.filters()
     configureImportStatusPolling()
@@ -497,7 +517,7 @@ final class AppModel {
         guard !Task.isCancelled else { return }
 
         do {
-          accounts = try await apiClient.accounts()
+          replaceAccounts(try await apiClient.accounts())
           mailboxes = try await apiClient.mailboxes()
           if !accounts.contains(where: { $0.isImportingMail }) {
             return
@@ -692,7 +712,7 @@ final class AppModel {
   }
 
   private func reloadVisibleMailAfterSync(refreshFilterCache: Bool = false) async throws {
-    accounts = try await apiClient.accounts()
+    replaceAccounts(try await apiClient.accounts())
     mailboxes = try await apiClient.mailboxes()
     try await loadEmails(refreshFilterCache: refreshFilterCache)
     filters = try await apiClient.filters()
@@ -942,7 +962,7 @@ final class AppModel {
     let orderedIds = accounts.map(\.id)
     Task {
       do {
-        accounts = try await apiClient.reorderAccounts(ids: orderedIds)
+        replaceAccounts(try await apiClient.reorderAccounts(ids: orderedIds))
         profile = try? await apiClient.profile()
         mailboxes = try await apiClient.mailboxes()
         errorMessage = nil
@@ -1313,7 +1333,7 @@ final class AppModel {
         includeAttachmentData: account.importStatus?.includeAttachments ?? true,
         historyWindow: "all"
       )
-      accounts = try await apiClient.accounts(includeStats: true)
+      replaceAccounts(try await apiClient.accounts(includeStats: true), preserveExistingStats: false)
       mailboxes = try await apiClient.mailboxes()
       configureImportStatusPolling()
       statusMessage = "Full history sync started"
@@ -1326,7 +1346,7 @@ final class AppModel {
 
   func refreshAccountDiagnostics() async {
     do {
-      accounts = try await apiClient.accounts(includeStats: true)
+      replaceAccounts(try await apiClient.accounts(includeStats: true), preserveExistingStats: false)
       mailboxes = try await apiClient.mailboxes()
       configureImportStatusPolling()
       errorMessage = nil

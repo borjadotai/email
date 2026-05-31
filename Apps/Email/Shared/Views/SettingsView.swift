@@ -19,14 +19,14 @@ struct SettingsView: View {
     #if os(macOS)
     HStack(spacing: 0) {
       SettingsSidebar(selectedTab: $selectedTab)
-        .frame(width: 210)
+        .frame(width: 224)
 
       Divider()
 
       settingsPane(for: selectedTab)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .frame(minWidth: 860, minHeight: 620)
+    .frame(minWidth: 960, idealWidth: 1160, maxWidth: 1240, minHeight: 500, idealHeight: 560, maxHeight: 620)
     #else
     NavigationStack {
       List(SettingsTab.allCases) { tab in
@@ -155,7 +155,7 @@ private struct SettingsPaneScroll<Content: View>: View {
       VStack(alignment: .leading, spacing: 18) {
         VStack(alignment: .leading, spacing: 4) {
           Text(title)
-            .font(.largeTitle.bold())
+            .font(settingsTitleFont)
           if let subtitle {
             Text(subtitle)
               .font(.callout)
@@ -167,7 +167,7 @@ private struct SettingsPaneScroll<Content: View>: View {
         content
       }
       .padding(settingsPanePadding)
-      .frame(maxWidth: 820, alignment: .leading)
+      .frame(maxWidth: settingsPaneMaxWidth, alignment: .leading)
     }
     #if os(macOS)
     .background(.background)
@@ -178,7 +178,23 @@ private struct SettingsPaneScroll<Content: View>: View {
     #if os(iOS)
     EdgeInsets(top: 20, leading: 16, bottom: 28, trailing: 16)
     #else
-    EdgeInsets(top: 28, leading: 32, bottom: 32, trailing: 32)
+    EdgeInsets(top: 24, leading: 32, bottom: 28, trailing: 32)
+    #endif
+  }
+
+  private var settingsPaneMaxWidth: CGFloat {
+    #if os(iOS)
+    760
+    #else
+    980
+    #endif
+  }
+
+  private var settingsTitleFont: Font {
+    #if os(iOS)
+    .largeTitle.bold()
+    #else
+    .system(size: 30, weight: .bold)
     #endif
   }
 }
@@ -280,17 +296,20 @@ private struct SyncStorageOverview: View {
     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
       StorageMetricTile(
         title: "Storage Est.",
-        value: ByteCountFormatter.emailStorageString(totalStoredBytes),
+        value: hasAnyStats ? ByteCountFormatter.emailStorageString(totalStoredBytes) : nil,
+        detail: measuredAccountsText,
         systemImage: "internaldrive"
       )
       StorageMetricTile(
         title: "Messages",
-        value: totalMessages.formatted(),
+        value: hasAnyStats ? totalMessages.formatted() : nil,
+        detail: measuredAccountsText,
         systemImage: "envelope"
       )
       StorageMetricTile(
         title: "Downloaded Files",
-        value: downloadedAttachments.formatted(),
+        value: hasAnyStats ? downloadedAttachments.formatted() : nil,
+        detail: measuredAccountsText,
         systemImage: "paperclip"
       )
       StorageMetricTile(
@@ -316,11 +335,22 @@ private struct SyncStorageOverview: View {
   private var activeImports: Int {
     accounts.filter(\.isImportingMail).count
   }
+
+  private var hasAnyStats: Bool {
+    accounts.contains { $0.stats != nil }
+  }
+
+  private var measuredAccountsText: String? {
+    let measured = accounts.filter { $0.stats != nil }.count
+    guard measured > 0, measured < accounts.count else { return nil }
+    return "\(measured)/\(accounts.count) accounts measured"
+  }
 }
 
 private struct StorageMetricTile: View {
   var title: String
-  var value: String
+  var value: String?
+  var detail: String? = nil
   var systemImage: String
 
   var body: some View {
@@ -331,14 +361,21 @@ private struct StorageMetricTile: View {
         .frame(width: 28)
 
       VStack(alignment: .leading, spacing: 2) {
-        Text(value)
+        Text(value ?? "--")
           .font(.headline.monospacedDigit())
+          .foregroundStyle(value == nil ? .secondary : .primary)
           .lineLimit(1)
           .minimumScaleFactor(0.8)
         Text(title)
           .font(.caption)
           .foregroundStyle(.secondary)
           .lineLimit(1)
+        if let detail {
+          Text(detail)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        }
       }
 
       Spacer(minLength: 0)
@@ -384,41 +421,15 @@ private struct AccountSyncStorageCard: View {
         ProviderBadge(provider: account.provider)
       }
 
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 8) {
-          syncStateIcon
-          Text(syncStateTitle)
-            .font(.subheadline.weight(.semibold))
-          Spacer(minLength: 8)
-          if let updatedText {
-            Text(updatedText)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-        }
-
-        if account.isImportingMail {
-          ProgressView()
-            .progressViewStyle(.linear)
-        } else {
-          ProgressView(value: account.importStatus?.isComplete == true ? 1 : 0.35)
-            .progressViewStyle(.linear)
-            .tint(account.importStatus?.isComplete == true ? .green : .orange)
-        }
-
-        Text(syncDetailText)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
+      AccountImportProgressView(account: account)
 
       LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 10)], spacing: 10) {
-        AccountStatPill(title: "Messages", value: (account.stats?.totalCount ?? 0).formatted(), systemImage: "envelope")
-        AccountStatPill(title: "Unread", value: (account.stats?.unreadCount ?? 0).formatted(), systemImage: "envelope.badge")
-        AccountStatPill(title: "Files", value: (account.stats?.downloadedAttachmentCount ?? 0).formatted(), systemImage: "paperclip")
+        AccountStatPill(title: "Messages", value: account.stats?.totalCount.formatted(), systemImage: "envelope")
+        AccountStatPill(title: "Unread", value: account.stats?.unreadCount.formatted(), systemImage: "envelope.badge")
+        AccountStatPill(title: "Files", value: account.stats?.downloadedAttachmentCount?.formatted(), systemImage: "paperclip")
         AccountStatPill(
           title: "Stored Est.",
-          value: ByteCountFormatter.emailStorageString(account.stats?.localStorageBytes ?? 0),
+          value: account.stats.map { ByteCountFormatter.emailStorageString($0.localStorageBytes) },
           systemImage: "internaldrive"
         )
       }
@@ -446,11 +457,54 @@ private struct AccountSyncStorageCard: View {
       .buttonStyle(.bordered)
     }
     .padding(16)
-    .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: 8, style: .continuous)
         .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
     }
+  }
+
+  private var fullHistoryButtonTitle: String {
+    if account.importStatus?.isFullHistory == true {
+      return "Continue Full Sync"
+    }
+    return "Sync Full History"
+  }
+}
+
+private struct AccountImportProgressView: View {
+  var account: MailAccount
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
+        syncStateIcon
+        Text(syncStateTitle)
+          .font(.subheadline.weight(.semibold))
+        Spacer(minLength: 8)
+        if let updatedText {
+          Text(updatedText)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      progressBar
+
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 124), spacing: 8)], spacing: 8) {
+        ProgressFact(title: "Imported", value: importedText)
+        ProgressFact(title: "Oldest", value: oldestText)
+        ProgressFact(title: "Target", value: targetText)
+        ProgressFact(title: "Left", value: remainingText)
+      }
+
+      Text(syncDetailText)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(12)
+    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 
   @ViewBuilder
@@ -461,6 +515,22 @@ private struct AccountSyncStorageCard: View {
     } else {
       Image(systemName: syncStateSystemImage)
         .foregroundStyle(syncStateColor)
+    }
+  }
+
+  @ViewBuilder
+  private var progressBar: some View {
+    if let progressValue {
+      ProgressView(value: progressValue)
+        .progressViewStyle(.linear)
+        .tint(syncStateColor)
+    } else if account.isImportingMail {
+      ProgressView()
+        .progressViewStyle(.linear)
+    } else {
+      ProgressView(value: account.importStatus == nil ? 0 : 0.25)
+        .progressViewStyle(.linear)
+        .tint(syncStateColor)
     }
   }
 
@@ -490,11 +560,62 @@ private struct AccountSyncStorageCard: View {
     guard let status = account.importStatus else {
       return "No import progress has been recorded for this account yet."
     }
-    var parts = [status.detailText(account: nil), status.attachmentText]
-    if let stats = account.stats, stats.localStorageBytes > 0 {
-      parts.append("\(ByteCountFormatter.emailStorageString(stats.localStorageBytes)) estimated locally")
+    if status.isFailed, let error = status.error, !error.isEmpty {
+      return error
+    }
+
+    var parts = [status.attachmentText]
+    if let storageText {
+      parts.append("\(storageText) estimated locally")
+    }
+    if status.isImporting && progressValue == nil {
+      parts.append("providers do not expose a reliable total, so Carta shows coverage instead")
     }
     return parts.joined(separator: " - ")
+  }
+
+  private var importedText: String {
+    let count = account.importStatus?.imported ?? account.importStatus?.backfilled ?? 0
+    return count > 0 ? count.formatted() : "--"
+  }
+
+  private var oldestText: String {
+    guard let value = account.importStatus?.oldestReceivedAt ?? account.stats?.oldestReceivedAt else {
+      return "--"
+    }
+    return String(value.prefix(10))
+  }
+
+  private var targetText: String {
+    account.importStatus?.windowText ?? "not started"
+  }
+
+  private var remainingText: String {
+    guard let status = account.importStatus else { return "--" }
+    if status.isComplete { return "0" }
+    if status.isFailed { return "needs retry" }
+    if status.isFullHistory { return "scanning" }
+    if let oldestDate = status.oldestDate,
+       let cutoffDate = status.cutoffDate,
+       oldestDate <= cutoffDate {
+      return "finalizing"
+    }
+    if let cutoffDate = status.cutoffDate {
+      return "to \(cutoffDate.formatted(date: .abbreviated, time: .omitted))"
+    }
+    return "unknown"
+  }
+
+  private var progressValue: Double? {
+    guard let status = account.importStatus else { return nil }
+    if status.isComplete { return 1 }
+    if status.isFailed { return nil }
+    return status.estimatedCoverageProgress
+  }
+
+  private var storageText: String? {
+    guard let bytes = account.stats?.localStorageBytes, bytes > 0 else { return nil }
+    return ByteCountFormatter.emailStorageString(bytes)
   }
 
   private var updatedText: String? {
@@ -515,20 +636,33 @@ private struct AccountSyncStorageCard: View {
     if status.isFailed { return .red }
     if status.isComplete { return .green }
     if status.isPartial { return .orange }
+    if status.isImporting { return .blue }
     return .secondary
   }
+}
 
-  private var fullHistoryButtonTitle: String {
-    if account.importStatus?.isFullHistory == true {
-      return "Continue Full Sync"
+private struct ProgressFact: View {
+  var title: String
+  var value: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 1) {
+      Text(value)
+        .font(.caption.weight(.semibold).monospacedDigit())
+        .foregroundStyle(value == "--" ? .secondary : .primary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+      Text(title)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
     }
-    return "Sync Full History"
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
 private struct AccountStatPill: View {
   var title: String
-  var value: String
+  var value: String?
   var systemImage: String
 
   var body: some View {
@@ -537,8 +671,9 @@ private struct AccountStatPill: View {
         .foregroundStyle(.secondary)
         .frame(width: 18)
       VStack(alignment: .leading, spacing: 1) {
-        Text(value)
+        Text(value ?? "--")
           .font(.subheadline.weight(.semibold).monospacedDigit())
+          .foregroundStyle(value == nil ? .secondary : .primary)
           .lineLimit(1)
           .minimumScaleFactor(0.78)
         Text(title)
@@ -549,7 +684,7 @@ private struct AccountStatPill: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 9)
-    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 }
 
@@ -564,6 +699,62 @@ private struct ProviderBadge: View {
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
       .background(Color.secondary.opacity(0.08), in: Capsule())
+  }
+}
+
+private extension MailImportStatus {
+  var oldestDate: Date? {
+    guard let oldestReceivedAt else { return nil }
+    return Self.parseISODate(oldestReceivedAt)
+  }
+
+  var cutoffDate: Date? {
+    guard let historyWindow, historyWindow != "all" else { return nil }
+    let calendar = Calendar.current
+    let now = Date()
+    switch historyWindow {
+    case "last-week":
+      return calendar.date(byAdding: .day, value: -7, to: now)
+    case "last-month":
+      return calendar.date(byAdding: .month, value: -1, to: now)
+    case "6-months":
+      return calendar.date(byAdding: .month, value: -6, to: now)
+    case "last-year":
+      return calendar.date(byAdding: .year, value: -1, to: now)
+    case "2-years":
+      return calendar.date(byAdding: .year, value: -2, to: now)
+    case "5-years":
+      return calendar.date(byAdding: .year, value: -5, to: now)
+    default:
+      return nil
+    }
+  }
+
+  var estimatedCoverageProgress: Double? {
+    guard !isFullHistory,
+          let cutoffDate,
+          let oldestDate
+    else { return nil }
+
+    let now = Date()
+    let totalInterval = now.timeIntervalSince(cutoffDate)
+    guard totalInterval > 0 else { return nil }
+
+    let coveredInterval = now.timeIntervalSince(oldestDate)
+    let rawProgress = coveredInterval / totalInterval
+    return min(max(rawProgress, 0.08), 0.96)
+  }
+
+  private static func parseISODate(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractional.date(from: value) {
+      return date
+    }
+
+    let plain = ISO8601DateFormatter()
+    plain.formatOptions = [.withInternetDateTime]
+    return plain.date(from: value)
   }
 }
 
@@ -648,7 +839,7 @@ private struct AccountProfileEditorCard: View {
         AccountStatPill(title: "Last Sync", value: lastSyncText, systemImage: "clock")
         AccountStatPill(
           title: "Storage Est.",
-          value: ByteCountFormatter.emailStorageString(account.stats?.localStorageBytes ?? 0),
+          value: account.stats.map { ByteCountFormatter.emailStorageString($0.localStorageBytes) },
           systemImage: "internaldrive"
         )
       }

@@ -158,6 +158,9 @@ struct RootView: View {
     case .settings:
       SettingsView()
         .environment(model)
+        #if os(macOS)
+        .frame(width: 1160, height: 560)
+        #endif
     }
   }
 
