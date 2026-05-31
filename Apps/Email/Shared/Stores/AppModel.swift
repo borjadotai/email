@@ -22,6 +22,7 @@ private struct EmailListCacheKey: Hashable {
   var labelId: String?
   var filterId: String?
   var query: String
+  var unreadOnly: Bool
 
   init(query: EmailQuery) {
     accountId = query.accountId
@@ -30,6 +31,7 @@ private struct EmailListCacheKey: Hashable {
     labelId = query.labelId
     filterId = query.filterId
     self.query = query.q.trimmingCharacters(in: .whitespacesAndNewlines)
+    unreadOnly = query.unreadOnly
   }
 }
 
@@ -49,11 +51,13 @@ final class AppModel {
   var selectedEmail: EmailDetail?
   var conversationEmails: [EmailDetail] = []
   var selectedEmailID: String?
+  var selectedEmailLoadErrorMessage: String?
   var selectedAccountID: String?
   var selectedMailboxID: String?
   var selectedLabelID: String?
   var selectedFilterID: String?
   var selectedGlobalFolder: GlobalMailboxFolder?
+  var selectedUnreadOnly = false
   var searchText: String = ""
   var isLoading = false
   var isLoadingEmails = false
@@ -78,7 +82,7 @@ final class AppModel {
   var settingsRequestCount = 0
   var notificationNavigationRequestCount = 0
   var isSearchPresented = false
-  var isArchiving = false
+  var archivingEmailIDs: Set<String> = []
   var pendingArchive: PendingArchiveNotification?
   var inboxTriage: InboxTriageResult?
   var isLoadingInboxTriage = false
@@ -129,8 +133,14 @@ final class AppModel {
 
   private var hasBootstrapped = false
   @ObservationIgnored private var pendingArchiveTask: Task<Void, Never>?
+  @ObservationIgnored private var sidebarCountsRefreshTask: Task<Void, Never>?
   @ObservationIgnored private var isAutoPollingMail = false
   @ObservationIgnored private var emailListCache: [EmailListCacheKey: [EmailSummary]] = [:]
+  @ObservationIgnored private var emailDetailCache: [String: EmailDetail] = [:]
+  @ObservationIgnored private var emailThreadCache: [String: [EmailDetail]] = [:]
+  @ObservationIgnored private var emailDetailCacheOrder: [String] = []
+  @ObservationIgnored private var emailDetailPrefetchTask: Task<Void, Never>?
+  @ObservationIgnored private var prefetchingEmailIDs: Set<String> = []
   @ObservationIgnored private var activeEmailQuery: EmailQuery?
   @ObservationIgnored private var nextEmailOffset = 0
   @ObservationIgnored private var emailListLoadGeneration = 0
@@ -139,6 +149,8 @@ final class AppModel {
   @ObservationIgnored private var inboxTriagePrefetchTask: Task<Void, Never>?
   @ObservationIgnored private let initialEmailPageSize = 30
   @ObservationIgnored private let nextEmailPageSize = 80
+  @ObservationIgnored private let maxEmailDetailCacheSize = 120
+  @ObservationIgnored private let emailDetailPrefetchWindow = 5
 
   init() {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
@@ -166,6 +178,13 @@ final class AppModel {
   }
 
   var navigationTitle: String {
+    if selectedUnreadOnly {
+      if let selectedAccountID,
+         let account = accounts.first(where: { $0.id == selectedAccountID }) {
+        return "\(account.displayName) Unread"
+      }
+      return "Unread"
+    }
     if let filter = filters.first(where: { $0.id == selectedFilterID }) {
       return filter.name
     }
@@ -202,6 +221,11 @@ final class AppModel {
       return mailbox.role == "inbox"
     }
     return true
+  }
+
+  var isArchiving: Bool {
+    guard let selectedEmailID else { return false }
+    return pendingArchive?.id == selectedEmailID || archivingEmailIDs.contains(selectedEmailID)
   }
 
   var currentInboxUnreadCount: Int {
@@ -261,19 +285,41 @@ final class AppModel {
     defer { isLoading = false }
 
     do {
-      health = try await apiClient.health()
-      authSettings = try? await apiClient.authSettings()
-      profile = try? await apiClient.profile()
-      accounts = try await apiClient.accounts()
-      mailboxes = try await apiClient.mailboxes()
-      labels = try await apiClient.labels()
-      filters = try await apiClient.filters()
-      try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
-      prefetchInboxTriageIfNeeded()
+      try await loadAllResources(refreshSelectedFilterCache: refreshSelectedFilterCache)
     } catch {
+      if await recoverWithDefaultServer(refreshSelectedFilterCache: refreshSelectedFilterCache) {
+        return
+      }
       if reportErrors {
         reportError(error)
       }
+    }
+  }
+
+  private func loadAllResources(refreshSelectedFilterCache: Bool = false) async throws {
+    health = try await apiClient.health()
+    authSettings = try? await apiClient.authSettings()
+    profile = try? await apiClient.profile()
+    accounts = try await apiClient.accounts()
+    mailboxes = try await apiClient.mailboxes()
+    labels = try await apiClient.labels()
+    filters = try await apiClient.filters()
+    try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
+    prefetchInboxTriageIfNeeded()
+    errorMessage = nil
+  }
+
+  private func recoverWithDefaultServer(refreshSelectedFilterCache: Bool = false) async -> Bool {
+    let currentURL = Defaults.normalizedServerURLString(serverURLString)
+    let defaultURL = Defaults.normalizedServerURLString(Defaults.defaultServerURL)
+    guard currentURL != defaultURL else { return false }
+
+    serverURLString = defaultURL
+    do {
+      try await loadAllResources(refreshSelectedFilterCache: refreshSelectedFilterCache)
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -285,6 +331,7 @@ final class AppModel {
       labelId: selectedLabelID,
       filterId: selectedFilterID,
       q: searchText,
+      unreadOnly: selectedUnreadOnly,
       refreshFilterCache: refreshFilterCache
     )
     try await loadInitialEmailPage(query: query)
@@ -307,6 +354,7 @@ final class AppModel {
       if selectedEmailID != notificationSelectedEmailID {
         selectedEmailID = nil
         selectedEmail = nil
+        selectedEmailLoadErrorMessage = nil
         conversationEmails = []
       }
     }
@@ -362,7 +410,9 @@ final class AppModel {
         appendEmailPage(page)
       } catch {
         guard generation == emailListLoadGeneration else { return }
-        reportError(error)
+        if !Self.isTimeoutError(error) {
+          reportError(error)
+        }
       }
       if generation == emailListLoadGeneration {
         isLoadingMoreEmails = false
@@ -392,6 +442,7 @@ final class AppModel {
     }
     selectedEmailID = nil
     selectedEmail = nil
+    selectedEmailLoadErrorMessage = nil
     conversationEmails = []
   }
 
@@ -402,8 +453,9 @@ final class AppModel {
     isSearchPresented = false
   }
 
-  private func refreshMailboxCounts() async throws {
+  private func refreshSidebarCounts() async throws {
     mailboxes = try await apiClient.mailboxes()
+    filters = try await apiClient.filters()
   }
 
   private func reportError(_ error: Error) {
@@ -413,6 +465,7 @@ final class AppModel {
 
   private func errorDescriptionForReporting(_ error: Error) -> String? {
     guard !isCancellationError(error) else { return nil }
+    guard !Self.isTimeoutError(error) else { return nil }
     return error.localizedDescription
   }
 
@@ -435,9 +488,27 @@ final class AppModel {
     return false
   }
 
+  private nonisolated static func isTimeoutError(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+      return true
+    }
+
+    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+       underlyingError.domain == NSURLErrorDomain,
+       underlyingError.code == NSURLErrorTimedOut {
+      return true
+    }
+
+    return false
+  }
+
   func refreshEmails(refreshFilterCache: Bool = false) async {
     do {
       try await loadEmails(refreshFilterCache: refreshFilterCache)
+      if refreshFilterCache {
+        filters = try await apiClient.filters()
+      }
       prefetchInboxTriageIfNeeded()
     } catch {
       reportError(error)
@@ -503,8 +574,9 @@ final class AppModel {
     syncingAccountID = accountIds.count == 1 ? accountIds.first : nil
     let syncErrors = await quickSyncAccounts(accountIds)
 
-    if let firstError = syncErrors.first {
-      errorMessage = firstError
+    if syncErrors.first != nil {
+      errorMessage = nil
+      statusMessage = "Mail refresh is continuing"
     } else {
       errorMessage = nil
       statusMessage = "Mail refreshed"
@@ -548,6 +620,7 @@ final class AppModel {
   private func reloadVisibleMailAfterSync(refreshFilterCache: Bool = false) async throws {
     mailboxes = try await apiClient.mailboxes()
     try await loadEmails(refreshFilterCache: refreshFilterCache)
+    filters = try await apiClient.filters()
     prefetchInboxTriageIfNeeded()
   }
 
@@ -560,6 +633,9 @@ final class AppModel {
             _ = try await client.syncAccount(id: accountId, limit: 10, quick: true)
             return nil
           } catch {
+            if Self.isTimeoutError(error) {
+              return nil
+            }
             return error.localizedDescription
           }
         }
@@ -594,6 +670,9 @@ final class AppModel {
       health = try await apiClient.health()
       errorMessage = nil
     } catch {
+      if await recoverWithDefaultServer() {
+        return
+      }
       reportError(error)
     }
   }
@@ -606,6 +685,19 @@ final class AppModel {
     selectedLabelID = nil
     selectedFilterID = nil
     selectedGlobalFolder = nil
+    selectedUnreadOnly = false
+    await refreshEmails()
+  }
+
+  func selectUnreadInbox(accountID: String? = nil) async {
+    clearNotificationSelectionPin()
+    clearSearchForNavigation()
+    selectedAccountID = accountID
+    selectedMailboxID = nil
+    selectedLabelID = nil
+    selectedFilterID = nil
+    selectedGlobalFolder = nil
+    selectedUnreadOnly = true
     await refreshEmails()
   }
 
@@ -617,6 +709,7 @@ final class AppModel {
     selectedLabelID = nil
     selectedFilterID = nil
     selectedGlobalFolder = folder
+    selectedUnreadOnly = false
     await refreshEmails()
   }
 
@@ -628,6 +721,7 @@ final class AppModel {
     selectedLabelID = nil
     selectedFilterID = nil
     selectedGlobalFolder = nil
+    selectedUnreadOnly = false
     await refreshEmails()
   }
 
@@ -639,6 +733,7 @@ final class AppModel {
     selectedLabelID = nil
     selectedFilterID = nil
     selectedGlobalFolder = nil
+    selectedUnreadOnly = false
     await refreshEmails()
   }
 
@@ -650,6 +745,7 @@ final class AppModel {
     selectedLabelID = label.id
     selectedFilterID = nil
     selectedGlobalFolder = nil
+    selectedUnreadOnly = false
     await refreshEmails()
   }
 
@@ -661,7 +757,8 @@ final class AppModel {
     selectedLabelID = nil
     selectedFilterID = filter.id
     selectedGlobalFolder = nil
-    await refreshEmails()
+    selectedUnreadOnly = false
+    await refreshEmails(refreshFilterCache: true)
   }
 
   func createGlobalLabel(name: String, color: String, icon: String) async {
@@ -790,6 +887,7 @@ final class AppModel {
         selectedFilterID = nil
         selectedEmailID = nil
         selectedEmail = nil
+        selectedEmailLoadErrorMessage = nil
         conversationEmails = []
         try await loadEmails()
       }
@@ -815,9 +913,16 @@ final class AppModel {
       clearNotificationSelectionPin()
     }
     selectedEmailID = id
+    selectedEmailLoadErrorMessage = nil
+    prefetchNearbyEmailDetails(after: id)
     if selectedEmail?.id != id {
-      selectedEmail = nil
-      conversationEmails = []
+      if let cachedEmail = emailDetailCache[id] {
+        selectedEmail = cachedEmail
+        conversationEmails = emailThreadCache[id] ?? [cachedEmail]
+      } else {
+        selectedEmail = nil
+        conversationEmails = []
+      }
     }
   }
 
@@ -831,8 +936,10 @@ final class AppModel {
         markVisibleEmail(id: detail.id, isRead: true)
       }
 
+      cacheEmailDetail(detail)
+      selectedEmailLoadErrorMessage = nil
       selectedEmail = detail
-      conversationEmails = [detail]
+      conversationEmails = emailThreadCache[id] ?? [detail]
 
       if !detail.isRead {
         markEmailReadInBackground(detail)
@@ -841,14 +948,21 @@ final class AppModel {
       do {
         let thread = try await apiClient.thread(emailId: detail.id)
         guard selectedEmailID == id else { return }
+        cacheConversation(anchorID: id, thread)
         conversationEmails = thread
       } catch {
         guard selectedEmailID == id else { return }
-        conversationEmails = [detail]
+        conversationEmails = emailThreadCache[id] ?? [detail]
       }
     } catch {
       guard selectedEmailID == id else { return }
-      reportError(error)
+      if let cachedEmail = emailDetailCache[id] {
+        selectedEmailLoadErrorMessage = nil
+        selectedEmail = cachedEmail
+        conversationEmails = emailThreadCache[id] ?? [cachedEmail]
+        return
+      }
+      selectedEmailLoadErrorMessage = errorDescriptionForReporting(error) ?? "Message took too long to load."
       selectedEmail = nil
       conversationEmails = []
     }
@@ -873,8 +987,9 @@ final class AppModel {
 
       do {
         let updated = try await apiClient.updateEmail(id: email.id, isRead: true)
+        cacheEmailDetail(updated)
         markVisibleEmail(id: updated.id, isRead: true)
-        try? await refreshMailboxCounts()
+        try? await refreshSidebarCounts()
 
         guard selectedEmailID == updated.id else { return }
         if selectedEmail?.id == updated.id, selectedEmail?.isRead == false {
@@ -884,8 +999,7 @@ final class AppModel {
           message.id == updated.id ? updated : message
         }
       } catch {
-        guard selectedEmailID == email.id else { return }
-        reportError(error)
+        return
       }
     }
   }
@@ -898,6 +1012,100 @@ final class AppModel {
     for key in Array(emailListCache.keys) {
       guard let index = emailListCache[key]?.firstIndex(where: { $0.id == id }) else { continue }
       emailListCache[key]?[index].isRead = isRead
+    }
+  }
+
+  private func cacheEmailDetail(_ email: EmailDetail) {
+    emailDetailCache[email.id] = email
+    emailDetailCacheOrder.removeAll { $0 == email.id }
+    emailDetailCacheOrder.append(email.id)
+    trimEmailDetailCache()
+  }
+
+  private func cacheConversation(anchorID: String, _ emails: [EmailDetail]) {
+    guard !emails.isEmpty else { return }
+    for email in emails {
+      cacheEmailDetail(email)
+    }
+    for email in emails {
+      emailThreadCache[email.id] = emails
+    }
+    emailThreadCache[anchorID] = emails
+    trimEmailDetailCache()
+  }
+
+  private func trimEmailDetailCache() {
+    while emailDetailCacheOrder.count > maxEmailDetailCacheSize, let oldestID = emailDetailCacheOrder.first {
+      emailDetailCacheOrder.removeFirst()
+      emailDetailCache.removeValue(forKey: oldestID)
+      emailThreadCache.removeValue(forKey: oldestID)
+    }
+  }
+
+  private func prefetchNearbyEmailDetails(after id: String) {
+    let ids = nearbyEmailIDs(around: id, limit: emailDetailPrefetchWindow)
+    emailDetailPrefetchTask?.cancel()
+    guard !ids.isEmpty else {
+      emailDetailPrefetchTask = nil
+      return
+    }
+
+    let client = apiClient
+    emailDetailPrefetchTask = Task { @MainActor in
+      defer {
+        if !Task.isCancelled {
+          emailDetailPrefetchTask = nil
+        }
+      }
+
+      for id in ids {
+        guard !Task.isCancelled else { return }
+        await prefetchEmailDetail(id: id, client: client)
+      }
+    }
+  }
+
+  private func nearbyEmailIDs(around id: String, limit: Int) -> [String] {
+    guard limit > 0,
+          let selectedIndex = emails.firstIndex(where: { $0.id == id })
+    else { return [] }
+
+    let following = emails.dropFirst(selectedIndex + 1)
+    let previous = emails.prefix(selectedIndex).reversed()
+    let candidates = Array(following) + Array(previous)
+    return candidates
+      .map(\.id)
+      .filter { candidateID in
+        candidateID != id &&
+          candidateID != pendingArchive?.id &&
+          !archivingEmailIDs.contains(candidateID) &&
+          emailDetailCache[candidateID] == nil &&
+          !prefetchingEmailIDs.contains(candidateID)
+      }
+      .prefix(limit)
+      .map { $0 }
+  }
+
+  private func prefetchEmailDetail(id: String, client: MailAPIClient) async {
+    guard emailDetailCache[id] == nil,
+          !prefetchingEmailIDs.contains(id)
+    else { return }
+
+    prefetchingEmailIDs.insert(id)
+    defer { prefetchingEmailIDs.remove(id) }
+
+    do {
+      let detail = try await client.email(id: id)
+      guard !Task.isCancelled else { return }
+      cacheEmailDetail(detail)
+
+      guard !Task.isCancelled else { return }
+      if let thread = try? await client.thread(emailId: detail.id) {
+        guard !Task.isCancelled else { return }
+        cacheConversation(anchorID: id, thread)
+      }
+    } catch {
+      return
     }
   }
 
@@ -1021,9 +1229,12 @@ final class AppModel {
 
     do {
       let response = try await apiClient.send(request)
+      cacheEmailDetail(response.email)
       selectedEmailID = response.email.id
       selectedEmail = response.email
-      conversationEmails = try await apiClient.thread(emailId: response.email.id)
+      let thread = (try? await apiClient.thread(emailId: response.email.id)) ?? [response.email]
+      cacheConversation(anchorID: response.email.id, thread)
+      conversationEmails = thread
       await refreshAll()
       return true
     } catch {
@@ -1124,7 +1335,7 @@ final class AppModel {
   }
 
   func archiveSelectedEmail() async {
-    guard !isArchiving, let selectedEmailID else { return }
+    guard let selectedEmailID, !isEmailArchiving(selectedEmailID) else { return }
     let selectedSummary = emails.first { $0.id == selectedEmailID }
     let loadedSelectedEmail = selectedEmail?.id == selectedEmailID ? selectedEmail : nil
 
@@ -1155,7 +1366,7 @@ final class AppModel {
     do {
       let updated = try await apiClient.updateEmail(id: email.id, isRead: !email.isRead)
       applyEmailUpdate(updated)
-      try await refreshMailboxCounts()
+      try await refreshSidebarCounts()
       try await loadEmails()
     } catch {
       reportError(error)
@@ -1182,7 +1393,7 @@ final class AppModel {
   }
 
   private func queueArchive(id: String, subject: String, senderName: String) {
-    guard pendingArchive?.id != id else { return }
+    guard pendingArchive?.id != id, !archivingEmailIDs.contains(id) else { return }
 
     if let previousPendingArchive = pendingArchive {
       pendingArchiveTask?.cancel()
@@ -1205,11 +1416,12 @@ final class AppModel {
       : nil
 
     if shouldRemoveImmediately {
-      withAnimation(.snappy(duration: 0.24)) {
+      withAnimation(.easeOut(duration: 0.20)) {
         emails.removeAll { $0.id == id }
         if selectedEmailID == id {
           selectedEmailID = replacementSelectedEmailID
           selectedEmail = nil
+          selectedEmailLoadErrorMessage = nil
           conversationEmails = []
         }
       }
@@ -1286,18 +1498,20 @@ final class AppModel {
   }
 
   private func commitArchive(_ archive: PendingArchiveNotification) async {
-    isArchiving = true
-    defer { isArchiving = false }
+    guard archivingEmailIDs.insert(archive.id).inserted else { return }
+    defer { archivingEmailIDs.remove(archive.id) }
 
+    let updated: EmailDetail
     do {
-      let updated = try await apiClient.archiveEmail(emailId: archive.id)
+      updated = try await apiClient.archiveEmail(emailId: archive.id)
       statusMessage = "Archived"
       errorMessage = nil
-      if !archive.removedFromCurrentList {
+      if archive.removedFromCurrentList {
+        cacheEmailDetail(updated)
+        removeEmailFromListCaches(id: archive.id)
+      } else {
         applyEmailUpdate(updated)
       }
-      mailboxes = try await apiClient.mailboxes()
-      try await loadEmails()
     } catch {
       if archive.removedFromCurrentList {
         withAnimation(.snappy(duration: 0.24)) {
@@ -1308,7 +1522,14 @@ final class AppModel {
         }
       }
       reportError(error)
+      return
     }
+
+    scheduleSidebarCountsRefresh()
+  }
+
+  private func isEmailArchiving(_ id: String) -> Bool {
+    pendingArchive?.id == id || archivingEmailIDs.contains(id)
   }
 
   private func trashEmail(id: String) async {
@@ -1317,7 +1538,7 @@ final class AppModel {
       statusMessage = "Moved to Trash"
       errorMessage = nil
       applyEmailUpdate(updated)
-      try await refreshMailboxCounts()
+      try await refreshSidebarCounts()
       try await loadEmails()
     } catch {
       reportError(error)
@@ -1330,7 +1551,7 @@ final class AppModel {
       statusMessage = "Moved to Spam"
       errorMessage = nil
       applyEmailUpdate(updated)
-      try await refreshMailboxCounts()
+      try await refreshSidebarCounts()
       try await loadEmails()
     } catch {
       reportError(error)
@@ -1351,7 +1572,8 @@ final class AppModel {
     guard let selectedEmail else { return }
     let action = selectedEmail.labels.contains(where: { $0.id == label.id }) ? "remove" : "add"
     do {
-      self.selectedEmail = try await apiClient.setLabel(emailId: selectedEmail.id, labelId: label.id, action: action)
+      let updated = try await apiClient.setLabel(emailId: selectedEmail.id, labelId: label.id, action: action)
+      applyEmailUpdate(updated)
       try await loadEmails()
     } catch {
       reportError(error)
@@ -1361,7 +1583,8 @@ final class AppModel {
   func moveSelectedEmail(to mailbox: Mailbox) async {
     guard let selectedEmail else { return }
     do {
-      self.selectedEmail = try await apiClient.updateEmail(id: selectedEmail.id, mailboxId: mailbox.id)
+      let updated = try await apiClient.updateEmail(id: selectedEmail.id, mailboxId: mailbox.id)
+      applyEmailUpdate(updated)
       await refreshAll()
     } catch {
       reportError(error)
@@ -1371,7 +1594,8 @@ final class AppModel {
   func markSelectedSpam() async {
     guard let selectedEmail else { return }
     do {
-      self.selectedEmail = try await apiClient.markSpam(emailId: selectedEmail.id)
+      let updated = try await apiClient.markSpam(emailId: selectedEmail.id)
+      applyEmailUpdate(updated)
       statusMessage = "Moved to Spam"
       errorMessage = nil
       await refreshAll()
@@ -1384,7 +1608,7 @@ final class AppModel {
     guard let selectedEmail else { return }
     do {
       let result = try await apiClient.blockSender(emailId: selectedEmail.id, scope: scope)
-      self.selectedEmail = result.email
+      applyEmailUpdate(result.email)
       statusMessage = blockStatusMessage(scope: result.rule.scope, value: result.rule.value, affectedCount: result.affectedCount)
       errorMessage = nil
       await refreshAll()
@@ -1396,9 +1620,10 @@ final class AppModel {
   private func updateSelectedEmail(isRead: Bool?, isStarred: Bool?) async {
     guard let selectedEmail else { return }
     do {
-      self.selectedEmail = try await apiClient.updateEmail(id: selectedEmail.id, isRead: isRead, isStarred: isStarred)
+      let updated = try await apiClient.updateEmail(id: selectedEmail.id, isRead: isRead, isStarred: isStarred)
+      applyEmailUpdate(updated)
       if isRead != nil {
-        try await refreshMailboxCounts()
+        try await refreshSidebarCounts()
       }
       try await loadEmails()
     } catch {
@@ -1413,8 +1638,39 @@ final class AppModel {
   }
 
   private func applyEmailUpdate(_ email: EmailDetail) {
+    cacheEmailDetail(email)
     if selectedEmailID == email.id {
       selectedEmail = email
+    }
+    conversationEmails = conversationEmails.map { message in
+      message.id == email.id ? email : message
+    }
+    for key in Array(emailThreadCache.keys) {
+      guard emailThreadCache[key]?.contains(where: { $0.id == email.id }) == true else { continue }
+      emailThreadCache[key] = emailThreadCache[key]?.map { message in
+        message.id == email.id ? email : message
+      }
+    }
+  }
+
+  private func removeEmailFromListCaches(id: String) {
+    for key in Array(emailListCache.keys) {
+      emailListCache[key]?.removeAll { $0.id == id }
+    }
+  }
+
+  private func scheduleSidebarCountsRefresh() {
+    sidebarCountsRefreshTask?.cancel()
+    sidebarCountsRefreshTask = Task { @MainActor in
+      do {
+        try await Task.sleep(for: .milliseconds(700))
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      try? await refreshSidebarCounts()
+      guard !Task.isCancelled else { return }
+      sidebarCountsRefreshTask = nil
     }
   }
 

@@ -14,6 +14,7 @@ struct SidebarView: View {
   @State private var editMode: EditMode = .inactive
   #endif
   var onAddAccount: () -> Void
+  var onSettings: () -> Void
   var onShowMessages: () -> Void
 
   var body: some View {
@@ -22,19 +23,21 @@ struct SidebarView: View {
         .ignoresSafeArea()
 
       List {
+        iosSidebarTitle
         allInboxesSection
         accountsSection
         globalFoldersSection
         filtersSection
         foldersSection
         labelsSection
+        settingsSection
       }
-      .listStyle(.sidebar)
+      .sidebarListStyle()
       .sidebarScrollBackground()
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .clipped()
     }
-    .navigationTitle("Email")
+    .navigationTitle(sidebarNavigationTitle)
     .sidebarNavigationChrome()
     #if os(iOS)
     .environment(\.editMode, $editMode)
@@ -136,6 +139,27 @@ struct SidebarView: View {
     #endif
   }
 
+  private var sidebarNavigationTitle: String {
+    #if os(iOS)
+    ""
+    #else
+    "Email"
+    #endif
+  }
+
+  @ViewBuilder
+  private var iosSidebarTitle: some View {
+    #if os(iOS)
+    Text("Email")
+      .font(.system(size: 32, weight: .bold))
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 8, trailing: 18))
+      .listRowSeparator(.hidden)
+      .listRowBackground(Color.clear)
+      .accessibilityAddTraits(.isHeader)
+    #endif
+  }
+
   @ViewBuilder
   private var allInboxesSection: some View {
     Section {
@@ -149,8 +173,27 @@ struct SidebarView: View {
           && model.selectedLabelID == nil
           && model.selectedFilterID == nil
           && model.selectedGlobalFolder == nil
+          && !model.selectedUnreadOnly
       ) {
         selectGlobalInbox()
+      }
+
+      if model.globalUnreadCount > 0 {
+        SidebarButton(
+          title: "Unread",
+          subtitle: "Inbox",
+          systemImage: "envelope.badge",
+          tint: .blue,
+          count: model.globalUnreadCount,
+          isSelected: model.selectedUnreadOnly
+            && model.selectedAccountID == nil
+            && model.selectedMailboxID == nil
+            && model.selectedLabelID == nil
+            && model.selectedFilterID == nil
+            && model.selectedGlobalFolder == nil
+        ) {
+          selectUnreadInbox()
+        }
       }
     }
   }
@@ -181,7 +224,8 @@ struct SidebarView: View {
         && model.selectedMailboxID == nil
         && model.selectedLabelID == nil
         && model.selectedFilterID == nil
-        && model.selectedGlobalFolder == nil,
+        && model.selectedGlobalFolder == nil
+        && !model.selectedUnreadOnly,
       isReorderable: model.accounts.count > 1,
       isEditing: isEditingSidebar,
       isDragging: draggingAccountID == account.id,
@@ -278,6 +322,7 @@ struct SidebarView: View {
   private func filterSidebarRow(_ filter: MailFilter) -> some View {
     let row = FilterSidebarRow(
       filter: filter,
+      count: filter.emailCount ?? 0,
       isSelected: model.selectedFilterID == filter.id && model.selectedGlobalFolder == nil,
       isReorderable: model.filters.count > 1,
       isEditing: isEditingSidebar,
@@ -325,7 +370,8 @@ struct SidebarView: View {
           title: filter.name,
           subtitle: nil,
           systemImage: filter.systemImage,
-          tint: filter.swiftUIColor
+          tint: filter.swiftUIColor,
+          count: filter.emailCount ?? 0
         )
       }
       .onDrop(
@@ -355,13 +401,34 @@ struct SidebarView: View {
     let visibleMailboxes = scopedMailboxes
     if !visibleMailboxes.isEmpty {
       Section("Account Folders") {
+        if let activeSidebarAccountID,
+           accountUnreadCount(for: activeSidebarAccountID) > 0 {
+          SidebarButton(
+            title: "Unread",
+            subtitle: nil,
+            systemImage: "envelope.badge",
+            tint: .blue,
+            count: accountUnreadCount(for: activeSidebarAccountID),
+            isSelected: model.selectedUnreadOnly
+              && model.selectedAccountID == activeSidebarAccountID
+              && model.selectedMailboxID == nil
+              && model.selectedLabelID == nil
+              && model.selectedFilterID == nil
+              && model.selectedGlobalFolder == nil
+          ) {
+            selectUnreadInbox(accountID: activeSidebarAccountID)
+          }
+        }
+
         ForEach(visibleMailboxes) { mailbox in
           SidebarButton(
             title: mailbox.name,
             subtitle: nil,
             systemImage: image(for: mailbox.role),
             count: displayCount(for: mailbox),
-            isSelected: model.selectedMailboxID == mailbox.id && model.selectedGlobalFolder == nil
+            isSelected: model.selectedMailboxID == mailbox.id
+              && model.selectedGlobalFolder == nil
+              && !model.selectedUnreadOnly
           ) {
             selectMailbox(mailbox)
           }
@@ -390,10 +457,32 @@ struct SidebarView: View {
     }
   }
 
+  @ViewBuilder
+  private var settingsSection: some View {
+    Section {
+      SidebarButton(
+        title: "Settings",
+        subtitle: nil,
+        systemImage: "gearshape",
+        tint: .secondary,
+        isSelected: false
+      ) {
+        onSettings()
+      }
+    }
+  }
+
   private func selectGlobalInbox() {
     onShowMessages()
     Task {
       await model.selectGlobalInbox()
+    }
+  }
+
+  private func selectUnreadInbox(accountID: String? = nil) {
+    onShowMessages()
+    Task {
+      await model.selectUnreadInbox(accountID: accountID)
     }
   }
 
@@ -470,8 +559,12 @@ struct SidebarView: View {
   }
 
   private func unreadCount(for account: MailAccount) -> Int {
+    accountUnreadCount(for: account.id)
+  }
+
+  private func accountUnreadCount(for accountID: String) -> Int {
     model.mailboxes
-      .filter { $0.accountId == account.id && $0.role == "inbox" }
+      .filter { $0.accountId == accountID && $0.role == "inbox" }
       .reduce(0) { $0 + $1.unreadCount }
   }
 
@@ -733,10 +826,21 @@ private extension View {
   }
 
   @ViewBuilder
+  func sidebarListStyle() -> some View {
+    #if os(iOS)
+    self
+      .listStyle(.plain)
+    #else
+    self
+      .listStyle(.sidebar)
+    #endif
+  }
+
+  @ViewBuilder
   func sidebarListRowChrome() -> some View {
     #if os(iOS)
     self
-      .listRowInsets(EdgeInsets(top: 4, leading: 24, bottom: 4, trailing: 18))
+      .listRowInsets(EdgeInsets(top: 6, leading: 18, bottom: 6, trailing: 18))
       .listRowSeparator(.hidden)
     #else
     self
@@ -785,6 +889,7 @@ private struct SidebarReorderDropDelegate: DropDelegate {
 
 private struct FilterSidebarRow: View {
   var filter: MailFilter
+  var count: Int
   var isSelected: Bool
   var isReorderable: Bool
   var isEditing = false
@@ -800,16 +905,17 @@ private struct FilterSidebarRow: View {
   var body: some View {
     HStack(spacing: 8) {
       Button(action: onSelect) {
-        HStack(spacing: 10) {
-          Image(systemName: filter.systemImage)
-            .foregroundStyle(filter.swiftUIColor)
-            .frame(width: 24)
-
-          Text(filter.name)
-            .lineLimit(1)
-
-          Spacer(minLength: 6)
-        }
+        SidebarRowContent(
+          title: filter.name,
+          subtitle: nil,
+          systemImage: filter.systemImage,
+          avatarName: nil,
+          avatarEmail: nil,
+          avatarURL: nil,
+          tint: filter.swiftUIColor,
+          count: count,
+          showsDragHandle: false
+        )
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -996,6 +1102,7 @@ private struct SidebarRowContent: View {
         .frame(width: iconWidth)
       } else {
         Image(systemName: systemImage)
+          .font(iconFont)
           .foregroundStyle(tint)
           .frame(width: iconWidth)
       }
@@ -1016,7 +1123,7 @@ private struct SidebarRowContent: View {
 
       if count > 0 {
         Text(count, format: .number)
-          .font(.caption2.weight(.semibold))
+          .font(countFont)
           .foregroundStyle(.secondary)
           .monospacedDigit()
       }
@@ -1026,11 +1133,12 @@ private struct SidebarRowContent: View {
           .transition(.opacity.combined(with: .scale(scale: 0.84)))
       }
     }
+    .frame(minHeight: rowMinHeight, alignment: .center)
   }
 
   private var avatarSize: CGFloat {
     #if os(iOS)
-    22
+    30
     #else
     24
     #endif
@@ -1038,7 +1146,7 @@ private struct SidebarRowContent: View {
 
   private var iconWidth: CGFloat {
     #if os(iOS)
-    22
+    30
     #else
     24
     #endif
@@ -1046,7 +1154,7 @@ private struct SidebarRowContent: View {
 
   private var rowSpacing: CGFloat {
     #if os(iOS)
-    9
+    12
     #else
     10
     #endif
@@ -1054,7 +1162,7 @@ private struct SidebarRowContent: View {
 
   private var titleFont: Font {
     #if os(iOS)
-    .system(size: 16, weight: .regular)
+    .system(size: 18, weight: .regular)
     #else
     .body
     #endif
@@ -1062,9 +1170,33 @@ private struct SidebarRowContent: View {
 
   private var subtitleFont: Font {
     #if os(iOS)
-    .system(size: 13)
+    .system(size: 14)
     #else
     .caption
+    #endif
+  }
+
+  private var countFont: Font {
+    #if os(iOS)
+    .subheadline.weight(.semibold)
+    #else
+    .caption2.weight(.semibold)
+    #endif
+  }
+
+  private var iconFont: Font {
+    #if os(iOS)
+    .system(size: 22, weight: .regular)
+    #else
+    .body
+    #endif
+  }
+
+  private var rowMinHeight: CGFloat {
+    #if os(iOS)
+    46
+    #else
+    0
     #endif
   }
 }
@@ -1084,9 +1216,26 @@ private struct SidebarRowBackground: View {
   var isHovered: Bool
 
   var body: some View {
-    RoundedRectangle(cornerRadius: 7, style: .continuous)
+    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       .fill(fill)
+      .padding(.horizontal, horizontalPadding)
       .padding(.vertical, 1)
+  }
+
+  private var horizontalPadding: CGFloat {
+    #if os(iOS)
+    8
+    #else
+    0
+    #endif
+  }
+
+  private var cornerRadius: CGFloat {
+    #if os(iOS)
+    14
+    #else
+    7
+    #endif
   }
 
   private var fill: Color {

@@ -33,7 +33,6 @@ struct EmailPreviewView: View {
   @State private var revealedAddressListID: String?
   @State private var bodyContentHeight: CGFloat = 1
   @State private var inlineReplyEmailID: String?
-  var onCompose: () -> Void
 
   var body: some View {
     Group {
@@ -202,11 +201,6 @@ struct EmailPreviewView: View {
         loadingPreview
       } else {
         ContentUnavailableView("Select a Message", systemImage: "envelope.open")
-          .toolbar {
-            Button(action: onCompose) {
-              Image(systemName: "square.and.pencil")
-            }
-          }
       }
     }
     .sheet(item: $attachmentBrowserContext) { context in
@@ -225,9 +219,22 @@ struct EmailPreviewView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(.background)
       .overlay {
-        ProgressView()
-          .controlSize(.small)
-          .opacity(0.45)
+        if let message = model.selectedEmailLoadErrorMessage {
+          ContentUnavailableView {
+            Label("Message Unavailable", systemImage: "envelope.badge")
+          } description: {
+            Text(message)
+          } actions: {
+            Button("Retry") {
+              guard let id = model.selectedEmailID else { return }
+              Task { await model.selectEmail(id: id) }
+            }
+          }
+        } else {
+          ProgressView()
+            .controlSize(.small)
+            .opacity(0.45)
+        }
       }
   }
 
@@ -291,6 +298,7 @@ struct EmailPreviewView: View {
       }
       .frame(maxWidth: .infinity, alignment: .topLeading)
     }
+    .id(email.id)
     .animation(.snappy(duration: 0.24), value: messages.map(\.id))
     .animation(.snappy(duration: 0.24), value: expandedMessageIDs)
   }
@@ -318,6 +326,7 @@ struct EmailPreviewView: View {
           scrollReplyIntoView(replyEmailID, with: scrollProxy)
         }
       }
+      .id(email.id)
     } else {
       ScrollViewReader { scrollProxy in
         ScrollView {
@@ -333,6 +342,7 @@ struct EmailPreviewView: View {
         .animation(.snappy(duration: 0.24), value: messages.map(\.id))
         .animation(.snappy(duration: 0.24), value: expandedMessageIDs)
       }
+      .id(email.id)
     }
   }
 
@@ -356,7 +366,6 @@ struct EmailPreviewView: View {
         ConversationMessageRow(
           email: message,
           isExpanded: expandedMessageIDs.contains(message.id),
-          isSelected: message.id == email.id,
           isReplying: inlineReplyEmailID == message.id,
           previewMode: previewMode,
           onToggle: {
@@ -372,10 +381,7 @@ struct EmailPreviewView: View {
             startReply(to: message)
           }
         )
-        .transition(.asymmetric(
-          insertion: .move(edge: .bottom).combined(with: .opacity),
-          removal: .opacity
-        ))
+        .transition(.opacity)
 
         if inlineReplyEmailID == message.id {
           replyArea(for: message)
@@ -1321,7 +1327,6 @@ private func estimatedEmailBodyContentHeight(for email: EmailDetail) -> CGFloat 
 private struct ConversationMessageRow: View {
   var email: EmailDetail
   var isExpanded: Bool
-  var isSelected: Bool
   var isReplying: Bool
   var previewMode: EmailPreviewMode
   var onToggle: () -> Void
@@ -1377,12 +1382,12 @@ private struct ConversationMessageRow: View {
             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
               .font(.caption.weight(.semibold))
               .foregroundStyle(.tertiary)
+              .frame(width: 16, height: 16)
           }
         }
         .contentShape(Rectangle())
         .padding(.vertical, 14)
-        .padding(.leading, 12)
-        .padding(.trailing, 2)
+        .padding(.horizontal, 12)
       }
       .buttonStyle(.plain)
 
@@ -1405,25 +1410,14 @@ private struct ConversationMessageRow: View {
             }
           }
         }
-        .padding(.horizontal, 0)
+        .padding(.leading, 60)
+        .padding(.trailing, 12)
         .padding(.bottom, 18)
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .transition(.opacity)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background {
-      if isSelected {
-        Color.accentColor.opacity(0.055)
-      }
-    }
-    .overlay(alignment: .leading) {
-      if isSelected {
-        Rectangle()
-          .fill(Color.accentColor)
-          .frame(width: 2)
-          .padding(.vertical, 12)
-      }
-    }
+    .animation(.snappy(duration: 0.2), value: isExpanded)
     .onChange(of: email.id) { _, _ in
       bodyContentHeight = 1
     }

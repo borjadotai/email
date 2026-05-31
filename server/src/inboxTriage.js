@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -135,26 +135,44 @@ export class InboxTriageService {
   }
 }
 
-export function defaultInboxTriageClassifier(emails, options = {}) {
+export async function defaultInboxTriageClassifier(emails, options = {}) {
   if (process.env.EMAIL_TRIAGE_DISABLE_CODEX === "1") {
     return fallbackInboxTriagePlan(emails);
   }
 
   const command = resolveCodexCommand();
   const timeoutMs = Number.parseInt(process.env.EMAIL_TRIAGE_CODEX_TIMEOUT_MS ?? "", 10) || DEFAULT_CODEX_TIMEOUT_MS;
-  const runner = options.runner ?? execFileSync;
-  const output = runner(command, codexArgs(), {
+  const runner = options.runner ?? execFile;
+  const output = await runClassifierCommand(runner, command, codexArgs(), {
     encoding: "utf8",
     timeout: timeoutMs,
     maxBuffer: 1024 * 1024,
     input: triagePrompt(emails),
-    stdio: ["pipe", "pipe", "ignore"],
     env: {
       ...process.env,
       NO_COLOR: "1"
     }
   });
   return { ...extractJSON(output), source: "codex" };
+}
+
+function runClassifierCommand(runner, command, args, options) {
+  return new Promise((resolve, reject) => {
+    const child = runner(command, args, {
+      encoding: options.encoding,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer,
+      env: options.env
+    }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout);
+    });
+
+    child?.stdin?.end?.(options.input);
+  });
 }
 
 export function fallbackInboxTriagePlan(emails) {

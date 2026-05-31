@@ -301,6 +301,9 @@ struct MailAPIClient: Sendable {
     if let filterId = query.filterId {
       items.append(URLQueryItem(name: "filterId", value: filterId))
     }
+    if query.unreadOnly {
+      items.append(URLQueryItem(name: "unread", value: "1"))
+    }
     if query.refreshFilterCache {
       items.append(URLQueryItem(name: "refreshFilter", value: "1"))
     }
@@ -504,6 +507,12 @@ struct MailAPIClient: Sendable {
   }
 
   private func timeout(for path: String, query: [URLQueryItem]) -> TimeInterval {
+    if path.hasPrefix("api/emails/") && !path.contains("/attachments/") {
+      return 8
+    }
+    if path == "api/messages/send" {
+      return 8
+    }
     if path == "api/inbox/triage" {
       return 70
     }

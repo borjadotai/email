@@ -34,19 +34,19 @@ struct RootView: View {
     NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
       SidebarView(
         onAddAccount: { sheet = .addAccount },
+        onSettings: { sheet = .settings },
         onShowMessages: { setPreferredCompactColumn(.content) }
       )
     } content: {
       EmailListView(
         onCompose: { sheet = .compose },
         onTriage: { sheet = .inboxTriage },
-        onSettings: { sheet = .settings },
         onShowDetail: { setPreferredCompactColumn(.detail) }
       )
       .mailListNavigationTitle(model.navigationTitle)
       .searchable(text: $model.searchText, isPresented: $model.isSearchPresented, prompt: "Search")
     } detail: {
-      EmailPreviewView(onCompose: { sheet = .compose })
+      EmailPreviewView()
     }
     .task {
       if let prepareForBootstrap {

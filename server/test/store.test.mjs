@@ -428,6 +428,58 @@ test("groups conversation messages across connected accounts with RFC headers", 
   }
 });
 
+test("deduplicates cross-account message copies from the selected account perspective", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const gmail = store.createAccount({
+      provider: "gmail",
+      email: "person@gmail.com",
+      displayName: "Person"
+    });
+    const iCloud = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person iCloud"
+    });
+    const gmailSent = store.mailboxForRole(gmail.id, "sent");
+    const iCloudInbox = store.mailboxForRole(iCloud.id, "inbox");
+    const rfcMessageID = "<local-account-copy@example.com>";
+
+    const sentCopy = store.upsertProviderEmail(testProviderEmail({
+      id: "local-account-sent-copy",
+      accountId: gmail.id,
+      mailboxId: gmailSent.id,
+      providerUID: "gmail-sent-copy",
+      threadId: "gmail-thread-copy",
+      senderName: "Person",
+      senderEmail: gmail.email,
+      recipients: [iCloud.email],
+      rfcMessageID
+    }));
+    const receivedCopy = store.upsertProviderEmail(testProviderEmail({
+      id: "local-account-received-copy",
+      accountId: iCloud.id,
+      mailboxId: iCloudInbox.id,
+      providerUID: "icloud-received-copy",
+      threadId: "icloud-thread-copy",
+      senderName: "Person",
+      senderEmail: gmail.email,
+      recipients: [iCloud.email],
+      rfcMessageID
+    }));
+
+    assert.deepEqual(store.listThreadEmails(receivedCopy.id).map(email => email.id), [receivedCopy.id]);
+    assert.equal(store.listThreadEmails(receivedCopy.id)[0].mailboxRole, "inbox");
+    assert.deepEqual(store.listThreadEmails(sentCopy.id).map(email => email.id), [sentCopy.id]);
+    assert.equal(store.listThreadEmails(sentCopy.id)[0].mailboxRole, "sent");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("archives messages into the account archive mailbox", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
@@ -656,6 +708,7 @@ test("creates saved filters from natural language and applies them dynamically",
     assert.equal(filter.criteria.hasAttachments, true);
     assert.equal(filter.criteria.attachmentKind, "invoice");
     assert.equal(filter.querySource, "heuristic");
+    assert.equal(filter.emailCount, 3);
     assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [linkOnlyReceipt.id, randomNamedInvoice.id, invoice.id]);
 
     const laterInvoice = store.upsertProviderEmail(testProviderEmail({
@@ -671,8 +724,10 @@ test("creates saved filters from natural language and applies them dynamically",
       attachments: [{ filename: "factura-mayo.pdf", mimeType: "application/pdf", size: 128 }]
     }));
 
+    assert.equal(store.listFilters().find(item => item.id === filter.id)?.emailCount, 3);
     assert.deepEqual(store.listEmails({ filterId: filter.id }).map(email => email.id), [linkOnlyReceipt.id, randomNamedInvoice.id, invoice.id]);
     assert.deepEqual(store.listEmails({ filterId: filter.id, refreshFilter: "1" }).map(email => email.id), [laterInvoice.id, linkOnlyReceipt.id, randomNamedInvoice.id, invoice.id]);
+    assert.equal(store.getFilter(filter.id)?.emailCount, 4);
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === imageOnly.id));
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === orderNewsletter.id));
   } finally {

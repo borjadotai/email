@@ -4,6 +4,8 @@ import { summarizePushNotificationResult } from "./pushNotifications.js";
 import { httpError } from "./store.js";
 
 const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+const MAX_DETAIL_HTML_LENGTH = Number.parseInt(process.env.EMAIL_DETAIL_HTML_LIMIT ?? "", 10) || 1_000_000;
+const MAX_DETAIL_TEXT_FALLBACK_LENGTH = 200_000;
 
 export function createServer({ store, providers, pushNotifications, inboxTriage, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
   const events = new EventHub();
@@ -262,9 +264,9 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   if (emailMatch && req.method === "GET") {
     let email = store.getEmail(emailMatch[1]);
     if (!email) throw httpError(404, "Email not found.");
-    await ensureStoredAttachments({ store, providers, email });
-    email = store.getEmail(email.id);
-    sendJSON(res, 200, { email });
+    fetchStoredAttachmentsInBackground({ providers, email });
+    email = compactEmailDetail(store.getEmail(email.id));
+    sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
   }
 
@@ -273,9 +275,9 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     let emails = store.listThreadEmails(threadMatch[1]);
     if (!emails) throw httpError(404, "Email not found.");
     for (const email of emails) {
-      await ensureStoredAttachments({ store, providers, email });
+      fetchStoredAttachmentsInBackground({ providers, email });
     }
-    emails = store.listThreadEmails(threadMatch[1]);
+    emails = store.listThreadEmails(threadMatch[1]).map(compactEmailDetail);
     sendJSON(res, 200, { emails });
     return;
   }
@@ -298,13 +300,18 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     const patch = await readJSON(req);
     const current = store.getEmail(emailMatch[1]);
     if (!current) throw httpError(404, "Email not found.");
-    if (typeof patch.isRead === "boolean" && providers) {
-      await providers.updateEmailReadStatus(current, patch.isRead);
-    }
     const email = store.updateEmail(emailMatch[1], patch);
     if (!email) throw httpError(404, "Email not found.");
     events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
+    if (typeof patch.isRead === "boolean") {
+      providerActionInBackground({
+        providers,
+        email: current,
+        action: `read-status=${patch.isRead}`,
+        run: () => providers.updateEmailReadStatus(current, patch.isRead)
+      });
+    }
+    sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
   }
 
@@ -312,12 +319,15 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   if (spamMatch && req.method === "POST") {
     const current = store.getEmail(spamMatch[1]);
     if (!current) throw httpError(404, "Email not found.");
-    if (providers) {
-      await providers.markEmailSpam(current);
-    }
     const email = store.markEmailSpam(spamMatch[1]);
     events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
+    providerActionInBackground({
+      providers,
+      email: current,
+      action: "spam",
+      run: () => providers.markEmailSpam(current)
+    });
+    sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
   }
 
@@ -325,12 +335,15 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   if (archiveMatch && req.method === "POST") {
     const current = store.getEmail(archiveMatch[1]);
     if (!current) throw httpError(404, "Email not found.");
-    if (providers) {
-      await providers.archiveEmail(current);
-    }
     const email = store.archiveEmail(archiveMatch[1]);
     events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
+    providerActionInBackground({
+      providers,
+      email: current,
+      action: "archive",
+      run: () => providers.archiveEmail(current)
+    });
+    sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
   }
 
@@ -338,12 +351,15 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   if (trashMatch && req.method === "POST") {
     const current = store.getEmail(trashMatch[1]);
     if (!current) throw httpError(404, "Email not found.");
-    if (providers) {
-      await providers.trashEmail(current);
-    }
     const email = store.trashEmail(trashMatch[1]);
     events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
+    providerActionInBackground({
+      providers,
+      email: current,
+      action: "trash",
+      run: () => providers.trashEmail(current)
+    });
+    sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
   }
 
@@ -352,7 +368,10 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     const result = store.blockSenderForEmail(blockMatch[1], (await readJSON(req)).scope);
     if (!result) throw httpError(404, "Email not found.");
     events.emit("emails.changed", { emailId: result.email.id, affectedCount: result.affectedCount });
-    sendJSON(res, 200, result);
+    sendJSON(res, 200, {
+      ...result,
+      email: compactEmailDetail(result.email)
+    });
     return;
   }
 
@@ -361,32 +380,32 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     const body = await readJSON(req);
     const email = store.setEmailLabel(labelMatch[1], body.labelId, body.action);
     events.emit("emails.changed", { emailId: email.id });
-    sendJSON(res, 200, { email });
+    sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
   }
 
   if (req.method === "POST" && path === "/api/messages/send") {
     const body = await readJSON(req);
     const email = store.sendMessage(body);
-    if (providers) {
-      try {
-        const result = await providers.sendMessage(email, body);
+    providerActionInBackground({
+      providers,
+      email,
+      action: "send",
+      run: () => providers.sendMessage(email, body),
+      onSuccess: result => {
         if (result.status === "sent") {
           store.markOutboundSent(email.outboundId, result.providerUID);
-          email.outboundStatus = "sent";
         }
-      } catch (error) {
-        const message = error?.message ?? String(error);
-        store.markOutboundFailed(email.outboundId, error);
-        email.outboundStatus = "failed";
-        email.outboundError = message;
         events.emit("emails.changed", { emailId: email.id });
-        throw httpError(502, `Sending failed: ${message}`);
+      },
+      onFinalFailure: error => {
+        store.markOutboundFailed(email.outboundId, error);
+        events.emit("emails.changed", { emailId: email.id });
       }
-    }
+    });
     events.emit("emails.changed", { emailId: email.id });
     sendJSON(res, 202, {
-      email,
+      email: compactEmailDetail(email),
       trackingPixelURL: email.trackingId ? `${baseURL}/api/track/open/${email.trackingId}.gif` : null
     });
     return;
@@ -447,13 +466,52 @@ function sendAttachment(res, attachment) {
   res.end(body);
 }
 
-async function ensureStoredAttachments({ store, providers, email }) {
+function fetchStoredAttachmentsInBackground({ providers, email }) {
   if (!providers || !email?.hasAttachments || email.attachments?.length > 0) return;
-  try {
-    await providers.ensureEmailAttachments(email);
-  } catch (error) {
-    console.warn(`${new Date().toISOString()} attachment fetch failed email=${email.id}: ${error.message}`);
+  providerActionInBackground({
+    providers,
+    email,
+    action: "attachment-fetch",
+    run: () => providers.ensureEmailAttachments(email)
+  });
+}
+
+function compactEmailDetail(email) {
+  if (!email?.bodyHTML || email.bodyHTML.length <= MAX_DETAIL_HTML_LENGTH) {
+    return email;
   }
+
+  const bodyText = cleanPreviewText(email.bodyText) || htmlToPreviewText(email.bodyHTML);
+  return {
+    ...email,
+    bodyText: bodyText || email.snippet || "This message has a very large HTML body.",
+    bodyHTML: null,
+    bodyHTMLWasOmitted: true
+  };
+}
+
+function htmlToPreviewText(html) {
+  return cleanPreviewText(String(html)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6])>/giu, "\n")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;/giu, "'"));
+}
+
+function cleanPreviewText(value) {
+  const text = String(value ?? "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[ \t\f\v]+/gu, " ")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+  return text.slice(0, MAX_DETAIL_TEXT_FALLBACK_LENGTH);
 }
 
 function safeFilename(value) {
@@ -517,6 +575,38 @@ async function sendPushNotifications(pushNotifications, newEmails = []) {
   } catch (error) {
     console.warn(`${new Date().toISOString()} push notifications failed: ${error.message}`);
   }
+}
+
+function providerActionInBackground({ providers, email, action, run, onSuccess, onFinalFailure, maxAttempts = 3 }) {
+  if (!providers || typeof run !== "function") return;
+  const timer = setTimeout(() => {
+    void retryProviderAction({ email, action, run, onSuccess, onFinalFailure, maxAttempts });
+  }, 0);
+  timer.unref?.();
+}
+
+async function retryProviderAction({ email, action, run, onSuccess, onFinalFailure, maxAttempts, attempt = 1 }) {
+  try {
+    const result = await run();
+    onSuccess?.(result);
+  } catch (error) {
+    if (attempt >= maxAttempts) {
+      console.warn(`${new Date().toISOString()} provider ${action} failed email=${email.id} attempts=${attempt}: ${error.message}`);
+      onFinalFailure?.(error);
+      return;
+    }
+
+    console.warn(`${new Date().toISOString()} provider ${action} retrying email=${email.id} attempt=${attempt}: ${error.message}`);
+    await delay(attempt * 2000);
+    await retryProviderAction({ email, action, run, onSuccess, onFinalFailure, maxAttempts, attempt: attempt + 1 });
+  }
+}
+
+function delay(milliseconds) {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref?.();
+  });
 }
 
 function authSuccessPage(result) {

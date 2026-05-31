@@ -125,7 +125,7 @@ test("updates account settings through the API", async () => {
   }
 });
 
-test("marks provider email read before updating the local row", async () => {
+test("marks provider email read locally without waiting for the remote provider", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 
@@ -170,11 +170,15 @@ test("marks provider email read before updating the local row", async () => {
     store.insertEmail(email);
     store.refreshMailboxUnread(inbox.id);
 
+    let resolveProviderUpdate;
     const providerUpdates = [];
+    const providerStarted = new Promise(resolve => {
+      resolveProviderUpdate = resolve;
+    });
     const providers = {
       async updateEmailReadStatus(providerEmail, isRead) {
         providerUpdates.push({ id: providerEmail.id, providerUID: providerEmail.providerUID, isRead });
-        assert.equal(store.getEmail(providerEmail.id).isRead, false);
+        resolveProviderUpdate();
         return { status: "updated", provider: "gmail" };
       }
     };
@@ -188,9 +192,185 @@ test("marks provider email read before updating the local row", async () => {
       headers: { "Content-Type": "application/json" }
     });
 
-    assert.deepEqual(providerUpdates, [{ id: email.id, providerUID: email.providerUID, isRead: true }]);
     assert.equal(response.email.isRead, true);
     assert.equal(store.getEmail(email.id).isRead, true);
+
+    await providerStarted;
+    assert.deepEqual(providerUpdates, [{ id: email.id, providerUID: email.providerUID, isRead: true }]);
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("archives provider email locally without waiting for the remote provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = testEmail({
+      id: "email-archive-api-test",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "gmail-archive-provider-id"
+    });
+    store.insertEmail(email);
+    store.refreshMailboxUnread(inbox.id);
+
+    let resolveProviderArchive;
+    let providerEmail;
+    const providerStarted = new Promise(resolve => {
+      const providers = {
+        async archiveEmail(emailForProvider) {
+          providerEmail = emailForProvider;
+          resolve();
+          await new Promise(providerResolve => {
+            resolveProviderArchive = providerResolve;
+          });
+          return { status: "updated", provider: "gmail" };
+        }
+      };
+      server = createServer({ store, providers }).server;
+    });
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const response = await requestJSON(`${baseURL}/api/emails/${email.id}/archive`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "Content-Type": "application/json" }
+    });
+
+    assert.equal(response.email.mailboxRole, "archive");
+    assert.equal(store.getEmail(email.id).mailboxRole, "archive");
+
+    await providerStarted;
+    assert.equal(providerEmail.id, email.id);
+    assert.equal(providerEmail.mailboxRole, "inbox");
+    resolveProviderArchive();
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("queues outbound provider send after returning the local sent message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+
+    let resolveProviderSend;
+    let providerEmail;
+    const providerStarted = new Promise(resolve => {
+      const providers = {
+        async sendMessage(emailForProvider) {
+          providerEmail = emailForProvider;
+          resolve();
+          await new Promise(providerResolve => {
+            resolveProviderSend = providerResolve;
+          });
+          return { status: "sent", providerUID: "provider-sent-message-id" };
+        }
+      };
+      server = createServer({ store, providers }).server;
+    });
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const response = await withTimeout(requestJSON(`${baseURL}/api/messages/send`, {
+      method: "POST",
+      body: JSON.stringify({
+        accountId: account.id,
+        to: "friend@example.com",
+        cc: "",
+        bcc: "",
+        subject: "Queued send",
+        bodyText: "Hello from a local-first send.",
+        bodyHTML: null,
+        trackOpens: false
+      }),
+      headers: { "Content-Type": "application/json" }
+    }), 500);
+
+    assert.equal(response.email.mailboxRole, "sent");
+    assert.equal(response.email.outboundStatus, "queued");
+    assert.equal(store.getEmail(response.email.id).providerUID, null);
+
+    await providerStarted;
+    assert.equal(providerEmail.id, response.email.id);
+    resolveProviderSend();
+    await sleep(20);
+    assert.equal(store.getEmail(response.email.id).providerUID, "provider-sent-message-id");
+  } finally {
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("omits oversized HTML from email detail responses", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = testEmail({
+      id: "email-large-html-test",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "gmail-large-html-provider-id",
+      bodyText: "Readable fallback body.",
+      bodyHTML: `<article>${"Large HTML ".repeat(120_000)}</article>`
+    });
+    store.insertEmail(email);
+
+    server = createServer({ store }).server;
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+    const response = await requestJSON(`${baseURL}/api/emails/${email.id}`);
+
+    assert.equal(response.email.bodyHTML, null);
+    assert.equal(response.email.bodyText, "Readable fallback body.");
+    assert.equal(response.email.bodyHTMLWasOmitted, true);
+
+    const patchResponse = await requestJSON(`${baseURL}/api/emails/${email.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ isRead: true }),
+      headers: { "Content-Type": "application/json" }
+    });
+    assert.equal(patchResponse.email.bodyHTML, null);
+    assert.equal(patchResponse.email.bodyHTMLWasOmitted, true);
+
+    const archiveResponse = await requestJSON(`${baseURL}/api/emails/${email.id}/archive`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "Content-Type": "application/json" }
+    });
+    assert.equal(archiveResponse.email.bodyHTML, null);
+    assert.equal(archiveResponse.email.bodyHTMLWasOmitted, true);
   } finally {
     await close(server);
     store.close();
@@ -215,4 +395,50 @@ function close(server) {
   return new Promise((resolve, reject) => {
     server.close(error => error ? reject(error) : resolve());
   });
+}
+
+function withTimeout(promise, milliseconds) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Timed out after ${milliseconds}ms`)), milliseconds);
+    })
+  ]);
+}
+
+function sleep(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+function testEmail(overrides = {}) {
+  return {
+    id: overrides.id,
+    accountId: overrides.accountId,
+    mailboxId: overrides.mailboxId,
+    providerUID: overrides.providerUID,
+    threadId: overrides.threadId ?? overrides.providerUID,
+    senderName: "Sender",
+    senderEmail: "sender@example.com",
+    senderAvatarURL: null,
+    recipients: ["person@example.com"],
+    cc: [],
+    bcc: [],
+    subject: overrides.subject ?? "Provider-backed message",
+    snippet: overrides.snippet ?? "Provider-backed message",
+    bodyText: overrides.bodyText ?? "Hello",
+    bodyHTML: overrides.bodyHTML ?? null,
+    rfcMessageID: null,
+    inReplyTo: null,
+    references: [],
+    sentAt: new Date().toISOString(),
+    receivedAt: new Date().toISOString(),
+    isRead: false,
+    isStarred: false,
+    importance: "normal",
+    hasAttachments: false,
+    attachments: [],
+    trackingId: null,
+    openedAt: null,
+    createdAt: new Date().toISOString()
+  };
 }

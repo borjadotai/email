@@ -1082,17 +1082,25 @@ export class MailStore {
   }
 
   publicFilter(row) {
+    const criteria = normalizeFilterCriteria(parseJSON(row.criteriaJSON, {}));
+    const cachedEmailIds = parseJSON(row.cachedEmailIdsJSON, []);
+
     return {
       id: row.id,
       name: row.name,
       color: row.color,
       icon: row.icon,
       naturalLanguage: row.naturalLanguage,
-      criteria: normalizeFilterCriteria(parseJSON(row.criteriaJSON, {})),
+      criteria,
       querySQL: row.querySQL,
       querySource: row.querySource,
       queryError: row.queryError,
-      cachedEmailIds: parseJSON(row.cachedEmailIdsJSON, []),
+      cachedEmailIds,
+      emailCount: this.emailCountForFilter({
+        querySQL: row.querySQL,
+        cachedEmailIds,
+        criteria
+      }),
       cacheUpdatedAt: row.cacheUpdatedAt,
       sortOrder: row.sortOrder,
       createdAt: row.createdAt,
@@ -1206,6 +1214,40 @@ export class MailStore {
       FROM (${safeSQL}) filter_result
     `).all();
     return uniqueStrings(rows.map(row => row.id));
+  }
+
+  emailCountForFilter({ querySQL = null, cachedEmailIds = [], criteria = {} } = {}) {
+    try {
+      if (querySQL) {
+        return Array.isArray(cachedEmailIds) ? cachedEmailIds.length : 0;
+      }
+      return this.emailCountForFilterCriteria(criteria);
+    } catch {
+      return Array.isArray(cachedEmailIds) ? cachedEmailIds.length : 0;
+    }
+  }
+
+  emailCountForFilterCriteria(criteria = {}) {
+    const normalizedCriteria = normalizeFilterCriteria(criteria);
+    const joins = [];
+    const where = [];
+    const args = [];
+    const query = normalizeSearch(normalizedCriteria.query);
+
+    if (query) {
+      joins.push("JOIN email_fts ON email_fts.email_id = e.id");
+      where.push("email_fts MATCH ?");
+      args.push(query);
+    }
+
+    this.applyFilterCriteria({ criteria: normalizedCriteria, where, args });
+    const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    return this.db.prepare(`
+      SELECT COUNT(DISTINCT e.id) AS count
+      FROM emails e
+      ${joins.join("\n")}
+      ${whereSQL}
+    `).get(...args)?.count ?? 0;
   }
 
   validateFilterQuerySQL(sql) {
@@ -1543,9 +1585,9 @@ export class MailStore {
       return [anchor];
     }
 
-    const emails = ids
+    const emails = preferredThreadCopiesForAnchor(anchor, ids
       .map(id => this.getEmail(id))
-      .filter(Boolean);
+      .filter(Boolean));
 
     if (!emails.some(email => email.id === anchor.id)) {
       emails.push(anchor);
@@ -2860,6 +2902,39 @@ function replyReferences(email) {
     values.push(email.rfcMessageID);
   }
   return [...new Set(values.map(item => String(item).trim()).filter(Boolean))];
+}
+
+function preferredThreadCopiesForAnchor(anchor, emails) {
+  const byMessage = new Map();
+  for (const email of emails) {
+    const key = optionalString(email.rfcMessageID)?.toLowerCase() ?? `email:${email.id}`;
+    const existing = byMessage.get(key);
+    if (!existing || shouldPreferThreadCopy(anchor, email, existing)) {
+      byMessage.set(key, email);
+    }
+  }
+  return [...byMessage.values()];
+}
+
+function shouldPreferThreadCopy(anchor, candidate, existing) {
+  if (candidate.id === anchor.id) return true;
+  if (existing.id === anchor.id) return false;
+
+  const candidateSameAccount = candidate.accountId === anchor.accountId;
+  const existingSameAccount = existing.accountId === anchor.accountId;
+  if (candidateSameAccount !== existingSameAccount) return candidateSameAccount;
+
+  const candidateInboxLike = candidate.mailboxRole !== "sent";
+  const existingInboxLike = existing.mailboxRole !== "sent";
+  if (candidateInboxLike !== existingInboxLike) return candidateInboxLike;
+
+  const candidateTime = Date.parse(candidate.receivedAt ?? candidate.sentAt ?? candidate.createdAt ?? "");
+  const existingTime = Date.parse(existing.receivedAt ?? existing.sentAt ?? existing.createdAt ?? "");
+  if (Number.isFinite(candidateTime) && Number.isFinite(existingTime) && candidateTime !== existingTime) {
+    return candidateTime > existingTime;
+  }
+
+  return candidate.id.localeCompare(existing.id) < 0;
 }
 
 function contactEdgesForEmail(email, store) {

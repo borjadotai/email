@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fallbackFilterQueryPlan } from "../src/filterQueryPlanner.js";
+import { createServer } from "../src/http.js";
 import { fallbackInboxTriagePlan, InboxTriageService } from "../src/inboxTriage.js";
 import { MailStore } from "../src/store.js";
 
@@ -115,6 +116,95 @@ test("fallback inbox triage keeps uncertain mail in the reading pile", () => {
   assert.deepEqual(plan.read.map(item => item.id), ["billing", "human"]);
   assert.equal(plan.read.find(item => item.id === "human").reason, "Unclear messages stay in the reading pile.");
 });
+
+test("server can open email while inbox triage is in flight", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-triage-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  let server;
+  let releaseClassifier;
+  const classifierStarted = new Promise(resolve => {
+    const triage = new InboxTriageService({
+      store,
+      classifier: async emails => {
+        resolve();
+        await new Promise(release => {
+          releaseClassifier = release;
+        });
+        return fallbackInboxTriagePlan(emails);
+      }
+    });
+    server = createServer({ store, inboxTriage: triage }).server;
+  });
+
+  try {
+    const account = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = store.upsertProviderEmail(testProviderEmail({
+      id: "triage-in-flight",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-triage-in-flight",
+      subject: "Quick question",
+      snippet: "Can you look at this today?",
+      isRead: false
+    }));
+
+    await listen(server, 0);
+    const baseURL = `http://127.0.0.1:${server.address().port}`;
+    const triageRequest = requestJSON(`${baseURL}/api/inbox/triage`, {
+      method: "POST",
+      body: JSON.stringify({ force: true }),
+      headers: { "Content-Type": "application/json" }
+    });
+
+    await classifierStarted;
+    const detail = await withTimeout(requestJSON(`${baseURL}/api/emails/${email.id}`), 200);
+    assert.equal(detail.email.id, email.id);
+    assert.equal(detail.email.subject, "Quick question");
+
+    releaseClassifier();
+    const triageResponse = await triageRequest;
+    assert.equal(triageResponse.triage.analyzedCount, 1);
+  } finally {
+    releaseClassifier?.();
+    await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+async function requestJSON(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    assert.fail(await response.text());
+  }
+  return response.json();
+}
+
+function listen(server, port) {
+  return new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
+}
+
+function close(server) {
+  if (!server?.listening) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+  });
+}
+
+function withTimeout(promise, milliseconds) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Timed out after ${milliseconds}ms`)), milliseconds);
+    })
+  ]);
+}
 
 function testProviderEmail(overrides = {}) {
   return {

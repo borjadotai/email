@@ -4,12 +4,12 @@ struct EmailListView: View {
   @Environment(AppModel.self) private var model
   @State private var isToolbarRefreshing = false
   @State private var selectionTask: Task<Void, Never>?
+  @State private var archivingEmailIDs = Set<String>()
   #if os(macOS)
   @FocusState private var isMessageListFocused: Bool
   #endif
   var onCompose: () -> Void
   var onTriage: () -> Void
-  var onSettings: () -> Void
   var onShowDetail: () -> Void
 
   var body: some View {
@@ -46,16 +46,6 @@ struct EmailListView: View {
           Image(systemName: "square.and.pencil")
         }
         .help("Compose")
-
-        #if os(macOS)
-        SettingsLink {
-          Image(systemName: "gearshape")
-        }
-        #else
-        Button(action: onSettings) {
-          Image(systemName: "gearshape")
-        }
-        #endif
       }
     }
   }
@@ -106,15 +96,19 @@ struct EmailListView: View {
           .listRowBackground(Color.clear)
 
           ForEach(section.emails) { email in
+            let isArchiving = archivingEmailIDs.contains(email.id)
             IOSMailRow(
               email: email,
               isSelected: model.selectedEmailID == email.id
             )
             .tag(email.id)
             .contentShape(Rectangle())
+            .opacity(isArchiving ? 0 : 1)
+            .offset(x: isArchiving ? 140 : 0)
+            .animation(.easeOut(duration: 0.18), value: isArchiving)
             .transition(.asymmetric(
               insertion: .opacity,
-              removal: .move(edge: .trailing).combined(with: .opacity)
+              removal: .identity
             ))
             .onTapGesture {
               select(email)
@@ -122,7 +116,9 @@ struct EmailListView: View {
             .onAppear {
               model.loadMoreEmailsIfNeeded(current: email)
             }
-            .mailRowSwipeActions(email: email, model: model)
+            .mailRowSwipeActions(email: email, model: model) {
+              archive(email)
+            }
             .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 9, trailing: 18))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
@@ -140,7 +136,7 @@ struct EmailListView: View {
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
     .background(.background)
-    .animation(.snappy(duration: 0.24), value: filteredEmails.map(\.id))
+    .animation(.easeOut(duration: 0.22), value: filteredEmails.map(\.id))
     .animation(.snappy(duration: 0.2), value: model.isRefreshingMail)
     .mailPullToRefresh(model)
     .navigationBarTitleDisplayMode(.inline)
@@ -186,7 +182,9 @@ struct EmailListView: View {
                 .onAppear {
                   model.loadMoreEmailsIfNeeded(current: email)
                 }
-                .mailRowSwipeActions(email: email, model: model)
+                .mailRowSwipeActions(email: email, model: model) {
+                  Task { await model.archiveEmail(email) }
+                }
             }
 
             if model.isLoadingMoreEmails {
@@ -234,7 +232,9 @@ struct EmailListView: View {
     isMessageListFocused = true
     #endif
 
-    guard model.selectedEmailID != email.id else {
+    if model.selectedEmailID == email.id,
+       model.selectedEmail?.id == email.id,
+       model.selectedEmailLoadErrorMessage == nil {
       onShowDetail()
       return
     }
@@ -278,6 +278,22 @@ struct EmailListView: View {
       await model.refreshVisibleMail()
     }
   }
+
+  #if os(iOS)
+  private func archive(_ email: EmailSummary) {
+    guard !archivingEmailIDs.contains(email.id) else { return }
+
+    withAnimation(.easeOut(duration: 0.18)) {
+      _ = archivingEmailIDs.insert(email.id)
+    }
+
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(180))
+      await model.archiveEmail(email)
+      archivingEmailIDs.remove(email.id)
+    }
+  }
+  #endif
 
   #if os(macOS)
   private func selectEmail(for direction: MoveCommandDirection) {
@@ -369,12 +385,14 @@ private extension View {
   }
 
   @ViewBuilder
-  func mailRowSwipeActions(email: EmailSummary, model: AppModel) -> some View {
+  func mailRowSwipeActions(
+    email: EmailSummary,
+    model: AppModel,
+    archiveAction: @escaping () -> Void
+  ) -> some View {
     #if os(iOS)
     swipeActions(edge: .trailing, allowsFullSwipe: true) {
-      Button {
-        Task { await model.archiveEmail(email) }
-      } label: {
+      Button(action: archiveAction) {
         Label("Archive", systemImage: "archivebox")
       }
       .tint(.blue)

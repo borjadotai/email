@@ -85,6 +85,7 @@ struct MailFilter: Codable, Identifiable, Hashable {
   var criteria: MailFilterCriteria
   var querySource: String?
   var queryError: String?
+  var emailCount: Int?
   var cacheUpdatedAt: String?
   var sortOrder: Int?
   var createdAt: String
@@ -437,6 +438,7 @@ struct EmailQuery: Equatable {
   var labelId: String?
   var filterId: String?
   var q: String
+  var unreadOnly: Bool = false
   var limit: Int = 80
   var offset: Int = 0
   var refreshFilterCache: Bool = false
