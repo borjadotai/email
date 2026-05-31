@@ -1,0 +1,2 @@
+export const DEFAULT_GOOGLE_OAUTH_CLIENT_ID = "";
+export const DEFAULT_GOOGLE_OAUTH_CLIENT_SECRET = "";

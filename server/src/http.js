@@ -117,12 +117,42 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     return;
   }
 
+  if (req.method === "POST" && path === "/api/auth/gmail/relay/callback") {
+    requireProviders(providers);
+    const result = await providers.completeGmailRelayAuth(await readJSONOrForm(req));
+    events.emit("accounts.changed", { accountId: result.account.id });
+    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
+    sendHTML(res, 200, authSuccessPage(result));
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/auth/gmail/relay/callback") {
+    requireProviders(providers);
+    const result = await providers.completeGmailRelayCodeAuth(Object.fromEntries(url.searchParams.entries()));
+    events.emit("accounts.changed", { accountId: result.account.id });
+    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
+    sendHTML(res, 200, authSuccessPage(result));
+    return;
+  }
+
   if (req.method === "POST" && path === "/api/auth/icloud/connect") {
     requireProviders(providers);
     const body = await readJSON(req);
     console.log(`${new Date().toISOString()} POST /api/auth/icloud/connect email=${redactEmail(body.email)}`);
     const result = await providers.connectICloud(body);
     console.log(`${new Date().toISOString()} iCloud connected email=${redactEmail(result.account.email)} imported=${result.sync.imported}`);
+    events.emit("accounts.changed", { accountId: result.account.id });
+    events.emit("emails.changed", { accountId: result.account.id });
+    sendJSON(res, 200, { ...result, sync: publicSyncResult(result.sync) });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/auth/imap/connect") {
+    requireProviders(providers);
+    const body = await readJSON(req);
+    console.log(`${new Date().toISOString()} POST /api/auth/imap/connect email=${redactEmail(body.email)}`);
+    const result = await providers.connectIMAP(body);
+    console.log(`${new Date().toISOString()} IMAP connected email=${redactEmail(result.account.email)} imported=${result.sync.imported}`);
     events.emit("accounts.changed", { accountId: result.account.id });
     events.emit("emails.changed", { accountId: result.account.id });
     sendJSON(res, 200, { ...result, sync: publicSyncResult(result.sync) });
@@ -166,7 +196,8 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const body = await readJSON(req);
     const backfill = await providers.backfillAccountHistory(accountBackfillMatch[1], {
-      limit: body.limit
+      limit: body.limit,
+      includeAttachmentData: body.includeAttachmentData === true
     });
     if (backfill.imported > 0) {
       events.emit("emails.changed", { accountId: accountBackfillMatch[1], backfilled: true });
@@ -666,13 +697,7 @@ function redactEmail(value) {
 }
 
 async function readJSON(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-
-  if (chunks.length === 0) return {};
-  const text = Buffer.concat(chunks).toString("utf8");
+  const text = await readText(req);
   if (!text.trim()) return {};
 
   try {
@@ -680,6 +705,30 @@ async function readJSON(req) {
   } catch {
     throw httpError(400, "Request body must be valid JSON.");
   }
+}
+
+async function readJSONOrForm(req) {
+  const text = await readText(req);
+  if (!text.trim()) return {};
+  const contentType = String(req.headers["content-type"] ?? "");
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(text).entries());
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw httpError(400, "Request body must be valid JSON or form data.");
+  }
+}
+
+async function readText(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+
+  if (chunks.length === 0) return "";
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 class EventHub {

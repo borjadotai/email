@@ -30,6 +30,7 @@ test("provider availability is server-owned and Gmail auth starts when configure
     const availability = await requestJSON(`${baseURL}/api/auth/settings`);
     assert.equal(availability.settings.gmailConfigured, true);
     assert.equal(availability.settings.icloudConfigured, true);
+    assert.equal(availability.settings.imapConfigured, true);
     assert.equal(availability.settings.appleMailOAuthAvailable, false);
     assert.equal(Object.hasOwn(availability.settings, "gmailClientId"), false);
 
@@ -85,6 +86,210 @@ test("configured public base URL wins for Gmail redirect URI", async () => {
     assert.equal(authorizationURL.searchParams.get("redirect_uri"), auth.redirectURI);
   } finally {
     await close(server);
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Gmail OAuth desktop client uses public-client authentication without a secret", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  try {
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {
+        googleOAuthClientId: "test-client-id.apps.googleusercontent.com",
+        googleOAuthClientSecret: ""
+      },
+      baseURL: "http://127.0.0.1:7331"
+    });
+    const client = providers.gmailOAuthClient("http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(client.clientAuthentication, "None");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Gmail can be advertised through a configured relay without local Google secrets", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-relay-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  try {
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {
+        googleOAuthClientId: "",
+        googleOAuthClientSecret: "",
+        relay: {
+          baseURL: "https://relay.example.test",
+          token: "relay-token",
+          source: "CARTA_RELAY_BASE_URL"
+        }
+      },
+      baseURL: "http://127.0.0.1:7331"
+    });
+    const settings = providers.getAuthSettings();
+    assert.equal(settings.gmailConfigured, true);
+    assert.equal(settings.gmailOAuthMode, "relay");
+    assert.equal(settings.gmailRelayConfigured, true);
+    assert.equal(settings.gmailRelayTokenConfigured, true);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Gmail relay auth starts with the local callback and relay exchange by default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-relay-start-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return Response.json({
+        authorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=local-state",
+        redirectURI: "http://127.0.0.1:7332/api/auth/gmail/callback",
+        relay: true,
+        deliveryMode: "local-code"
+      });
+    };
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {
+        googleOAuthClientId: "",
+        googleOAuthClientSecret: "",
+        relay: {
+          baseURL: "https://relay.example.test",
+          token: "relay-token",
+          source: "stored",
+          tokenSource: "keychain"
+        }
+      },
+      baseURL: "http://127.0.0.1:7332"
+    });
+
+    const auth = await providers.startGmailAuth({ displayName: "Relay User" }, { baseURL: "http://127.0.0.1:7332" });
+    assert.equal(auth.relay, true);
+    assert.equal(auth.redirectURI, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://relay.example.test/api/oauth/google/start");
+    assert.equal(calls[0].init.headers.authorization, "Bearer relay-token");
+    const body = JSON.parse(calls[0].init.body);
+    assert.equal(body.deliveryMode, "local-code");
+    assert.equal(body.callbackURL, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(body.state, auth.state);
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Gmail relay code callback uses the shared local Gmail callback path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-relay-code-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      const body = JSON.parse(init.body);
+      if (String(url).endsWith("/api/oauth/google/start")) {
+        return Response.json({
+          authorizationURL: `https://accounts.google.com/o/oauth2/v2/auth?state=${body.state}&redirect_uri=${encodeURIComponent(body.callbackURL)}`,
+          redirectURI: body.callbackURL,
+          relay: true,
+          deliveryMode: "local-code"
+        });
+      }
+      if (String(url).endsWith("/api/oauth/google/exchange")) {
+        return Response.json({
+          access_token: "relay-access-token",
+          refresh_token: "relay-refresh-token",
+          scope: "https://www.googleapis.com/auth/gmail.modify"
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    };
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {
+        googleOAuthClientId: "",
+        googleOAuthClientSecret: "",
+        relay: {
+          baseURL: "https://relay.example.test",
+          token: "",
+          source: "bundled",
+          tokenSource: "missing"
+        }
+      },
+      baseURL: "http://127.0.0.1:7332"
+    });
+    providers.connectGmailTokens = async (tokens, session) => ({
+      account: {
+        id: "relay-account",
+        email: "relay@example.test"
+      },
+      sync: {
+        provider: "gmail",
+        imported: 0,
+        status: "queued"
+      },
+      syncLimit: session.syncHistory ? 500 : 50,
+      tokens
+    });
+
+    const auth = await providers.startGmailAuth({}, { baseURL: "http://127.0.0.1:7332" });
+    const result = await providers.completeGmailAuth({
+      state: auth.state,
+      code: "relay-auth-code"
+    });
+
+    assert.equal(auth.redirectURI, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(result.account.email, "relay@example.test");
+    assert.equal(result.tokens.refresh_token, "relay-refresh-token");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, "https://relay.example.test/api/oauth/google/exchange");
+    const exchangeBody = JSON.parse(calls[1].init.body);
+    assert.equal(exchangeBody.code, "relay-auth-code");
+    assert.equal(exchangeBody.redirectURI, "http://127.0.0.1:7332/api/auth/gmail/callback");
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Gmail relay can be configured with only a relay URL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-relay-token-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+  try {
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {
+        googleOAuthClientId: "",
+        googleOAuthClientSecret: "",
+        relay: {
+          baseURL: "https://relay.example.test",
+          token: "",
+          source: "CARTA_RELAY_BASE_URL",
+          tokenSource: "missing"
+        }
+      },
+      baseURL: "http://127.0.0.1:7331"
+    });
+    const settings = providers.getAuthSettings();
+    assert.equal(settings.gmailConfigured, true);
+    assert.equal(settings.gmailRelayBaseURLConfigured, true);
+    assert.equal(settings.gmailRelayTokenConfigured, false);
+    assert.equal(settings.gmailOAuthMode, "relay");
+  } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }

@@ -5,8 +5,9 @@ Self-hosted native email clients for macOS and iOS.
 The important idea is simple: the private part runs on a machine you control, and
 the apps are just clients. The macOS and iOS apps should not contain Google
 secrets, account passwords, refresh tokens, or a private `.env` file. They talk
-to your server over HTTP, and your server stores mail, syncs accounts, sends
-messages, and keeps provider credentials private.
+to your server over HTTPS when accessed from other devices, and your server
+stores mail, syncs accounts, sends messages, and keeps provider credentials
+private.
 
 ## Start Here
 
@@ -14,14 +15,13 @@ The easiest personal setup is:
 
 1. Pick one always-on machine as the email server. A Mac mini, desktop Mac, or a
    MacBook that usually stays on works well.
-2. Run the guided server setup on that machine.
-3. Install the macOS app, and optionally the iOS app.
-4. Point each app at your server URL, then add Gmail or iCloud accounts from the
-   app.
+2. Run the guided `carta setup` flow on that machine.
+3. Connect Gmail, iCloud, or IMAP accounts during setup.
+4. Install the macOS app, and optionally the iOS app.
 
 For access away from home, put all of your devices on the same private network
-with something like Tailscale, then use the server's Tailscale or `.local`
-address as the app's Server URL.
+with Tailscale. `carta setup` configures Tailscale Serve by default so the apps
+use an HTTPS tailnet URL while the local server stays bound to loopback.
 
 ## What Runs Where
 
@@ -30,12 +30,44 @@ address as the app's Server URL.
   Keychain.
 - macOS app: native email client, no provider secrets, updates from GitHub
   Releases with Sparkle.
-- iOS app: native email client, no provider secrets, currently installed through
-  Xcode while public iOS distribution is not set up.
+- iOS app: native email client, no provider secrets, distributed through
+  TestFlight/internal builds while public App Store distribution is not set up.
 - GitHub repo/releases: safe to be public. Release artifacts can contain public
   configuration like a default server URL, but not private provider secrets.
 
 ## Server Setup
+
+The recommended path is the standalone Carta CLI:
+
+```sh
+npm install -g github:borjadotai/email#v0.1.25
+carta setup
+```
+
+Interactive setup creates the local Carta profile, configures the private mail
+database, helps connect Gmail/iCloud/IMAP accounts, and can install the macOS
+LaunchAgent so the server keeps running after restarts. When Tailscale is
+available, setup defaults to an HTTPS Tailscale Serve URL such as:
+
+```text
+https://space.tailb90a7f.ts.net:8443
+```
+
+That URL is the default baked into the macOS and iOS app builds in this repo.
+CLI data is separate from the older development server and is stored at:
+
+```text
+~/Library/Application Support/CartaCLI/mail.sqlite
+```
+
+To test onboarding again from scratch:
+
+```sh
+carta reset --yes
+carta setup
+```
+
+### Legacy Checkout Setup
 
 On the always-on server Mac, install Node.js 24 or newer from
 `https://nodejs.org/`, then run:
@@ -46,10 +78,9 @@ cd email
 npm run setup:server
 ```
 
-The setup command is the beginner path. It checks Node, installs dependencies,
-creates `.env` from `.env.example`, asks for the server URL your apps will use,
-configures the server to listen on `0.0.0.0:7331`, and can install the macOS
-LaunchAgent so the server keeps running after restarts.
+This legacy setup checks Node, installs dependencies, creates `.env` from
+`.env.example`, asks for the server URL your apps will use, configures the
+development server, and can install the older macOS LaunchAgent.
 
 After setup, check that the server answers:
 
@@ -61,6 +92,55 @@ Server data is stored on the server Mac at:
 
 ```text
 ~/Library/Application Support/EmailApp/mail.sqlite
+```
+
+### Carta CLI
+
+The local server is also packaged as the `carta` CLI for agent access and
+headless installs. From a checkout:
+
+```sh
+carta setup --expose tailscale
+carta accounts add gmail
+carta accounts add imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com
+carta sync run --account all
+carta list --mailbox inbox --unread
+carta server install
+```
+
+To test onboarding again from scratch, use `carta reset --yes` before rerunning
+`carta setup`. Reset preserves the bundled Carta relay by default so Gmail setup
+can still use the production relay; pass `--all` to clear custom relay config
+too.
+
+Interactive `carta setup` asks whether it should install the macOS background
+server. For scripts, pass `--install-server` to do that as part of setup, or
+`--no-install-server` to skip it explicitly.
+
+To test the installable package:
+
+```sh
+npm run package:cli
+npm install -g ./dist/carta-email-0.1.25.tgz
+carta status
+```
+
+See `docs/carta-cli.md` for the full command surface.
+
+For distributed CLI builds, Gmail sign-in and APNs delivery should use the Carta
+relay instead of shipping Google OAuth or Apple push secrets in the CLI. Gmail
+uses the bundled production relay URL automatically; user refresh tokens remain
+in the local Keychain.
+
+For local CLI testing without real accounts:
+
+```sh
+carta fixtures seed
+carta search --from Taylor --since 7d
+carta search invoice --has-attachments --attachment-kind invoice
+carta send --account alex.fixture@gmail.test --to pat@example.test --subject "Hello" --body "See attached" --attach ./example.pdf
+carta reply fixture-gmail-taylor-roadmap --body "Okay, got it"
+carta forward fixture-gmail-stripe-invoice --to finance@example.test --body "Please process" --include-attachments
 ```
 
 Server logs are written to:
@@ -83,7 +163,8 @@ notification that opens the message.
 Remote APNs notifications require both Apple-side capabilities and an always-on
 server that discovers new mail. The apps register with APNs on launch, post
 their device token to `POST /api/push/tokens`, and the server sends a push when
-a sync imports new unread inbox mail.
+a sync imports new unread inbox mail. For production, send pushes through the
+Carta relay so APNs private keys stay off user machines.
 
 Required server settings:
 
@@ -97,6 +178,13 @@ APNS_MACOS_TOPIC=com.borjadotai.email.mac
 EMAIL_AUTO_SYNC=1
 EMAIL_AUTO_SYNC_INTERVAL_MS=60000
 EMAIL_AUTO_SYNC_LIMIT=50
+```
+
+Relay mode replaces the local APNs key settings with:
+
+```sh
+carta relay configure --url https://relay.example.com --token shared-relay-token
+EMAIL_AUTO_SYNC=1
 ```
 
 Apple setup:
@@ -150,12 +238,12 @@ launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
 The apps never need the Google OAuth client secret. They ask the server to start
 the Gmail sign-in flow, and Google redirects back to your server.
 
-For private testing across your own devices, Tailscale Serve is a good server
-URL. On the server Mac, proxy the local email server through the device's
-tailnet HTTPS name:
+For private testing across your own devices, the Carta CLI configures Tailscale
+Serve automatically. To set it up manually, proxy the local CLI server through
+the device's tailnet HTTPS name:
 
 ```sh
-tailscale serve --bg --https=8443 7331
+tailscale serve --bg --https=8443 http://127.0.0.1:7332
 ```
 
 This repo's checked-in macOS and iOS defaults use this Mac's current private
@@ -188,6 +276,23 @@ password at `https://account.apple.com`, then add the account from the app with
 your iCloud Mail address and that app-specific password. The server verifies
 IMAP/SMTP and stores the password in the server Mac's Keychain.
 
+### Generic IMAP/SMTP
+
+For other providers, connect through the CLI with the provider's IMAP and SMTP
+settings:
+
+```sh
+carta accounts add imap \
+  --email you@example.com \
+  --password "app-or-mail-password" \
+  --imap-host imap.example.com \
+  --smtp-host smtp.example.com
+```
+
+Pass `--username`, `--smtp-username`, `--smtp-password`, `--imap-port`,
+`--imap-secure`, `--smtp-port`, and `--smtp-secure` when the provider needs
+non-default settings.
+
 ## Install the Clients
 
 ### macOS
@@ -198,12 +303,14 @@ Download the latest `Email-mac.dmg` from:
 https://github.com/borjadotai/email/releases/latest
 ```
 
-Drag `Email.app` to Applications, open it, then set the Server URL in Settings.
-Use the same URL you entered during server setup, for example:
+Drag `Email.app` to Applications and open it. Current builds default to this
+tailnet URL:
 
 ```text
-http://your-server:7331
+https://space.tailb90a7f.ts.net:8443
 ```
+
+You can still override the Server URL in Settings when testing another server.
 
 The app includes Sparkle updates. It checks automatically, and you can also use
 Email -> Check for Updates... or Settings -> General -> Updates.
@@ -214,8 +321,7 @@ ID signing and notarization configured.
 
 ### iOS
 
-Until TestFlight or App Store distribution exists, install the iOS app from
-Xcode:
+Install the current TestFlight build when available, or install from Xcode:
 
 1. Open `Apps/Email.xcodeproj`.
 2. Select the `EmailiOS` scheme.
@@ -223,7 +329,8 @@ Xcode:
 4. Set your signing team if Xcode asks.
 5. Press Run.
 
-Open the app on the phone and set the same Server URL as the macOS app.
+Open the app on the phone. Current builds default to the same HTTPS Tailscale
+server URL as the macOS app.
 
 ## Keep It Updated
 
@@ -245,10 +352,11 @@ the device.
 
 ## Troubleshooting
 
-- If the app cannot connect, open `http://your-server:7331/api/health` from the
+- If the app cannot connect, open `https://space.tailb90a7f.ts.net:8443/api/health` from the
   same device or network.
-- If that works locally but not from another device, confirm the server URL,
-  firewall settings, and that `EMAIL_SERVER_HOST=0.0.0.0` is present in `.env`.
+- If that works locally but not from another device, confirm the device is
+  signed into the same tailnet and that `tailscale serve status` points HTTPS
+  `:8443` at `http://127.0.0.1:7332`.
 - If Gmail setup fails, confirm the Google redirect URI exactly matches
   `EMAIL_PUBLIC_BASE_URL` plus `/api/auth/gmail/callback`. Do not use
   `127.0.0.1` for devices that are not running the server.
@@ -311,7 +419,7 @@ dist/Email-mac.zip
 dist/Email-mac.dmg
 ```
 
-The packaged app bundles the local Node server under `Email.app/Contents/Resources/Server` for local/internal runs. If its configured server URL is loopback, it starts that bundled server automatically on `127.0.0.1:7331` when a dev server is not already running.
+The packaged app bundles the legacy local Node server under `Email.app/Contents/Resources/Server` for local/internal runs. If its configured server URL is loopback, it starts that bundled server automatically on `127.0.0.1:7331` when a dev server is not already running.
 
 Provider secrets should not be bundled into the app. For builds that should use a shared backend, bake only the backend URL into the app:
 

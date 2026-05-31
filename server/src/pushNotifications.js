@@ -12,10 +12,11 @@ export class PushNotificationService {
   constructor({ store, config }) {
     this.store = store;
     this.apns = new APNsClient(config.apns ?? {});
+    this.relay = new RelayPushClient(config.relay ?? {});
   }
 
   get isConfigured() {
-    return this.apns.isConfigured;
+    return this.relay.isConfigured || this.apns.isConfigured;
   }
 
   async sendNewEmailNotifications(emails = []) {
@@ -61,7 +62,7 @@ export class PushNotificationService {
         }
 
         try {
-          await this.apns.send({
+          await this.sendPush({
             token: token.token,
             topic,
             environment: token.environment,
@@ -95,7 +96,7 @@ export class PushNotificationService {
       }
 
       try {
-        await this.apns.send({
+        await this.sendPush({
           token: token.token,
           topic,
           environment: token.environment,
@@ -111,6 +112,13 @@ export class PushNotificationService {
     }
 
     return { sent, skipped, configured: true };
+  }
+
+  async sendPush(notification) {
+    if (this.relay.isConfigured) {
+      return this.relay.send(notification);
+    }
+    return this.apns.send(notification);
   }
 }
 
@@ -200,6 +208,36 @@ class APNsClient {
       : readFileSync(this.config.privateKeyPath, "utf8");
     this.privateKey = createPrivateKey(key);
     return this.privateKey;
+  }
+}
+
+class RelayPushClient {
+  constructor(config = {}) {
+    this.config = config;
+  }
+
+  get isConfigured() {
+    return Boolean(this.config.baseURL && this.config.token);
+  }
+
+  async send(notification) {
+    const response = await fetch(`${this.config.baseURL.replace(/\/+$/u, "")}/api/push/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.config.token}`
+      },
+      body: JSON.stringify({ notifications: [notification] })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const reason = payload?.error || `HTTP ${response.status}`;
+      const error = new Error(`Push relay rejected notification: ${reason}`);
+      error.status = response.status;
+      error.reason = reason;
+      throw error;
+    }
+    return payload;
   }
 }
 

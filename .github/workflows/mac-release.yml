@@ -119,6 +119,9 @@ jobs:
             npm run package:mac -- --unsigned --skip-notarization
           fi
 
+      - name: Package Carta CLI
+        run: npm run package:cli
+
       - name: Download Sparkle tools
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -141,6 +144,10 @@ jobs:
           fi
 
           files=(dist/Email-mac.dmg dist/Email-mac.zip)
+          cli_packages=(dist/carta-email-*.tgz)
+          if [[ -f "${cli_packages[0]}" ]]; then
+            files+=("${cli_packages[@]}")
+          fi
           if [[ -f dist/appcast.xml ]]; then
             files+=(dist/appcast.xml)
           fi
@@ -153,6 +160,7 @@ jobs:
           path: |
             dist/Email-mac.dmg
             dist/Email-mac.zip
+            dist/carta-email-*.tgz
             dist/appcast.xml
             dist/checksums.txt
           if-no-files-found: error
@@ -169,6 +177,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" \
               dist/Email-mac.dmg \
               dist/Email-mac.zip \
+              dist/carta-email-*.tgz \
               dist/appcast.xml \
               dist/checksums.txt \
               --clobber
@@ -176,6 +185,7 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               dist/Email-mac.dmg \
               dist/Email-mac.zip \
+              dist/carta-email-*.tgz \
               dist/appcast.xml \
               dist/checksums.txt \
               --title "$GITHUB_REF_NAME" \

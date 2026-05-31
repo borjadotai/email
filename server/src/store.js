@@ -34,7 +34,16 @@ export class MailStore {
     this.databasePath = databasePath;
     this.filterQueryPlanner = filterQueryPlanner;
     this.db = new DatabaseSync(databasePath);
-    this.migrate();
+    this.db.exec("PRAGMA busy_timeout = 5000;");
+    try {
+      this.migrate();
+    } catch (error) {
+      if (!isDatabaseLocked(error) || !this.hasInitializedSchema()) {
+        throw error;
+      }
+      this.migrationDeferred = true;
+      this.db.exec("PRAGMA foreign_keys = ON;");
+    }
     if (seedDemo) {
       this.seedDemoData();
     }
@@ -42,6 +51,34 @@ export class MailStore {
 
   close() {
     this.db.close();
+  }
+
+  resetAllData() {
+    const tables = [
+      "email_fts",
+      "email_fts_rows",
+      "email_contact_edges",
+      "email_contacts",
+      "open_events",
+      "outbound_messages",
+      "email_attachments",
+      "email_labels",
+      "emails",
+      "blocked_senders",
+      "saved_filters",
+      "labels",
+      "mailboxes",
+      "account_user_links",
+      "accounts",
+      "push_tokens",
+      "app_users",
+      "settings"
+    ];
+    this.transaction(() => {
+      for (const table of tables) {
+        this.db.prepare(`DELETE FROM ${table}`).run();
+      }
+    });
   }
 
   migrate() {
@@ -52,7 +89,7 @@ export class MailStore {
 
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL CHECK (provider IN ('gmail', 'icloud')),
+        provider TEXT NOT NULL CHECK (provider IN ('gmail', 'icloud', 'imap')),
         email TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL,
         avatar_url TEXT,
@@ -288,6 +325,7 @@ export class MailStore {
     `);
     this.ensureColumn("accounts", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
     this.ensureColumn("accounts", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureAccountsProviderConstraint();
     this.ensureColumn("labels", "icon", "TEXT NOT NULL DEFAULT 'tag'");
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
@@ -321,6 +359,70 @@ export class MailStore {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
     if (!columns.some(item => item.name === column)) {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  hasInitializedSchema() {
+    const requiredTables = [
+      "accounts",
+      "settings",
+      "app_users",
+      "mailboxes",
+      "emails",
+      "email_attachments"
+    ];
+    try {
+      const rows = this.db.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name IN (${requiredTables.map(() => "?").join(", ")})
+      `).all(...requiredTables);
+      const found = new Set(rows.map(row => row.name));
+      return requiredTables.every(table => found.has(table));
+    } catch {
+      return false;
+    }
+  }
+
+  ensureAccountsProviderConstraint() {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'").get();
+    if (!row?.sql || row.sql.includes("'imap'")) return;
+
+    this.db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE accounts_next (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL CHECK (provider IN ('gmail', 'icloud', 'imap')),
+            email TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            avatar_url TEXT,
+            auth_type TEXT NOT NULL DEFAULT 'not_configured',
+            status TEXT NOT NULL DEFAULT 'needs_auth',
+            sync_history INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            last_sync_at TEXT,
+            provider_metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+          );
+
+          INSERT INTO accounts_next (
+            id, provider, email, display_name, avatar_url, auth_type, status,
+            sync_history, sort_order, last_sync_at, provider_metadata_json, created_at
+          )
+          SELECT
+            id, provider, email, display_name, avatar_url, auth_type, status,
+            sync_history, sort_order, last_sync_at, provider_metadata_json, created_at
+          FROM accounts;
+
+          DROP TABLE accounts;
+          ALTER TABLE accounts_next RENAME TO accounts;
+        `);
+      });
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON");
     }
   }
 
@@ -446,6 +548,21 @@ export class MailStore {
       ...user,
       accounts: this.listAccounts()
     };
+  }
+
+  updateProfile(input = {}) {
+    const user = this.ensureLocalUser();
+    const displayName = optionalString(input.displayName) ?? user.displayName;
+    const primaryEmail = optionalString(input.primaryEmail) ?? user.primaryEmail;
+    const updatedAt = new Date().toISOString();
+
+    this.db.prepare(`
+      UPDATE app_users
+      SET display_name = ?, primary_email = ?, updated_at = ?
+      WHERE id = ?
+    `).run(displayName, primaryEmail, updatedAt, user.id);
+
+    return this.getProfile();
   }
 
   claimUserIdentity(input) {
@@ -855,6 +972,45 @@ export class MailStore {
 
   oldestEmailReceivedAt(accountId) {
     return this.db.prepare("SELECT MIN(received_at) AS oldest FROM emails WHERE account_id = ?").get(accountId)?.oldest ?? null;
+  }
+
+  accountEmailStats(accountId) {
+    const account = this.getAccount(accountId);
+    if (!account) return null;
+
+    const totals = this.db.prepare(`
+      SELECT COUNT(*) AS totalCount,
+             SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END) AS unreadCount,
+             MIN(e.received_at) AS oldestReceivedAt,
+             MAX(e.received_at) AS newestReceivedAt,
+             SUM(CASE WHEN e.has_attachments = 1 THEN 1 ELSE 0 END) AS attachmentEmailCount
+      FROM emails e
+      WHERE e.account_id = ?
+    `).get(accountId);
+
+    const byMailbox = this.db.prepare(`
+      SELECT m.role, m.name, COUNT(e.id) AS totalCount,
+             SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END) AS unreadCount
+      FROM mailboxes m
+      LEFT JOIN emails e ON e.mailbox_id = m.id
+      WHERE m.account_id = ?
+      GROUP BY m.id
+      ORDER BY m.role
+    `).all(accountId);
+
+    return {
+      totalCount: totals?.totalCount ?? 0,
+      unreadCount: totals?.unreadCount ?? 0,
+      oldestReceivedAt: totals?.oldestReceivedAt ?? null,
+      newestReceivedAt: totals?.newestReceivedAt ?? null,
+      attachmentEmailCount: totals?.attachmentEmailCount ?? 0,
+      byMailbox: byMailbox.map(row => ({
+        role: row.role,
+        name: row.name,
+        totalCount: row.totalCount ?? 0,
+        unreadCount: row.unreadCount ?? 0
+      }))
+    };
   }
 
   listMailboxes(accountId = null) {
@@ -1356,6 +1512,32 @@ export class MailStore {
     if (filters.unread === "1" || filters.unread === true) {
       where.push("e.is_read = 0");
     }
+    if (filters.sender ?? filters.from) {
+      const pattern = containsPattern(filters.sender ?? filters.from);
+      where.push("(lower(e.sender_email) LIKE ? OR lower(e.sender_name) LIKE ?)");
+      args.push(pattern, pattern);
+    }
+    if (filters.since ?? filters.after) {
+      where.push("e.received_at >= ?");
+      args.push(String(filters.since ?? filters.after));
+    }
+    if (filters.until ?? filters.before) {
+      where.push("e.received_at <= ?");
+      args.push(String(filters.until ?? filters.before));
+    }
+    const hasAttachments = parseBooleanFilter(filters.hasAttachments ?? filters["has-attachments"]);
+    if (hasAttachments === true) {
+      where.push("e.has_attachments = 1");
+    } else if (hasAttachments === false) {
+      where.push("e.has_attachments = 0");
+    }
+    if (filters.attachmentKind ?? filters["attachment-kind"]) {
+      const condition = attachmentKindCondition(normalizeAttachmentKind(filters.attachmentKind ?? filters["attachment-kind"]));
+      if (condition) {
+        where.push(condition.sql);
+        args.push(...condition.args);
+      }
+    }
 
     const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const orderSQL = "ORDER BY e.received_at DESC";
@@ -1839,6 +2021,7 @@ export class MailStore {
     const subject = input.subject?.trim() || "(No subject)";
     const bodyText = input.bodyText?.trim() || "";
     const snippet = bodyText.replace(/\s+/g, " ").slice(0, 180);
+    const attachments = normalizeOutboundAttachments(input.attachments);
     const emailId = randomUUID();
     const outboundId = randomUUID();
     const rfcMessageID = makeRFCMessageID(account.email);
@@ -1869,7 +2052,8 @@ export class MailStore {
         isRead: true,
         isStarred: false,
         importance: "normal",
-        hasAttachments: false,
+        hasAttachments: attachments.length > 0,
+        attachments,
         trackingId,
         openedAt: null,
         createdAt: now
@@ -2031,6 +2215,201 @@ export class MailStore {
       }
       this.refreshMailboxUnread(mailbox.id);
     }
+  }
+
+  seedFixtureData({ preset = "agent-smoke" } = {}) {
+    if (preset !== "agent-smoke") {
+      throw httpError(400, "Fixture preset must be agent-smoke.");
+    }
+
+    const gmail = this.createOrUpdateAccount({
+      provider: "gmail",
+      email: "alex.fixture@gmail.test",
+      displayName: "Alex Fixture Gmail",
+      status: "connected",
+      authType: "fixture",
+      syncHistory: true,
+      providerMetadata: {
+        fixture: true,
+        gmailHistoryId: "fixture-history"
+      }
+    });
+    const icloud = this.createOrUpdateAccount({
+      provider: "icloud",
+      email: "alex.fixture@icloud.test",
+      displayName: "Alex Fixture iCloud",
+      status: "connected",
+      authType: "fixture",
+      syncHistory: true,
+      providerMetadata: {
+        fixture: true,
+        icloudInboxLastUid: 900
+      }
+    });
+
+    const messages = [
+      {
+        id: "fixture-gmail-taylor-roadmap",
+        account: gmail,
+        mailboxRole: "inbox",
+        senderName: "Taylor Morgan",
+        senderEmail: "taylor@northstar.test",
+        subject: "Roadmap notes from Taylor",
+        bodyText: "Sharing the roadmap notes, launch checklist, and client follow-up items from our planning call.",
+        daysAgo: 2,
+        unread: true
+      },
+      {
+        id: "fixture-icloud-taylor-old",
+        account: icloud,
+        mailboxRole: "inbox",
+        senderName: "Taylor Morgan",
+        senderEmail: "taylor@northstar.test",
+        subject: "Old contract thread",
+        bodyText: "This older Taylor note should not appear in a seven day query.",
+        daysAgo: 25,
+        unread: false
+      },
+      {
+        id: "fixture-gmail-product-newsletter",
+        account: gmail,
+        mailboxRole: "inbox",
+        senderName: "Carta Product Digest",
+        senderEmail: "newsletter@carta.test",
+        subject: "Carta Product Digest: smarter inboxes",
+        bodyText: "Newsletter issue covering smarter inboxes, sync status, and AI-assisted email triage.",
+        daysAgo: 1,
+        unread: false
+      },
+      {
+        id: "fixture-icloud-ai-newsletter",
+        account: icloud,
+        mailboxRole: "inbox",
+        senderName: "AI Infrastructure Weekly",
+        senderEmail: "newsletter@infraweekly.test",
+        subject: "AI Infrastructure Weekly #42",
+        bodyText: "Newsletter covering local-first agents, model routing, and retrieval indexes.",
+        daysAgo: 3,
+        unread: false
+      },
+      {
+        id: "fixture-gmail-stripe-invoice",
+        account: gmail,
+        mailboxRole: "inbox",
+        senderName: "Stripe Billing",
+        senderEmail: "invoices@stripe.test",
+        subject: "Invoice INV-2026-1042 for Carta Email",
+        bodyText: "Your invoice INV-2026-1042 is attached as a PDF document for your records.",
+        daysAgo: 4,
+        unread: false,
+        attachments: [
+          {
+            providerAttachmentId: "fixture-stripe-invoice-pdf",
+            filename: "invoice_INV-2026-1042.pdf",
+            mimeType: "application/pdf",
+            disposition: "attachment",
+            data: Buffer.from("Fixture invoice PDF")
+          }
+        ]
+      },
+      {
+        id: "fixture-icloud-cloud-bill",
+        account: icloud,
+        mailboxRole: "inbox",
+        senderName: "Acme Cloud Billing",
+        senderEmail: "billing@acmecloud.test",
+        subject: "May cloud bill and usage export",
+        bodyText: "The May cloud bill is ready. The invoice PDF and usage CSV are attached.",
+        daysAgo: 9,
+        unread: false,
+        attachments: [
+          {
+            providerAttachmentId: "fixture-acme-invoice-pdf",
+            filename: "acme-cloud-invoice-may.pdf",
+            mimeType: "application/pdf",
+            disposition: "attachment",
+            data: Buffer.from("Fixture cloud invoice PDF")
+          },
+          {
+            providerAttachmentId: "fixture-acme-usage-csv",
+            filename: "usage-export-may.csv",
+            mimeType: "text/csv",
+            disposition: "attachment",
+            data: Buffer.from("date,cost\n2026-05-01,12.34")
+          }
+        ]
+      },
+      {
+        id: "fixture-gmail-security",
+        account: gmail,
+        mailboxRole: "inbox",
+        senderName: "GitHub",
+        senderEmail: "noreply@github.test",
+        subject: "Security alert for local-first-email",
+        bodyText: "A dependency security alert was opened for your repository.",
+        daysAgo: 1,
+        unread: true
+      },
+      {
+        id: "fixture-icloud-family",
+        account: icloud,
+        mailboxRole: "inbox",
+        senderName: "Sofia",
+        senderEmail: "sofia@example.test",
+        subject: "Dinner plans",
+        bodyText: "Can we move dinner to Friday evening?",
+        daysAgo: 5,
+        unread: false
+      }
+    ];
+
+    const saved = [];
+    for (const message of messages) {
+      saved.push(this.upsertFixtureEmail(message));
+    }
+    this.setSetting("carta.fixtures.agent-smoke.seeded", new Date().toISOString());
+    return {
+      preset,
+      accounts: [gmail, icloud],
+      emails: saved
+    };
+  }
+
+  upsertFixtureEmail(message) {
+    const receivedAt = fixtureDate(message.daysAgo).toISOString();
+    const account = message.account;
+    const mailbox = this.mailboxForRole(account.id, message.mailboxRole ?? "inbox");
+    const attachments = message.attachments ?? [];
+    return this.upsertProviderEmail({
+      id: message.id,
+      accountId: account.id,
+      mailboxId: mailbox.id,
+      providerUID: `fixture:${message.id}`,
+      threadId: `thread:${message.id}`,
+      senderName: message.senderName,
+      senderEmail: message.senderEmail,
+      senderAvatarURL: null,
+      recipients: [account.email],
+      cc: [],
+      bcc: [],
+      subject: message.subject,
+      snippet: message.bodyText.replace(/\s+/gu, " ").slice(0, 180),
+      bodyText: message.bodyText,
+      bodyHTML: null,
+      rfcMessageID: `<${message.id}@fixtures.carta.test>`,
+      inReplyTo: null,
+      references: [],
+      sentAt: receivedAt,
+      receivedAt,
+      isRead: !message.unread,
+      isStarred: Boolean(message.starred),
+      importance: message.importance ?? "normal",
+      hasAttachments: attachments.length > 0,
+      attachments,
+      trackingId: null,
+      openedAt: null,
+      createdAt: receivedAt
+    });
   }
 
   ensureDefaultsForAccount(accountId) {
@@ -2745,9 +3124,13 @@ export function httpError(status, message) {
   return error;
 }
 
+function isDatabaseLocked(error) {
+  return /database is locked|SQLITE_BUSY/iu.test(String(error?.message ?? error ?? ""));
+}
+
 function normalizeProvider(provider) {
-  if (provider !== "gmail" && provider !== "icloud") {
-    throw httpError(400, "Provider must be gmail or icloud.");
+  if (provider !== "gmail" && provider !== "icloud" && provider !== "imap") {
+    throw httpError(400, "Provider must be gmail, icloud, or imap.");
   }
   return provider;
 }
@@ -2761,6 +3144,22 @@ function requiredString(value, name) {
 
 function optionalString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseBooleanFilter(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return null;
+}
+
+function fixtureDate(daysAgo) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - Number(daysAgo ?? 0));
+  date.setUTCHours(12, 0, 0, 0);
+  return date;
 }
 
 function normalizeBlockScope(value) {
@@ -3239,6 +3638,28 @@ function normalizeAddressList(value) {
     return value.map(item => String(item).trim()).filter(Boolean);
   }
   return String(value).split(",").map(item => item.trim()).filter(Boolean);
+}
+
+function normalizeOutboundAttachments(value) {
+  if (!value) return [];
+  const attachments = Array.isArray(value) ? value : [value];
+  return attachments.map(attachment => {
+    const data = Buffer.isBuffer(attachment.data)
+      ? attachment.data
+      : attachment.data
+        ? Buffer.from(attachment.data)
+        : null;
+    return {
+      providerAttachmentId: optionalString(attachment.providerAttachmentId),
+      contentId: optionalString(attachment.contentId),
+      filename: optionalString(attachment.filename) ?? "Attachment",
+      mimeType: optionalString(attachment.mimeType) ?? "application/octet-stream",
+      size: Number.isFinite(attachment.size) ? attachment.size : data?.length ?? 0,
+      disposition: optionalString(attachment.disposition) ?? "attachment",
+      isInline: Boolean(attachment.isInline),
+      data
+    };
+  });
 }
 
 function searchableBodyText(email) {

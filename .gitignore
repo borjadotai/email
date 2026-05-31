@@ -3,6 +3,8 @@
 .env.testflight
 AuthKey_*.p8
 node_modules/
+.next/
+.vercel/
 
 # Local server state
 server/data/

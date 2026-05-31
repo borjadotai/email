@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1120" viewBox="0 0 1500 1120" role="img" aria-labelledby="title desc">
+  <title id="title">Carta CLI Gmail Auth and Push Notification Architecture</title>
+  <desc id="desc">Diagram showing Gmail OAuth through the Carta Relay and push notifications through APNs.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #d8e0ea; stroke-width: 1.5; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; }
+      .local { fill: #ecfeff; stroke: #0891b2; }
+      .relay { fill: #eef2ff; stroke: #4f46e5; }
+      .provider { fill: #fff7ed; stroke: #f97316; }
+      .store { fill: #f0fdf4; stroke: #16a34a; }
+      .secret { fill: #fff1f2; stroke: #e11d48; }
+      .title { font-family: Arial, Helvetica, sans-serif; font-size: 30px; font-weight: 700; fill: #0f172a; }
+      .section-title { font-family: Arial, Helvetica, sans-serif; font-size: 22px; font-weight: 700; fill: #0f172a; }
+      .label { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 700; fill: #111827; }
+      .small { font-family: Arial, Helvetica, sans-serif; font-size: 14px; font-weight: 400; fill: #475569; }
+      .tiny { font-family: Arial, Helvetica, sans-serif; font-size: 12.5px; font-weight: 400; fill: #64748b; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .muted-arrow { stroke: #94a3b8; stroke-width: 1.7; stroke-dasharray: 6 6; fill: none; marker-end: url(#arrow); }
+      .step { fill: #0f172a; }
+      .step-text { font-family: Arial, Helvetica, sans-serif; font-size: 13px; font-weight: 700; fill: white; text-anchor: middle; dominant-baseline: central; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="1120"/>
+  <text class="title" x="60" y="62">Carta CLI Auth and Push Notification Flow</text>
+  <text class="small" x="60" y="92">Provider secrets stay in the hosted relay. Mail data and refresh tokens stay local to the user machine.</text>
+
+  <rect class="panel" x="50" y="130" width="1400" height="435" rx="20"/>
+  <text class="section-title" x="86" y="174">1. Gmail OAuth through the relay</text>
+
+  <rect class="box local" x="85" y="220" width="215" height="92" rx="12"/>
+  <text class="label" x="110" y="255">User Terminal</text>
+  <text class="small" x="110" y="282">carta setup</text>
+  <text class="tiny" x="110" y="302">or carta accounts add gmail</text>
+
+  <rect class="box local" x="365" y="220" width="250" height="92" rx="12"/>
+  <text class="label" x="390" y="253">Carta CLI Server</text>
+  <text class="small" x="390" y="280">Local callback on</text>
+  <text class="tiny" x="390" y="301">127.0.0.1:7332/api/auth/gmail/callback</text>
+
+  <rect class="box relay" x="690" y="220" width="250" height="92" rx="12"/>
+  <text class="label" x="715" y="253">Carta Relay</text>
+  <text class="small" x="715" y="280">Vercel API</text>
+  <text class="tiny" x="715" y="301">/api/oauth/google/start</text>
+
+  <rect class="box provider" x="1015" y="220" width="250" height="92" rx="12"/>
+  <text class="label" x="1040" y="253">Google OAuth</text>
+  <text class="small" x="1040" y="280">Consent screen</text>
+  <text class="tiny" x="1040" y="301">Gmail modify, labels, send</text>
+
+  <rect class="box secret" x="690" y="385" width="250" height="88" rx="12"/>
+  <text class="label" x="715" y="418">Relay Secrets</text>
+  <text class="small" x="715" y="445">Google client secret</text>
+  <text class="tiny" x="715" y="465">Never shipped in the CLI</text>
+
+  <rect class="box store" x="1015" y="385" width="250" height="88" rx="12"/>
+  <text class="label" x="1040" y="418">Local Storage</text>
+  <text class="small" x="1040" y="445">Keychain + SQLite</text>
+  <text class="tiny" x="1040" y="465">Refresh token, accounts, mail</text>
+
+  <path class="arrow" d="M300 266 H365"/>
+  <circle class="step" cx="332" cy="266" r="13"/><text class="step-text" x="332" y="266">1</text>
+  <path class="arrow" d="M615 266 H690"/>
+  <circle class="step" cx="652" cy="266" r="13"/><text class="step-text" x="652" y="266">2</text>
+  <path class="arrow" d="M940 266 H1015"/>
+  <circle class="step" cx="977" cy="266" r="13"/><text class="step-text" x="977" y="266">3</text>
+  <path class="arrow" d="M1140 312 C1140 352 1005 355 875 385"/>
+  <circle class="step" cx="1035" cy="345" r="13"/><text class="step-text" x="1035" y="345">4</text>
+  <path class="arrow" d="M690 430 C585 430 490 386 490 312"/>
+  <circle class="step" cx="595" cy="410" r="13"/><text class="step-text" x="595" y="410">5</text>
+  <path class="arrow" d="M615 294 C755 365 875 384 1015 429"/>
+  <circle class="step" cx="814" cy="364" r="13"/><text class="step-text" x="814" y="364">6</text>
+
+  <text class="tiny" x="86" y="522">1 Terminal starts setup. 2 CLI asks relay for a Google auth URL. 3 Browser opens Google. 4 Relay exchanges the returned code using its secret. 5 Tokens return to CLI. 6 CLI stores refresh token locally and syncs mail.</text>
+
+  <rect class="panel" x="50" y="610" width="1400" height="405" rx="20"/>
+  <text class="section-title" x="86" y="654">2. Push notifications through the relay</text>
+
+  <rect class="box local" x="85" y="710" width="225" height="92" rx="12"/>
+  <text class="label" x="110" y="743">iOS / macOS App</text>
+  <text class="small" x="110" y="770">Gets APNs token</text>
+  <text class="tiny" x="110" y="791">Then registers with Carta server</text>
+
+  <rect class="box provider" x="380" y="710" width="215" height="92" rx="12"/>
+  <text class="label" x="405" y="743">Apple APNs</text>
+  <text class="small" x="405" y="770">Device token</text>
+  <text class="tiny" x="405" y="791">Delivers notifications</text>
+
+  <rect class="box local" x="665" y="710" width="250" height="92" rx="12"/>
+  <text class="label" x="690" y="743">Carta CLI Server</text>
+  <text class="small" x="690" y="770">Sync detects new mail</text>
+  <text class="tiny" x="690" y="791">Stores push tokens in SQLite</text>
+
+  <rect class="box relay" x="985" y="710" width="220" height="92" rx="12"/>
+  <text class="label" x="1010" y="743">Carta Relay</text>
+  <text class="small" x="1010" y="770">/api/push/send</text>
+  <text class="tiny" x="1010" y="791">Protected by relay token</text>
+
+  <rect class="box secret" x="985" y="870" width="220" height="88" rx="12"/>
+  <text class="label" x="1010" y="903">APNs Secrets</text>
+  <text class="small" x="1010" y="930">Private key, team ID</text>
+  <text class="tiny" x="1010" y="950">Stored only in relay env</text>
+
+  <rect class="box store" x="665" y="870" width="250" height="88" rx="12"/>
+  <text class="label" x="690" y="903">Local Mail DB</text>
+  <text class="small" x="690" y="930">Email index + device tokens</text>
+  <text class="tiny" x="690" y="950">Lives on the user machine</text>
+
+  <path class="arrow" d="M310 744 H380"/>
+  <circle class="step" cx="345" cy="744" r="13"/><text class="step-text" x="345" y="744">1</text>
+  <path class="arrow" d="M380 775 H310"/>
+  <circle class="step" cx="345" cy="775" r="13"/><text class="step-text" x="345" y="775">2</text>
+  <path class="arrow" d="M310 756 C445 835 545 870 665 914"/>
+  <circle class="step" cx="488" cy="842" r="13"/><text class="step-text" x="488" y="842">3</text>
+  <path class="arrow" d="M915 756 H985"/>
+  <circle class="step" cx="950" cy="756" r="13"/><text class="step-text" x="950" y="756">4</text>
+  <path class="arrow" d="M1095 870 V802"/>
+  <circle class="step" cx="1095" cy="835" r="13"/><text class="step-text" x="1095" y="835">5</text>
+  <path class="muted-arrow" d="M1205 756 C1285 756 1300 700 1235 670 C1030 578 625 588 488 710"/>
+  <circle class="step" cx="1311" cy="710" r="13"/><text class="step-text" x="1311" y="710">6</text>
+
+  <text class="tiny" x="86" y="984">1 App registers with APNs. 2 APNs returns a device token. 3 App gives token to local Carta server. 4 New mail triggers relay push. 5 Relay signs APNs request using Apple secrets. 6 Apple delivers notification to the app.</text>
+</svg>

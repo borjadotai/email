@@ -2,10 +2,74 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fallbackFilterQueryPlan } from "../src/filterQueryPlanner.js";
 import { senderLogoURLForEmail } from "../src/logoResolver.js";
 import { MailStore } from "../src/store.js";
+
+test("opens an initialized store for reads when another process is holding a write lock", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-lock-read-"));
+  const databasePath = join(dir, "mail.sqlite");
+  const store = new MailStore({ databasePath });
+  store.updateProfile({
+    displayName: "Lock Reader",
+    primaryEmail: "lock-reader@example.test"
+  });
+  store.close();
+
+  const writer = new DatabaseSync(databasePath);
+  let reader = null;
+  try {
+    writer.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;");
+    reader = new MailStore({ databasePath });
+    const profile = reader.getProfile();
+    assert.equal(reader.migrationDeferred, true);
+    assert.equal(profile.displayName, "Lock Reader");
+    assert.equal(profile.primaryEmail, "lock-reader@example.test");
+  } finally {
+    reader?.close();
+    writer.exec("ROLLBACK");
+    writer.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migrates the account provider constraint to allow generic IMAP", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-imap-migration-"));
+  const databasePath = join(dir, "mail.sqlite");
+  const db = new DatabaseSync(databasePath);
+  db.exec(`
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL CHECK (provider IN ('gmail', 'icloud')),
+      email TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      avatar_url TEXT,
+      auth_type TEXT NOT NULL DEFAULT 'not_configured',
+      status TEXT NOT NULL DEFAULT 'needs_auth',
+      sync_history INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      last_sync_at TEXT,
+      provider_metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+  `);
+  db.close();
+
+  const store = new MailStore({ databasePath });
+  try {
+    const account = store.createAccount({
+      provider: "imap",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    assert.equal(account.provider, "imap");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("seeds demo accounts and searches with FTS", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
