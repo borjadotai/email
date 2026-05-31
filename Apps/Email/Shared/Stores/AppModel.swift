@@ -169,7 +169,7 @@ final class AppModel {
     if Defaults.isLoopbackURL(initialServerURL), !Defaults.isLoopbackURL(Defaults.defaultServerURL) {
       initialServerURL = Defaults.defaultServerURL
     }
-    initialServerURL = Defaults.normalizedServerURLString(initialServerURL)
+    initialServerURL = Defaults.migratedServerURLString(initialServerURL)
     UserDefaults.standard.set(initialServerURL, forKey: Defaults.serverURL)
     serverURLString = initialServerURL
     let rawTheme = UserDefaults.standard.string(forKey: Defaults.theme) ?? ThemePreference.system.rawValue
@@ -1949,7 +1949,18 @@ private enum Defaults {
   static let archiveUndoDurationRange = 1...15
 
   static var defaultServerURL: String {
-    Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "https://space.tailb90a7f.ts.net:8443"
+    Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "https://email.marlin-barbel.ts.net"
+  }
+
+  static let legacyServerURLStrings = [
+    "https://space.tailb90a7f.ts.net:8443",
+    "https://email.tailb90a7f.ts.net"
+  ]
+
+  static func migratedServerURLString(_ value: String) -> String {
+    let normalized = normalizedServerURLString(value)
+    guard legacyServerURLStrings.contains(normalized) else { return normalized }
+    return normalizedServerURLString(defaultServerURL)
   }
 
   static func normalizedServerURLString(_ value: String) -> String {

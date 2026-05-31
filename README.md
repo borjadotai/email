@@ -47,10 +47,10 @@ carta setup
 Interactive setup creates the local Carta profile, configures the private mail
 database, helps connect Gmail/iCloud/IMAP accounts, and can install the macOS
 LaunchAgent so the server keeps running after restarts. When Tailscale is
-available, setup defaults to an HTTPS Tailscale Serve URL such as:
+available, setup defaults to an HTTPS Tailscale URL such as:
 
 ```text
-https://space.tailb90a7f.ts.net:8443
+https://email.marlin-barbel.ts.net
 ```
 
 That URL is the default baked into the macOS and iOS app builds in this repo.
@@ -196,19 +196,18 @@ client secret, while the local Carta server receives the callback code, asks the
 relay to exchange it, and stores the user's refresh token locally. Normal users
 do not create Google OAuth clients or import Google secrets.
 
-For private testing across your own devices, the Carta CLI configures Tailscale
-Serve automatically. To set it up manually, proxy the local CLI server through
-the device's tailnet HTTPS name:
+For private testing across your own devices, proxy the local CLI server through
+the Carta Tailscale Service:
 
 ```sh
-tailscale serve --bg --https=8443 http://127.0.0.1:7332
+tailscale serve --yes --service=svc:email --https=443 http://127.0.0.1:7332
 ```
 
 This repo's checked-in macOS and iOS defaults use this Mac's current private
 Tailscale endpoint:
 
 ```text
-https://space.tailb90a7f.ts.net:8443
+https://email.marlin-barbel.ts.net
 ```
 
 Client devices must be signed into the same tailnet and use that Tailscale URL
@@ -256,7 +255,7 @@ Drag `Email.app` to Applications and open it. Current builds default to this
 tailnet URL:
 
 ```text
-https://space.tailb90a7f.ts.net:8443
+https://email.marlin-barbel.ts.net
 ```
 
 You can still override the Server URL in Settings when testing another server.
@@ -299,11 +298,11 @@ the device.
 
 ## Troubleshooting
 
-- If the app cannot connect, open `https://space.tailb90a7f.ts.net:8443/api/health` from the
+- If the app cannot connect, open `https://email.marlin-barbel.ts.net/api/health` from the
   same device or network.
 - If that works locally but not from another device, confirm the device is
-  signed into the same tailnet and that `tailscale serve status` points HTTPS
-  `:8443` at `http://127.0.0.1:7332`.
+  signed into the same tailnet and that `tailscale serve status` points
+  `svc:email` at `http://127.0.0.1:7332`.
 - If Gmail setup fails, run `carta doctor` and confirm Gmail OAuth reports relay
   mode.
 - If the server does not start, check
@@ -364,7 +363,7 @@ Carta server are not bundled into the app. For builds that should use a shared
 or personal Carta server by default, bake only that server URL into the app:
 
 ```sh
-EMAIL_RELEASE_SERVER_URL=https://space.tailb90a7f.ts.net:8443 npm run package:mac
+EMAIL_RELEASE_SERVER_URL=https://email.marlin-barbel.ts.net npm run package:mac
 ```
 
 Run the Carta CLI server separately on the machine that owns the mail data.

@@ -1,6 +1,6 @@
 {
   "name": "carta-email",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "Local-first email CLI and server for Carta.",
   "private": false,
   "type": "module",
