@@ -13,7 +13,7 @@ npm pack --dry-run
 npm run package:cli
 npm run smoke:package
 npm run verify:cli
-npm install -g ./dist/carta-email-0.1.25.tgz
+npm install -g ./dist/carta-email-*.tgz
 carta help
 ```
 
