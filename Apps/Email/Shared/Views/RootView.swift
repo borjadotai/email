@@ -20,8 +20,6 @@ enum AppSheet: Identifiable {
 }
 
 struct RootView: View {
-  var prepareForBootstrap: (() async -> Void)?
-
   @Environment(AppModel.self) private var model
   @Environment(\.scenePhase) private var scenePhase
   @State private var sheet: AppSheet?
@@ -52,9 +50,6 @@ struct RootView: View {
       EmailPreviewView()
     }
     .task {
-      if let prepareForBootstrap {
-        await prepareForBootstrap()
-      }
       await model.bootstrap()
       configureMailPolling(for: scenePhase)
     }

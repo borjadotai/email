@@ -3,13 +3,32 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { dirname, join } from "node:path";
 
 export class KeychainSecretStore {
-  constructor({ service = "EmailApp" } = {}) {
+  constructor({ service = "CartaCLI", fallbackServices = [] } = {}) {
     this.service = service;
+    this.fallbackServices = fallbackServices.filter(candidate => candidate && candidate !== service);
   }
 
   get(key) {
+    const primary = this.getFromService(this.service, key);
+    if (primary !== null) return primary;
+
+    for (const fallbackService of this.fallbackServices) {
+      const fallback = this.getFromService(fallbackService, key);
+      if (fallback === null) continue;
+      try {
+        this.set(key, fallback);
+      } catch {
+        // A failed migration should not hide an otherwise readable secret.
+      }
+      return fallback;
+    }
+
+    return null;
+  }
+
+  getFromService(service, key) {
     try {
-      return execFileSync("security", ["find-generic-password", "-w", "-s", this.service, "-a", key], {
+      return execFileSync("security", ["find-generic-password", "-w", "-s", service, "-a", key], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
       }).trim();
@@ -115,8 +134,13 @@ export function createDefaultSecretStore({
   if (mode === "memory") return new MemorySecretStore();
 
   if (platform === "darwin" && mode !== "file") {
+    const service = env.CARTA_KEYCHAIN_SERVICE || "CartaCLI";
+    const fallbackService = env.CARTA_LEGACY_KEYCHAIN_SERVICE === "0"
+      ? ""
+      : env.CARTA_LEGACY_KEYCHAIN_SERVICE || "EmailApp";
     return new KeychainSecretStore({
-      service: env.CARTA_KEYCHAIN_SERVICE || "EmailApp"
+      service,
+      fallbackServices: [fallbackService]
     });
   }
 

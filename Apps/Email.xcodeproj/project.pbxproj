@@ -37,7 +37,6 @@
 		10000000000000000000011D /* Views/AddAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020D /* Views/AddAccountView.swift */; };
 		10000000000000000000011E /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020E /* Views/SettingsView.swift */; };
 		10000000000000000000011F /* ../Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020F /* ../Resources/Assets.xcassets */; };
-		100000000000000000000120 /* Services/LocalServerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000212 /* Services/LocalServerController.swift */; };
 		100000000000000000000121 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000901 /* Sparkle */; };
 		100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* Services/SoftwareUpdateController.swift */; };
 		100000000000000000000125 /* Services/PushNotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* Services/PushNotificationController.swift */; };
@@ -68,7 +67,6 @@
 		10000000000000000000020F /* ../Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = ../Resources/Assets.xcassets; sourceTree = "<group>"; };
 		100000000000000000000210 /* Email.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Email.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000211 /* Email.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Email.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		100000000000000000000212 /* Services/LocalServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalServerController.swift; sourceTree = "<group>"; };
 		100000000000000000000213 /* Services/SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SoftwareUpdateController.swift; sourceTree = "<group>"; };
 		100000000000000000000214 /* Services/PushNotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PushNotificationController.swift; sourceTree = "<group>"; };
 		100000000000000000000215 /* Views/InboxTriageSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/InboxTriageSheet.swift; sourceTree = "<group>"; };
@@ -187,7 +185,6 @@
 				100000000000000000000201 /* App/EmailApp.swift */,
 				100000000000000000000202 /* Models/MailModels.swift */,
 				100000000000000000000203 /* Services/MailAPIClient.swift */,
-				100000000000000000000212 /* Services/LocalServerController.swift */,
 				100000000000000000000213 /* Services/SoftwareUpdateController.swift */,
 				100000000000000000000214 /* Services/PushNotificationController.swift */,
 				100000000000000000000204 /* Stores/AppModel.swift */,
@@ -393,7 +390,6 @@
 				100000000000000000000101 /* App/EmailApp.swift in Sources */,
 				100000000000000000000102 /* Models/MailModels.swift in Sources */,
 				100000000000000000000103 /* Services/MailAPIClient.swift in Sources */,
-				100000000000000000000120 /* Services/LocalServerController.swift in Sources */,
 				100000000000000000000122 /* Services/SoftwareUpdateController.swift in Sources */,
 				100000000000000000000125 /* Services/PushNotificationController.swift in Sources */,
 				100000000000000000000104 /* Stores/AppModel.swift in Sources */,

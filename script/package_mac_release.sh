@@ -9,7 +9,6 @@ DERIVED_DATA="${EMAIL_RELEASE_DERIVED_DATA:-$ROOT_DIR/DerivedData-Release}"
 DIST_DIR="${EMAIL_RELEASE_DIST_DIR:-$ROOT_DIR/dist}"
 APP_NAME="Email"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
-SERVER_BUNDLE="$APP_BUNDLE/Contents/Resources/Server"
 ZIP_PATH="$DIST_DIR/Email-mac.zip"
 DMG_PATH="$DIST_DIR/Email-mac.dmg"
 DMG_STAGE="$DIST_DIR/dmg-stage"
@@ -28,8 +27,8 @@ for arg in "$@"; do
       cat <<EOF
 Usage: ./script/package_mac_release.sh [--unsigned] [--skip-notarization]
 
-Builds a distributable macOS app bundle, bundles the local Node server, and
-creates dist/Email-mac.zip plus dist/Email-mac.dmg.
+Builds a distributable macOS client app bundle and creates dist/Email-mac.zip
+plus dist/Email-mac.dmg.
 
 Environment:
   DEVELOPER_ID_APPLICATION   Developer ID Application signing identity.
@@ -40,7 +39,6 @@ Environment:
   EMAIL_MAC_PROVISIONING_PROFILE  Developer ID provisioning profile with Push Notifications.
   EMAIL_MAC_APNS_ENVIRONMENT      APNs entitlement value for manual signing. Defaults to production.
   EMAIL_RELEASE_SERVER_URL   API endpoint baked into the app's default settings.
-  NODE_BIN                   Optional Node 24+ binary to bundle.
 EOF
       exit 0
       ;;
@@ -50,46 +48,6 @@ EOF
       ;;
   esac
 done
-
-resolve_node() {
-  if [[ -n "${NODE_BIN:-}" ]]; then
-    if [[ -x "$NODE_BIN" ]]; then
-      printf '%s\n' "$NODE_BIN"
-      return
-    fi
-    echo "NODE_BIN is not executable: $NODE_BIN" >&2
-    exit 1
-  fi
-
-  for candidate in \
-    "$(command -v node || true)" \
-    /opt/homebrew/bin/node \
-    /usr/local/bin/node \
-    /Applications/Codex.app/Contents/Resources/node \
-    /usr/bin/node; do
-    if [[ -n "$candidate" && -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return
-    fi
-  done
-
-  echo "Node 24+ not found. Set NODE_BIN to an absolute Node binary." >&2
-  exit 127
-}
-
-NODE_SOURCE="$(resolve_node)"
-NODE_MAJOR="$("$NODE_SOURCE" -p 'Number(process.versions.node.split(".")[0])')"
-if (( NODE_MAJOR < 24 )); then
-  echo "Node 24+ is required for the bundled server. Found $("$NODE_SOURCE" -v) at $NODE_SOURCE." >&2
-  exit 1
-fi
-NODE_SOURCE="$("$NODE_SOURCE" -p 'require("node:fs").realpathSync(process.argv[1])' "$NODE_SOURCE")"
-echo "Bundling Node from $NODE_SOURCE"
-echo "Node binary: $(/usr/bin/file -b "$NODE_SOURCE")"
-
-if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
-  npm ci --omit=dev
-fi
 
 XCODEBUILD_OVERRIDES=()
 if [[ -n "${EMAIL_RELEASE_VERSION:-}" ]]; then
@@ -128,13 +86,6 @@ if [[ ! -d "$BUILT_APP" ]]; then
 fi
 
 /usr/bin/ditto "$BUILT_APP" "$APP_BUNDLE"
-mkdir -p "$SERVER_BUNDLE/server"
-/usr/bin/rsync -a --delete "$ROOT_DIR/server/src/" "$SERVER_BUNDLE/server/src/"
-/usr/bin/rsync -a --delete "$ROOT_DIR/node_modules/" "$SERVER_BUNDLE/node_modules/"
-/usr/bin/ditto "$ROOT_DIR/package.json" "$SERVER_BUNDLE/package.json"
-/usr/bin/ditto "$ROOT_DIR/package-lock.json" "$SERVER_BUNDLE/package-lock.json"
-/usr/bin/ditto "$NODE_SOURCE" "$SERVER_BUNDLE/node"
-chmod 755 "$SERVER_BUNDLE/node"
 
 MAC_PROVISIONING_PROFILE="${EMAIL_MAC_PROVISIONING_PROFILE:-${MACOS_PROVISIONING_PROFILE:-}}"
 MAC_APNS_ENTITLEMENTS=""
@@ -194,7 +145,6 @@ sign_nested_bundles() {
   done < <(/usr/bin/find "$root" -depth -type d \( -name '*.appex' -o -name '*.xpc' -o -name '*.app' -o -name '*.framework' \) -print)
 }
 
-sign_macho_files "$SERVER_BUNDLE"
 sign_macho_files "$APP_BUNDLE/Contents/Frameworks"
 sign_macho_files "$APP_BUNDLE/Contents/PlugIns"
 sign_nested_bundles "$APP_BUNDLE/Contents/Frameworks"

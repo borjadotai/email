@@ -7,7 +7,7 @@ const trackingPixel = Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABA
 const MAX_DETAIL_HTML_LENGTH = Number.parseInt(process.env.EMAIL_DETAIL_HTML_LIMIT ?? "", 10) || 1_000_000;
 const MAX_DETAIL_TEXT_FALLBACK_LENGTH = 200_000;
 
-export function createServer({ store, providers, pushNotifications, inboxTriage, host = "127.0.0.1", port = 7331, publicBaseURL } = {}) {
+export function createServer({ store, providers, pushNotifications, inboxTriage, host = "127.0.0.1", port = 7332, publicBaseURL } = {}) {
   const events = new EventHub();
   const configuredBaseURL = normalizedBaseURL(publicBaseURL);
   const fallbackBaseURL = normalizedBaseURL(`http://${host}:${port}`);

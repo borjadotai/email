@@ -9,13 +9,12 @@ struct EmailApp: App {
   @NSApplicationDelegateAdaptor(EmailMacAppDelegate.self) private var appDelegate
   #endif
   #if os(macOS)
-  @State private var localServer = LocalServerController()
   @State private var softwareUpdateController = SoftwareUpdateController()
   #endif
 
   var body: some Scene {
     WindowGroup {
-      RootView(prepareForBootstrap: prepareForBootstrap)
+      RootView()
         .environment(model)
         .preferredColorScheme(model.colorScheme)
         .task {
@@ -44,14 +43,6 @@ struct EmailApp: App {
         .environment(model)
         .preferredColorScheme(model.colorScheme)
         .frame(width: 1160, height: 560)
-    }
-    #endif
-  }
-
-  private func prepareForBootstrap() async {
-    #if os(macOS)
-    if model.shouldStartBundledServer {
-      await localServer.startIfAvailable()
     }
     #endif
   }

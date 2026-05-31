@@ -220,21 +220,24 @@ function normalizeURL(value) {
 
 function readStoredRelayToken(baseURL) {
   if (process.platform !== "darwin") return "";
-  try {
-    return execFileSync("security", [
-      "find-generic-password",
-      "-w",
-      "-s",
-      "EmailApp",
-      "-a",
-      `carta.relay.token:${baseURL}`
-    ], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-  } catch {
-    return "";
+  for (const service of ["CartaCLI", "EmailApp"]) {
+    try {
+      return execFileSync("security", [
+        "find-generic-password",
+        "-w",
+        "-s",
+        service,
+        "-a",
+        `carta.relay.token:${baseURL}`
+      ], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).trim();
+    } catch {
+      // Try the next service so existing local smoke credentials still work.
+    }
   }
+  return "";
 }
 
 function assertPortAvailable(candidatePort) {

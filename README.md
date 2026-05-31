@@ -40,7 +40,7 @@ use an HTTPS tailnet URL while the local server stays bound to loopback.
 The recommended path is the standalone Carta CLI:
 
 ```sh
-npm install -g github:borjadotai/email#v0.1.25
+npm install -g github:borjadotai/email#main
 carta setup
 ```
 
@@ -54,7 +54,7 @@ https://space.tailb90a7f.ts.net:8443
 ```
 
 That URL is the default baked into the macOS and iOS app builds in this repo.
-CLI data is separate from the older development server and is stored at:
+CLI data is stored at:
 
 ```text
 ~/Library/Application Support/CartaCLI/mail.sqlite
@@ -65,33 +65,6 @@ To test onboarding again from scratch:
 ```sh
 carta reset --yes
 carta setup
-```
-
-### Legacy Checkout Setup
-
-On the always-on server Mac, install Node.js 24 or newer from
-`https://nodejs.org/`, then run:
-
-```sh
-git clone https://github.com/borjadotai/email.git
-cd email
-npm run setup:server
-```
-
-This legacy setup checks Node, installs dependencies, creates `.env` from
-`.env.example`, asks for the server URL your apps will use, configures the
-development server, and can install the older macOS LaunchAgent.
-
-After setup, check that the server answers:
-
-```sh
-curl http://127.0.0.1:7331/api/health
-```
-
-Server data is stored on the server Mac at:
-
-```text
-~/Library/Application Support/EmailApp/mail.sqlite
 ```
 
 ### Carta CLI
@@ -121,7 +94,7 @@ To test the installable package:
 
 ```sh
 npm run package:cli
-npm install -g ./dist/carta-email-0.1.25.tgz
+npm install -g ./dist/carta-email-*.tgz
 carta status
 ```
 
@@ -146,8 +119,8 @@ carta forward fixture-gmail-stripe-invoice --to finance@example.test --body "Ple
 Server logs are written to:
 
 ```text
-~/Library/Logs/EmailApp/server.out.log
-~/Library/Logs/EmailApp/server.error.log
+~/Library/Logs/CartaCLI/server.log
+~/Library/Logs/CartaCLI/server.error.log
 ```
 
 ### Background Polling
@@ -211,32 +184,17 @@ After launching a signed app once so it can register its device token, send a
 test notification:
 
 ```sh
-curl -X POST http://127.0.0.1:7331/api/push/test
+curl -X POST http://127.0.0.1:7332/api/push/test
 ```
 
 ## Add Accounts
 
 ### Gmail
 
-Gmail needs a Google OAuth client. You only do this on the server machine:
-
-1. In Google Cloud Console, enable the Gmail API for your project.
-2. Create an OAuth client for a web application.
-3. Add this authorized redirect URI, using your real server URL:
-
-```text
-https://your-server.example/api/auth/gmail/callback
-```
-
-4. Download the OAuth JSON file and import it into the server `.env`:
-
-```sh
-node scripts/import-google-oauth.mjs ~/Downloads/client_secret_*.json
-launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
-```
-
-The apps never need the Google OAuth client secret. They ask the server to start
-the Gmail sign-in flow, and Google redirects back to your server.
+Gmail sign-in goes through the Carta relay. The relay owns the Google OAuth
+client secret, while the local Carta server receives the callback code, asks the
+relay to exchange it, and stores the user's refresh token locally. Normal users
+do not create Google OAuth clients or import Google secrets.
 
 For private testing across your own devices, the Carta CLI configures Tailscale
 Serve automatically. To set it up manually, proxy the local CLI server through
@@ -251,15 +209,6 @@ Tailscale endpoint:
 
 ```text
 https://space.tailb90a7f.ts.net:8443
-```
-
-Then set the server `.env` to the same HTTPS base URL and register the exact
-Google callback:
-
-```sh
-EMAIL_PUBLIC_BASE_URL=https://space.tailb90a7f.ts.net:8443
-# Google authorized redirect URI:
-# https://space.tailb90a7f.ts.net:8443/api/auth/gmail/callback
 ```
 
 Client devices must be signed into the same tailnet and use that Tailscale URL
@@ -337,10 +286,8 @@ server URL as the macOS app.
 To update the server on the always-on Mac:
 
 ```sh
-cd email
-git pull
-npm install
-launchctl kickstart -k "gui/$(id -u)/com.borjadotai.email.server"
+npm install -g github:borjadotai/email#main
+carta server restart
 ```
 
 To update the macOS app, use Sparkle's automatic updates or Email -> Check for
@@ -357,25 +304,18 @@ the device.
 - If that works locally but not from another device, confirm the device is
   signed into the same tailnet and that `tailscale serve status` points HTTPS
   `:8443` at `http://127.0.0.1:7332`.
-- If Gmail setup fails, confirm the Google redirect URI exactly matches
-  `EMAIL_PUBLIC_BASE_URL` plus `/api/auth/gmail/callback`. Do not use
-  `127.0.0.1` for devices that are not running the server.
+- If Gmail setup fails, run `carta doctor` and confirm Gmail OAuth reports relay
+  mode.
 - If the server does not start, check
-  `~/Library/Logs/EmailApp/server.error.log`.
+  `~/Library/Logs/CartaCLI/server.error.log`.
 
 ## Developer Commands
 
-Run the server manually:
+Run the Carta server manually:
 
 ```sh
 npm install
-npm run server:dev
-```
-
-Install or refresh the always-on LaunchAgent manually:
-
-```sh
-./scripts/install-launch-agent.sh
+npm run carta -- server start
 ```
 
 Build the apps:
@@ -391,7 +331,7 @@ The Codex run action uses:
 ./script/build_and_run.sh --install
 ```
 
-That script starts the server if needed, builds the macOS app, copies the fresh build to:
+That script requires a healthy Carta CLI server, builds the macOS app, copies the fresh build to:
 
 ```text
 ~/Applications/Email.app
@@ -419,15 +359,17 @@ dist/Email-mac.zip
 dist/Email-mac.dmg
 ```
 
-The packaged app bundles the legacy local Node server under `Email.app/Contents/Resources/Server` for local/internal runs. If its configured server URL is loopback, it starts that bundled server automatically on `127.0.0.1:7331` when a dev server is not already running.
-
-Provider secrets should not be bundled into the app. For builds that should use a shared backend, bake only the backend URL into the app:
+The packaged app is a client only. Provider secrets, mail data, Node, and the
+Carta server are not bundled into the app. For builds that should use a shared
+or personal Carta server by default, bake only that server URL into the app:
 
 ```sh
 EMAIL_RELEASE_SERVER_URL=https://space.tailb90a7f.ts.net:8443 npm run package:mac
 ```
 
-Run the backend separately with the provider secrets in its server environment. Public direct-download distribution requires Developer ID signing and notarization:
+Run the Carta CLI server separately on the machine that owns the mail data.
+Public direct-download distribution requires Developer ID signing and
+notarization:
 
 ```sh
 DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
@@ -456,8 +398,6 @@ xcrun notarytool store-credentials email-notary \
 ```
 
 Without `DEVELOPER_ID_APPLICATION`, the script still creates unsigned artifacts for local inspection, but those are not suitable for public downloads because Gatekeeper will warn or block them on other Macs.
-
-The packaged app includes the Node runtime from the build machine. The current local build is Apple Silicon (`arm64`). For Intel Mac support, build a matching `x86_64` or universal macOS app and bundle a matching Node runtime.
 
 ## GitHub Downloads
 

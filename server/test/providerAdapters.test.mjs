@@ -26,7 +26,7 @@ test("classifies sent messages by the synced account identity", () => {
       store,
       secretStore: new MemorySecretStore(),
       config: {},
-      baseURL: "http://127.0.0.1:7331"
+      baseURL: "http://127.0.0.1:7332"
     });
 
     const gmailSelfMailbox = providers.gmailMailboxFor(gmail.id, {

@@ -271,7 +271,7 @@ final class AppModel {
   }
 
   var apiClient: MailAPIClient {
-    let fallback = URL(string: Defaults.defaultServerURL) ?? URL(string: "http://127.0.0.1:7331")!
+    let fallback = URL(string: Defaults.defaultServerURL) ?? URL(string: "http://127.0.0.1:7332")!
     let normalizedURLString = Defaults.normalizedServerURLString(serverURLString)
     return MailAPIClient(baseURL: URL(string: normalizedURLString) ?? fallback)
   }
@@ -294,10 +294,6 @@ final class AppModel {
       }
       return mergedAccount
     }
-  }
-
-  var shouldStartBundledServer: Bool {
-    Defaults.isLoopbackURL(serverURLString)
   }
 
   var gmailAuthConfigurationWarning: String? {

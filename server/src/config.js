@@ -6,15 +6,15 @@ import { DEFAULT_GOOGLE_OAUTH_CLIENT_ID, DEFAULT_GOOGLE_OAUTH_CLIENT_SECRET } fr
 const DEFAULT_RELAY_BASE_URL = "https://carta-email-relay.vercel.app";
 
 export function resolveConfig(env = process.env) {
-  const port = Number.parseInt(env.EMAIL_SERVER_PORT ?? "7331", 10);
-  const dataDir = env.EMAIL_DATA_DIR ?? join(homedir(), "Library", "Application Support", "EmailApp");
+  const port = Number.parseInt(env.EMAIL_SERVER_PORT ?? "7332", 10);
+  const dataDir = env.EMAIL_DATA_DIR ?? defaultDataDir(env);
   const googleOAuth = resolveGoogleOAuth(env);
   const relay = resolveRelay(env);
   mkdirSync(dataDir, { recursive: true });
 
   return {
     host: env.EMAIL_SERVER_HOST ?? "127.0.0.1",
-    port: Number.isFinite(port) ? port : 7331,
+    port: Number.isFinite(port) ? port : 7332,
     dataDir,
     databasePath: env.EMAIL_DATABASE_PATH ?? join(dataDir, "mail.sqlite"),
     googleOAuthClientId: googleOAuth.clientId,
@@ -41,6 +41,17 @@ export function resolveConfig(env = process.env) {
       macosTopic: env.APNS_MACOS_TOPIC ?? "com.borjadotai.email.mac"
     }
   };
+}
+
+function defaultDataDir(env = process.env) {
+  const home = homedir();
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Application Support", "CartaCLI");
+  }
+  if (process.platform === "linux") {
+    return join(env.XDG_DATA_HOME || join(home, ".local", "share"), "CartaCLI");
+  }
+  return join(home, ".carta");
 }
 
 function resolveRelay(env) {

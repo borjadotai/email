@@ -54,9 +54,9 @@ carta setup \
 
 The installed `carta` binary defaults to its own local data directory at
 `~/Library/Application Support/CartaCLI` on macOS, `$XDG_DATA_HOME/CartaCLI` or
-`~/.local/share/CartaCLI` on Linux, and port `7332`, separate from the existing
-native app server. macOS stores account secrets in Keychain; Linux stores them
-in `secrets.json` inside the Carta CLI data directory with `0600` permissions.
+`~/.local/share/CartaCLI` on Linux, and port `7332`. macOS stores account
+secrets in Keychain; Linux stores them in `secrets.json` inside the Carta CLI
+data directory with `0600` permissions.
 
 The standalone CLI does not read an ambient project `.env` by default. Pass
 settings as `CARTA_*` environment variables, or set `CARTA_LOAD_DOTENV=1` when
@@ -276,9 +276,8 @@ platform. On macOS it installs a LaunchAgent named
 `com.carta.email.cli.server`, with logs under `~/Library/Logs/CartaCLI`. On
 Linux it installs a systemd service named `carta-email-cli.service`; non-root
 users get a user service under `~/.config/systemd/user`, while root gets a
-system service under `/etc/systemd/system`. It does not touch the existing app
-server LaunchAgent. `carta setup --install-server` uses the same installer after
-profile, access, relay, and account setup finish.
+system service under `/etc/systemd/system`. `carta setup --install-server` uses
+the same installer after profile, access, relay, and account setup finish.
 
 For a VPS test run over SSH, a typical first pass is:
 

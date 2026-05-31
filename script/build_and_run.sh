@@ -32,7 +32,6 @@ Options:
 
 Environment:
   EMAIL_DEFAULT_SERVER_URL  Override the server URL used by the app.
-  EMAIL_USE_LEGACY_SERVER   Set to 1 to fall back to the old bundled dev server.
 EOF
       exit 0
       ;;
@@ -62,32 +61,16 @@ if [[ -z "$SERVER_BASE_URL" ]] && command -v carta >/dev/null 2>&1; then
 fi
 
 if [[ -z "$SERVER_BASE_URL" ]]; then
-  if [[ "${EMAIL_USE_LEGACY_SERVER:-0}" == "1" ]]; then
-    SERVER_BASE_URL="http://127.0.0.1:7331"
-  else
-    echo "No healthy Carta CLI server found. Run 'carta setup' or 'carta server start', then retry." >&2
-    exit 1
-  fi
+  echo "No healthy Carta CLI server found. Run 'carta setup' or 'carta server start', then retry." >&2
+  exit 1
 fi
 
 SERVER_BASE_URL="${SERVER_BASE_URL%/}"
 SERVER_HEALTH_URL="$SERVER_BASE_URL/api/health"
 
 if ! curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
-  if [[ "${EMAIL_USE_LEGACY_SERVER:-0}" == "1" && "$SERVER_BASE_URL" == "http://127.0.0.1:7331" ]]; then
-    nohup env EMAIL_SEED_DEMO="${EMAIL_SEED_DEMO:-1}" "$ROOT_DIR/scripts/start-server.sh" >/tmp/email-server.log 2>&1 &
-    for _ in {1..40}; do
-      if curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 0.1
-    done
-  fi
-
-  if ! curl -fsS "$SERVER_HEALTH_URL" >/dev/null 2>&1; then
-    echo "Email server is not healthy at $SERVER_HEALTH_URL." >&2
-    exit 1
-  fi
+  echo "Email server is not healthy at $SERVER_HEALTH_URL." >&2
+  exit 1
 fi
 
 pkill -x Email >/dev/null 2>&1 || true

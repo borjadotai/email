@@ -21,7 +21,7 @@ test("provider availability is server-owned and Gmail auth starts when configure
         googleOAuthClientId: "test-client-id.apps.googleusercontent.com",
         googleOAuthClientSecret: "test-secret"
       },
-      baseURL: "http://127.0.0.1:7331"
+      baseURL: "http://127.0.0.1:7332"
     });
     server = createServer({ store, providers }).server;
     await listen(server, 0);
@@ -66,7 +66,7 @@ test("configured public base URL wins for Gmail redirect URI", async () => {
         googleOAuthClientId: "test-client-id.apps.googleusercontent.com",
         googleOAuthClientSecret: "test-secret"
       },
-      baseURL: "http://127.0.0.1:7331"
+      baseURL: "http://127.0.0.1:7332"
     });
     const publicBaseURL = "https://space.tailb90a7f.ts.net:8443";
     server = createServer({ store, providers, publicBaseURL }).server;
@@ -102,7 +102,7 @@ test("Gmail OAuth desktop client uses public-client authentication without a sec
         googleOAuthClientId: "test-client-id.apps.googleusercontent.com",
         googleOAuthClientSecret: ""
       },
-      baseURL: "http://127.0.0.1:7331"
+      baseURL: "http://127.0.0.1:7332"
     });
     const client = providers.gmailOAuthClient("http://127.0.0.1:7332/api/auth/gmail/callback");
     assert.equal(client.clientAuthentication, "None");
@@ -128,7 +128,7 @@ test("Gmail can be advertised through a configured relay without local Google se
           source: "CARTA_RELAY_BASE_URL"
         }
       },
-      baseURL: "http://127.0.0.1:7331"
+      baseURL: "http://127.0.0.1:7332"
     });
     const settings = providers.getAuthSettings();
     assert.equal(settings.gmailConfigured, true);
@@ -282,7 +282,7 @@ test("Gmail relay can be configured with only a relay URL", () => {
           tokenSource: "missing"
         }
       },
-      baseURL: "http://127.0.0.1:7331"
+      baseURL: "http://127.0.0.1:7332"
     });
     const settings = providers.getAuthSettings();
     assert.equal(settings.gmailConfigured, true);
