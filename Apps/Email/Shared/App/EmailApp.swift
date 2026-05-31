@@ -43,7 +43,7 @@ struct EmailApp: App {
       SettingsView(softwareUpdateController: softwareUpdateController)
         .environment(model)
         .preferredColorScheme(model.colorScheme)
-        .frame(width: 580, height: 560)
+        .frame(width: 900, height: 660)
     }
     #endif
   }

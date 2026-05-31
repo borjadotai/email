@@ -46,15 +46,17 @@ For non-interactive setup:
 carta setup \
   --name "Alex Carter" \
   --email alex@example.com \
-  --history last-year \
+  --history last-month \
   --attachments true \
   --no-account \
   --install-server
 ```
 
 The installed `carta` binary defaults to its own local data directory at
-`~/Library/Application Support/CartaCLI` and port `7332`, separate from the
-existing native app server.
+`~/Library/Application Support/CartaCLI` on macOS, `$XDG_DATA_HOME/CartaCLI` or
+`~/.local/share/CartaCLI` on Linux, and port `7332`, separate from the existing
+native app server. macOS stores account secrets in Keychain; Linux stores them
+in `secrets.json` inside the Carta CLI data directory with `0600` permissions.
 
 The standalone CLI does not read an ambient project `.env` by default. Pass
 settings as `CARTA_*` environment variables, or set `CARTA_LOAD_DOTENV=1` when
@@ -155,6 +157,7 @@ intentionally testing a different local callback.
 
 ```sh
 carta accounts add gmail --history last-year --attachments true
+carta accounts add gmail --history last-week --attachments false
 ```
 
 iCloud uses an app-specific password:
@@ -193,6 +196,7 @@ carta accounts providers
 carta accounts list
 carta connection --check
 carta sync run --account all --history last-year
+carta sync run --account all --history last-month
 carta sync status
 carta status
 carta list --mailbox inbox --unread
@@ -267,10 +271,40 @@ carta server uninstall
 ```
 
 This starts the same local HTTP API used by the macOS and iOS clients.
-`carta server install` creates a separate macOS LaunchAgent named
-`com.carta.email.cli.server`, with logs under `~/Library/Logs/CartaCLI`. It does
-not touch the existing app server LaunchAgent. `carta setup --install-server`
-uses the same installer after profile, access, relay, and account setup finish.
+`carta server install` creates a separate background service for the current
+platform. On macOS it installs a LaunchAgent named
+`com.carta.email.cli.server`, with logs under `~/Library/Logs/CartaCLI`. On
+Linux it installs a systemd service named `carta-email-cli.service`; non-root
+users get a user service under `~/.config/systemd/user`, while root gets a
+system service under `/etc/systemd/system`. It does not touch the existing app
+server LaunchAgent. `carta setup --install-server` uses the same installer after
+profile, access, relay, and account setup finish.
+
+For a VPS test run over SSH, a typical first pass is:
+
+```sh
+npm install -g carta-email
+carta setup --history last-week --attachments false
+carta server install
+carta server status --check
+```
+
+If you install a user systemd service and want it to keep running after SSH
+logout, enable lingering once:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+For Gmail OAuth on a headless VPS, run `carta setup` in the SSH session, copy the
+printed Google URL into a browser on your laptop, complete Google sign-in, and
+let the browser redirect to `127.0.0.1:7332`. If the browser is not on the VPS,
+keep a temporary SSH tunnel open while connecting the account:
+
+```sh
+ssh -L 7332:127.0.0.1:7332 root@your-vps
+carta setup --history last-week --attachments false
+```
 
 ## Current Scope
 

@@ -69,6 +69,13 @@ struct EmailListView: View {
       .listRowSeparator(.hidden)
       .listRowBackground(Color.clear)
 
+      if !model.visibleImportAccounts.isEmpty {
+        MailImportStatusBanner(accounts: model.visibleImportAccounts)
+          .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 10, trailing: 18))
+          .listRowSeparator(.hidden)
+          .listRowBackground(Color.clear)
+      }
+
       if model.isLoadingEmails && model.emails.isEmpty && !model.isRefreshingMail {
         EmailListSkeletonRows()
           .listRowSeparator(.hidden)
@@ -145,84 +152,94 @@ struct EmailListView: View {
 
   #if os(macOS)
   private var macOSBody: some View {
-    Group {
-      if model.isLoadingEmails && model.emails.isEmpty {
-        EmailListSkeletonRows()
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-      } else if model.emails.isEmpty {
-        ContentUnavailableView("No Messages", systemImage: "tray")
-      } else {
-        ScrollViewReader { proxy in
-          List {
-            if model.isLoadingEmails {
-              EmailListLoadingStatusRow(title: "Loading")
-                .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            }
+    VStack(spacing: 0) {
+      if !model.visibleImportAccounts.isEmpty {
+        MailImportStatusBanner(accounts: model.visibleImportAccounts)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 10)
+        Divider()
+      }
 
-            ForEach(Array(model.emails.enumerated()), id: \.element.id) { index, email in
-              EmailRow(
-                email: email,
-                showsSeparator: index < model.emails.count - 1
-              )
-                .id(email.id)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                .listRowSeparator(.hidden)
-                .listRowBackground(model.selectedEmailID == email.id ? Color.mailSelectionBackground : Color.clear)
-                .contentShape(Rectangle())
-                .accessibilityAddTraits(model.selectedEmailID == email.id ? .isSelected : [])
-                .transition(.asymmetric(
-                  insertion: .opacity,
-                  removal: .move(edge: .trailing).combined(with: .opacity)
-                ))
-                .onTapGesture {
-                  select(email)
-                }
-                .onAppear {
-                  model.loadMoreEmailsIfNeeded(current: email)
-                }
-                .mailRowSwipeActions(email: email, model: model) {
-                  Task { await model.archiveEmail(email) }
-                }
-            }
+      Group {
+        if model.isLoadingEmails && model.emails.isEmpty {
+          EmailListSkeletonRows()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } else if model.emails.isEmpty {
+          ContentUnavailableView("No Messages", systemImage: "tray")
+        } else {
+          ScrollViewReader { proxy in
+            List {
+              if model.isLoadingEmails {
+                EmailListLoadingStatusRow(title: "Loading")
+                  .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+                  .listRowSeparator(.hidden)
+                  .listRowBackground(Color.clear)
+              }
 
-            if model.isLoadingMoreEmails {
-              EmailListLoadingStatusRow(title: "Loading more")
-                .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 16, trailing: 14))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+              ForEach(Array(model.emails.enumerated()), id: \.element.id) { index, email in
+                EmailRow(
+                  email: email,
+                  showsSeparator: index < model.emails.count - 1
+                )
+                  .id(email.id)
+                  .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                  .listRowSeparator(.hidden)
+                  .listRowBackground(model.selectedEmailID == email.id ? Color.mailSelectionBackground : Color.clear)
+                  .contentShape(Rectangle())
+                  .accessibilityAddTraits(model.selectedEmailID == email.id ? .isSelected : [])
+                  .transition(.asymmetric(
+                    insertion: .opacity,
+                    removal: .move(edge: .trailing).combined(with: .opacity)
+                  ))
+                  .onTapGesture {
+                    select(email)
+                  }
+                  .onAppear {
+                    model.loadMoreEmailsIfNeeded(current: email)
+                  }
+                  .mailRowSwipeActions(email: email, model: model) {
+                    Task { await model.archiveEmail(email) }
+                  }
+              }
+
+              if model.isLoadingMoreEmails {
+                EmailListLoadingStatusRow(title: "Loading more")
+                  .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 16, trailing: 14))
+                  .listRowSeparator(.hidden)
+                  .listRowBackground(Color.clear)
+              }
             }
-          }
-          .listStyle(.plain)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .clipped()
-          .focusable()
-          .focused($isMessageListFocused)
-          .onAppear {
-            isMessageListFocused = true
-          }
-          .onMoveCommand { direction in
-            selectEmail(for: direction)
-          }
-          .onKeyPress(.upArrow) {
-            selectAdjacentEmail(offset: -1)
-            return .handled
-          }
-          .onKeyPress(.downArrow) {
-            selectAdjacentEmail(offset: 1)
-            return .handled
-          }
-          .onChange(of: model.selectedEmailID) { _, selectedEmailID in
-            guard let selectedEmailID else { return }
-            withAnimation(.snappy(duration: 0.18)) {
-              proxy.scrollTo(selectedEmailID, anchor: .center)
+            .listStyle(.plain)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .focusable()
+            .focused($isMessageListFocused)
+            .onAppear {
+              isMessageListFocused = true
             }
+            .onMoveCommand { direction in
+              selectEmail(for: direction)
+            }
+            .onKeyPress(.upArrow) {
+              selectAdjacentEmail(offset: -1)
+              return .handled
+            }
+            .onKeyPress(.downArrow) {
+              selectAdjacentEmail(offset: 1)
+              return .handled
+            }
+            .onChange(of: model.selectedEmailID) { _, selectedEmailID in
+              guard let selectedEmailID else { return }
+              withAnimation(.snappy(duration: 0.18)) {
+                proxy.scrollTo(selectedEmailID, anchor: .center)
+              }
+            }
+            .animation(.snappy(duration: 0.24), value: model.emails.map(\.id))
+            .mailPullToRefresh(model)
           }
-          .animation(.snappy(duration: 0.24), value: model.emails.map(\.id))
-          .mailPullToRefresh(model)
         }
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
   #endif
@@ -436,6 +453,68 @@ private struct EmailListLoadingStatusRow: View {
       Spacer()
     }
     .padding(.vertical, 4)
+  }
+}
+
+private struct MailImportStatusBanner: View {
+  var accounts: [MailAccount]
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      statusIndicator
+        .frame(width: 18, height: 18)
+        .padding(.top, 1)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .lineLimit(1)
+
+        Text(detail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .accessibilityElement(children: .combine)
+  }
+
+  @ViewBuilder
+  private var statusIndicator: some View {
+    if accounts.contains(where: { $0.isImportingMail }) {
+      ProgressView()
+        .controlSize(.small)
+    } else {
+      Image(systemName: accounts.contains(where: { $0.importStatus?.normalizedStatus == "failed" }) ? "exclamationmark.triangle" : "clock")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private var title: String {
+    if accounts.count == 1 {
+      return accounts.first?.importStatus?.title ?? "Importing mail"
+    }
+    return "Importing mail"
+  }
+
+  private var detail: String {
+    if accounts.count == 1, let account = accounts.first {
+      return account.importStatus?.detailText(account: account) ?? "Messages may still be arriving."
+    }
+
+    let snippets = accounts.prefix(2).map { account in
+      account.importStatus?.detailText(account: account) ?? account.displayName
+    }
+    let remaining = accounts.count - snippets.count
+    let suffix = remaining > 0 ? " + \(remaining) more" : ""
+    return snippets.joined(separator: "\n") + suffix
   }
 }
 

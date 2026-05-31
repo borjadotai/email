@@ -60,7 +60,9 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   }
 
   if (req.method === "GET" && path === "/api/accounts") {
-    sendJSON(res, 200, { accounts: store.listAccounts() });
+    const includeStats = url.searchParams.get("includeStats") === "1"
+      || url.searchParams.get("stats") === "1";
+    sendJSON(res, 200, { accounts: store.listAccounts({ includeStats }) });
     return;
   }
 
@@ -112,7 +114,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const result = await providers.completeGmailAuth(Object.fromEntries(url.searchParams.entries()));
     events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
+    syncAccountInBackground({ store, providers, events, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -121,7 +123,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const result = await providers.completeGmailRelayAuth(await readJSONOrForm(req));
     events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
+    syncAccountInBackground({ store, providers, events, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -130,7 +132,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const result = await providers.completeGmailRelayCodeAuth(Object.fromEntries(url.searchParams.entries()));
     events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ providers, events, accountId: result.account.id, limit: result.syncLimit });
+    syncAccountInBackground({ store, providers, events, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -195,6 +197,24 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   if (accountBackfillMatch && req.method === "POST") {
     requireProviders(providers);
     const body = await readJSON(req);
+    if (body.background === true) {
+      backfillAccountInBackground({
+        store,
+        providers,
+        events,
+        accountId: accountBackfillMatch[1],
+        limit: body.limit,
+        includeAttachmentData: body.includeAttachmentData === true,
+        historyWindow: body.historyWindow
+      });
+      sendJSON(res, 202, {
+        backfill: {
+          status: "queued",
+          provider: store.getAccount(accountBackfillMatch[1])?.provider ?? "unknown"
+        }
+      });
+      return;
+    }
     const backfill = await providers.backfillAccountHistory(accountBackfillMatch[1], {
       limit: body.limit,
       includeAttachmentData: body.includeAttachmentData === true
@@ -669,18 +689,143 @@ function authSuccessPage(result) {
 </html>`;
 }
 
-function syncAccountInBackground({ providers, events, accountId, limit }) {
+function syncAccountInBackground({ store, providers, events, accountId, limit }) {
   setTimeout(async () => {
     try {
       console.log(`${new Date().toISOString()} background sync started account=${accountId}`);
+      updateAccountSyncStatus(store, accountId, {
+        status: "running",
+        historyWindow: store.getSetting?.("carta.sync.window", "all") ?? "all",
+        imported: 0,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      events.emit("accounts.changed", { accountId });
       const sync = await providers.syncGmailAccount(accountId, { limit });
       console.log(`${new Date().toISOString()} background sync completed account=${accountId} imported=${sync.imported}`);
+      const account = store.getAccount(accountId);
+      const previousStatus = account?.providerMetadata?.cartaSyncStatus ?? {};
+      updateAccountSyncStatus(store, accountId, {
+        status: account?.syncHistory ? "running" : "complete",
+        historyWindow: previousStatus.historyWindow ?? store.getSetting?.("carta.sync.window", "all") ?? "all",
+        imported: Number(previousStatus.imported ?? 0) + Number(sync.imported ?? 0),
+        oldestReceivedAt: store.oldestEmailReceivedAt(accountId),
+        error: null,
+        updatedAt: new Date().toISOString()
+      });
       events.emit("emails.changed", { accountId });
       events.emit("accounts.changed", { accountId });
     } catch (error) {
+      updateAccountSyncStatus(store, accountId, {
+        status: "failed",
+        error: error.message,
+        updatedAt: new Date().toISOString()
+      });
+      events.emit("accounts.changed", { accountId });
       console.error(`${new Date().toISOString()} background sync failed account=${accountId}: ${error.message}`);
     }
   }, 0);
+}
+
+function backfillAccountInBackground({
+  store,
+  providers,
+  events,
+  accountId,
+  limit = 500,
+  includeAttachmentData = false,
+  historyWindow = "all"
+}) {
+  const account = store.getAccount(accountId);
+  if (!account) throw httpError(404, "Account not found.");
+  store.setAccountSyncHistory?.(accountId, true);
+  updateAccountSyncStatus(store, accountId, {
+    status: "running",
+    historyWindow: historyWindow || "all",
+    includeAttachments: includeAttachmentData,
+    startedAt: account.providerMetadata?.cartaSyncStatus?.startedAt ?? new Date().toISOString(),
+    completedAt: null,
+    error: null,
+    updatedAt: new Date().toISOString()
+  });
+  events.emit("accounts.changed", { accountId, backfilled: true });
+
+  setTimeout(async () => {
+    let complete = false;
+    let batch = 0;
+    const batchLimit = clampBackfillLimit(limit);
+
+    try {
+      while (!complete && batch < 10_000) {
+        batch += 1;
+        console.log(`${new Date().toISOString()} background backfill started account=${accountId} batch=${batch}`);
+        const result = await providers.backfillAccountHistory(accountId, {
+          limit: batchLimit,
+          includeAttachmentData
+        });
+        const latest = store.getAccount(accountId);
+        const previousStatus = latest?.providerMetadata?.cartaSyncStatus ?? {};
+        const imported = Number(previousStatus.imported ?? 0) + Number(result.imported ?? 0);
+        const backfilled = Number(previousStatus.backfilled ?? 0) + Number(result.imported ?? 0);
+        complete = result.complete === true || result.imported === 0 || (latest ? accountBackfillComplete(latest) : false);
+        updateAccountSyncStatus(store, accountId, {
+          status: complete ? "complete" : "running",
+          historyWindow: historyWindow || previousStatus.historyWindow || "all",
+          includeAttachments: includeAttachmentData,
+          imported,
+          backfilled,
+          oldestReceivedAt: store.oldestEmailReceivedAt(accountId),
+          completedAt: complete ? new Date().toISOString() : null,
+          error: null,
+          updatedAt: new Date().toISOString()
+        });
+        events.emit("accounts.changed", { accountId, backfilled: true });
+        if (result.imported > 0) {
+          events.emit("emails.changed", { accountId, backfilled: true });
+        }
+      }
+      console.log(`${new Date().toISOString()} background backfill completed account=${accountId} complete=${complete}`);
+    } catch (error) {
+      updateAccountSyncStatus(store, accountId, {
+        status: "failed",
+        error: error.message,
+        updatedAt: new Date().toISOString()
+      });
+      events.emit("accounts.changed", { accountId, backfilled: true });
+      console.error(`${new Date().toISOString()} background backfill failed account=${accountId}: ${error.message}`);
+    }
+  }, 0);
+}
+
+function clampBackfillLimit(value) {
+  const parsed = Number.parseInt(value ?? 500, 10);
+  if (!Number.isFinite(parsed)) return 500;
+  return Math.min(500, Math.max(1, parsed));
+}
+
+function accountBackfillComplete(account) {
+  const metadata = account.providerMetadata ?? {};
+  if (account.provider === "gmail") {
+    return metadata.gmailBackfillComplete === true && metadata.gmailSystemBackfillComplete === true;
+  }
+  if (account.provider === "icloud") {
+    return metadata.icloudBackfillComplete === true && metadata.icloudSystemBackfillComplete === true;
+  }
+  if (account.provider === "imap") {
+    return metadata.imapBackfillComplete === true && metadata.imapSystemBackfillComplete === true;
+  }
+  return true;
+}
+
+function updateAccountSyncStatus(store, accountId, patch) {
+  const account = store.getAccount(accountId);
+  if (!account) return;
+  store.updateAccountMetadata(accountId, {
+    cartaSyncStatus: {
+      ...(account.providerMetadata?.cartaSyncStatus ?? {}),
+      ...patch
+    }
+  });
 }
 
 function escapeHTML(value) {

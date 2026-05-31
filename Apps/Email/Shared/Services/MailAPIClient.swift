@@ -127,8 +127,9 @@ struct MailAPIClient: Sendable {
     try await request("api/health")
   }
 
-  func accounts() async throws -> [MailAccount] {
-    let response: AccountsResponse = try await request("api/accounts")
+  func accounts(includeStats: Bool = false) async throws -> [MailAccount] {
+    let query = includeStats ? [URLQueryItem(name: "includeStats", value: "1")] : []
+    let response: AccountsResponse = try await request("api/accounts", query: query)
     return response.accounts
   }
 
@@ -184,6 +185,31 @@ struct MailAPIClient: Sendable {
     return response.sync
   }
 
+  func startHistoryBackfill(
+    id: String,
+    limit: Int = 500,
+    includeAttachmentData: Bool = true,
+    historyWindow: String = "all"
+  ) async throws -> ProviderBackfillResult {
+    struct BackfillRequest: Encodable {
+      var limit: Int
+      var includeAttachmentData: Bool
+      var historyWindow: String
+      var background: Bool
+    }
+    let response: BackfillResponse = try await request(
+      "api/accounts/\(id)/backfill",
+      method: "POST",
+      body: BackfillRequest(
+        limit: limit,
+        includeAttachmentData: includeAttachmentData,
+        historyWindow: historyWindow,
+        background: true
+      )
+    )
+    return response.backfill
+  }
+
   func mailboxes() async throws -> [Mailbox] {
     let response: MailboxesResponse = try await request("api/mailboxes")
     return response.mailboxes
@@ -237,8 +263,11 @@ struct MailAPIClient: Sendable {
     return response.filters
   }
 
-  func createFilter(naturalLanguage: String) async throws -> MailFilter {
+  func createFilter(name: String, color: String, icon: String, naturalLanguage: String) async throws -> MailFilter {
     struct FilterPayload: Encodable {
+      var name: String
+      var color: String
+      var icon: String
       var naturalLanguage: String
       var criteria: MailFilterCriteria
     }
@@ -246,6 +275,9 @@ struct MailAPIClient: Sendable {
       "api/filters",
       method: "POST",
       body: FilterPayload(
+        name: name,
+        color: color,
+        icon: icon,
         naturalLanguage: naturalLanguage,
         criteria: MailFilterCriteria()
       )
@@ -255,9 +287,15 @@ struct MailAPIClient: Sendable {
 
   func updateFilter(
     id: String,
+    name: String,
+    color: String,
+    icon: String,
     naturalLanguage: String
   ) async throws -> MailFilter {
     struct FilterPayload: Encodable {
+      var name: String
+      var color: String
+      var icon: String
       var naturalLanguage: String
       var criteria: MailFilterCriteria
     }
@@ -265,6 +303,9 @@ struct MailAPIClient: Sendable {
       "api/filters/\(id)",
       method: "PATCH",
       body: FilterPayload(
+        name: name,
+        color: color,
+        icon: icon,
         naturalLanguage: naturalLanguage,
         criteria: MailFilterCriteria()
       )

@@ -16,7 +16,7 @@ export function defaultFilterQueryPlan(prompt, options = {}) {
   if (process.env.EMAIL_FILTER_DISABLE_CODEX === "1") {
     return fallback;
   }
-  if (isInvoicePrompt(prompt)) {
+  if (isInvoicePrompt(prompt) || isTaxPrompt(prompt)) {
     return fallback;
   }
 
@@ -144,6 +144,10 @@ ORDER BY e.received_at DESC`
     };
   }
 
+  if (isTaxPrompt(prompt)) {
+    return taxFilterQueryPlan();
+  }
+
   const terms = meaningfulTerms(prompt);
   const conditions = terms.length
     ? terms.map(term => {
@@ -166,6 +170,10 @@ ORDER BY e.received_at DESC`
 
 export function isInvoicePrompt(prompt) {
   return /\b(invoice|invoices|factura|facturas|receipt|receipts|recibo|recibos|billing|nomina|nómina)\b/iu.test(String(prompt ?? ""));
+}
+
+export function isTaxPrompt(prompt) {
+  return /\b(tax|taxes|taxation|accountant|accountants|accounting|taxscouts|taxdown|impuesto|impuestos|renta|irpf|iva|vat|hacienda|aeat|gestor|gestores|gestoria|gestoría|gestorias|gestorías|asesor fiscal|asesoria fiscal|asesoría fiscal|agencia tributaria)\b/iu.test(String(prompt ?? ""));
 }
 
 function codexArgs() {
@@ -214,6 +222,7 @@ The query must:
 - never use semicolons, comments, PRAGMA, ATTACH, INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, REPLACE, VACUUM, or parameters
 - prefer EXISTS subqueries for attachments and labels
 - include ORDER BY e.received_at DESC
+- never use unbounded short substring predicates such as LIKE '%tax%', LIKE '%vat%', or LIKE '%iva%'. Short words must be matched as whole tokens with delimiters or by stronger phrases/senders, otherwise terms like "iva" match "privacy" and "activation".
 
 Columns:
 emails e: id, account_id, mailbox_id, sender_name, sender_email, recipients_json, cc_json, bcc_json, subject, snippet, body_text, sent_at, received_at, is_read, is_starred, importance, has_attachments
@@ -226,8 +235,69 @@ email_fts: email_id, account_id, subject, sender_name, sender_email, recipients,
 
 For "invoices", match invoice/receipt/factura/recibo/billing/payment evidence in subject, sender, or attachment filename. Body-only evidence should be used only with another signal such as e.has_attachments = 1, because newsletters often mention invoice words in footers. Do not require e.has_attachments = 1 just because the prompt says invoice; many receipt emails are link-only.
 For "newsletters", look for newsletter/digest signals and subscription markers such as unsubscribe, manage preferences, view in browser, read online, sender/newsletter naming.
+For "tax/accountant/tax firm" views, do not use loose substring checks for short tax terms like "iva", "vat", or "tax"; those match unrelated words like "privacy" and "activation". Prefer sender/domain tax firm signals, tax-return phrases, official tax authority names, or attachment filenames. Body-only tax mentions are usually too noisy. Generic vendor VAT billing notices should not match unless the user explicitly asks for vendor VAT/GST billing.
 
 User request: ${JSON.stringify(String(prompt ?? ""))}`;
+}
+
+function taxFilterQueryPlan() {
+  const senderSignals = [
+    likeAny("e.sender_name", [
+      "taxscouts", "taxdown", "accountant", "accounting", "gestor", "gestoría",
+      "gestoria", "asesor fiscal", "asesoría fiscal", "asesoria fiscal",
+      "hacienda", "agencia tributaria", "hmrc"
+    ]),
+    likeAny("e.sender_email", [
+      "taxscouts", "taxdown", "accountant", "accounting", "gestor", "gestoria",
+      "hacienda", "aeat", "agenciatributaria", "hmrc"
+    ]),
+    wordAny("e.sender_name", ["tax", "taxes", "aeat", "irpf"]),
+    wordAny("e.sender_email", ["tax", "taxes", "aeat", "irpf"])
+  ];
+  const subjectSignals = [
+    likeAny("e.subject", [
+      "tax return", "tax filing", "declaracion de la renta", "declaración de la renta",
+      "declaracion de iva", "declaración de iva", "agencia tributaria", "asesor fiscal",
+      "asesoría fiscal", "asesoria fiscal", "modelo 100", "modelo 130", "modelo 303"
+    ]),
+    wordAny("e.subject", ["impuesto", "impuestos", "renta", "irpf", "hacienda", "aeat"])
+  ];
+  const snippetSignals = [
+    likeAny("e.snippet", [
+      "tax return", "tax filing", "declaracion de la renta", "declaración de la renta",
+      "agencia tributaria", "modelo 100", "modelo 130", "modelo 303"
+    ]),
+    wordAny("e.snippet", ["irpf", "hacienda", "aeat"])
+  ];
+  const attachmentSignals = [
+    likeAny("ea.filename", [
+      "tax-return", "tax_return", "declaracion-renta", "declaracion_renta",
+      "declaración-renta", "declaración_renta"
+    ]),
+    wordAny("ea.filename", ["tax", "taxes", "renta", "irpf", "iva", "hacienda", "aeat", "impuesto", "impuestos"])
+  ];
+
+  return {
+    name: "Tax",
+    color: "teal",
+    icon: "doc.text.magnifyingglass",
+    source: "heuristic",
+    sql: `SELECT e.id
+FROM emails e
+WHERE (
+    ${[...senderSignals, ...subjectSignals, ...snippetSignals].filter(Boolean).join("\n    OR ")}
+    OR EXISTS (
+      SELECT 1
+      FROM email_attachments ea
+      WHERE ea.email_id = e.id
+        AND ea.is_inline = 0
+        AND (
+          ${attachmentSignals.filter(Boolean).join("\n          OR ")}
+        )
+    )
+  )
+ORDER BY e.received_at DESC`
+  };
 }
 
 function extractJSON(output) {
@@ -264,6 +334,58 @@ function meaningfulTerms(value) {
     .map(term => term.trim())
     .filter(term => term.length >= 3 && !STOP_WORDS.has(term))
     .slice(0, 6))];
+}
+
+function likeAny(field, values) {
+  const conditions = values
+    .map(value => cleanString(value))
+    .filter(Boolean)
+    .map(value => `lower(coalesce(${field}, '')) LIKE ${sqlString(`%${value.toLowerCase()}%`)}`);
+  return conditions.length ? `(${conditions.join(" OR ")})` : "";
+}
+
+function wordAny(field, values) {
+  const haystack = normalizedWordHaystack(field);
+  const conditions = values
+    .map(value => cleanString(value))
+    .filter(Boolean)
+    .map(value => `${haystack} LIKE ${sqlString(`% ${value.toLowerCase()} %`)}`);
+  return conditions.length ? `(${conditions.join(" OR ")})` : "";
+}
+
+function normalizedWordHaystack(field) {
+  let expression = `lower(coalesce(${field}, ''))`;
+  for (const character of [".", ",", ":", ";", "/", "\\", "-", "_", "(", ")", "[", "]", "{", "}", "<", ">", "@", "+", "*", "#", "&", "!", "?", "\n", "\r", "\t"]) {
+    expression = `replace(${expression}, ${sqlCharacterExpression(character)}, ' ')`;
+  }
+  return `(' ' || ${expression} || ' ')`;
+}
+
+function sqlCharacterExpression(value) {
+  switch (value) {
+    case "\n":
+      return "char(10)";
+    case "\r":
+      return "char(13)";
+    case "\t":
+      return "char(9)";
+    case ":":
+      return "char(58)";
+    case ";":
+      return "char(59)";
+    case "\\":
+      return "char(92)";
+    case "*":
+      return "char(42)";
+    case "/":
+      return "char(47)";
+    case "?":
+      return "char(63)";
+    case "@":
+      return "char(64)";
+    default:
+      return sqlString(value);
+  }
 }
 
 function titleFromPrompt(value) {

@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export class KeychainSecretStore {
   constructor({ service = "EmailApp" } = {}) {
@@ -58,3 +60,68 @@ export class MemorySecretStore {
   }
 }
 
+export class FileSecretStore {
+  constructor({ filePath }) {
+    if (!filePath) {
+      throw new Error("FileSecretStore requires a filePath.");
+    }
+    this.filePath = filePath;
+  }
+
+  get(key) {
+    return this.read()[key] ?? null;
+  }
+
+  set(key, value) {
+    const secrets = this.read();
+    secrets[key] = String(value);
+    this.write(secrets);
+  }
+
+  delete(key) {
+    const secrets = this.read();
+    if (!Object.prototype.hasOwnProperty.call(secrets, key)) return;
+    delete secrets[key];
+    this.write(secrets);
+  }
+
+  read() {
+    if (!existsSync(this.filePath)) return {};
+    const text = readFileSync(this.filePath, "utf8");
+    if (!text.trim()) return {};
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Secret store is invalid: ${this.filePath}`);
+    }
+    return parsed;
+  }
+
+  write(secrets) {
+    mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
+    const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
+    writeFileSync(temporaryPath, `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(temporaryPath, 0o600);
+    renameSync(temporaryPath, this.filePath);
+    chmodSync(this.filePath, 0o600);
+  }
+}
+
+export function createDefaultSecretStore({
+  env = process.env,
+  dataDir = "",
+  platform = process.platform
+} = {}) {
+  const mode = String(env.CARTA_SECRET_STORE ?? "").trim().toLowerCase();
+  if (mode === "memory") return new MemorySecretStore();
+
+  if (platform === "darwin" && mode !== "file") {
+    return new KeychainSecretStore({
+      service: env.CARTA_KEYCHAIN_SERVICE || "EmailApp"
+    });
+  }
+
+  const filePath = env.CARTA_SECRETS_PATH
+    || env.EMAIL_SECRETS_PATH
+    || join(dataDir, "secrets.json");
+  return new FileSecretStore({ filePath });
+}

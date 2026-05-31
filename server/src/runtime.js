@@ -4,22 +4,29 @@ import { InboxTriageService } from "./inboxTriage.js";
 import { ProviderService } from "./providerAdapters.js";
 import { PushNotificationService, summarizePushNotificationResult } from "./pushNotifications.js";
 import { applyStoredRelay } from "./relayConfig.js";
-import { KeychainSecretStore } from "./secretStore.js";
+import { createDefaultSecretStore } from "./secretStore.js";
 import { applyStoredServerAccess, effectiveServerBaseURL } from "./serverAccess.js";
 import { MailStore } from "./store.js";
+
+const SETTING_SYNC_WINDOW = "carta.sync.window";
 
 export function createMailRuntime({
   env = process.env,
   config = resolveConfig(env),
   store = null,
   secretStore = null,
-  logger = console
+  logger = console,
+  platform = process.platform
 } = {}) {
   const mailStore = store ?? new MailStore({
     databasePath: config.databasePath,
     seedDemo: config.seedDemo
   });
-  const runtimeSecretStore = secretStore ?? new KeychainSecretStore();
+  const runtimeSecretStore = secretStore ?? createDefaultSecretStore({
+    env,
+    dataDir: config.dataDir,
+    platform
+  });
   const accessConfig = env.CARTA_CLI === "1" || env.CARTA_USE_STORED_SERVER_ACCESS === "1"
     ? applyStoredServerAccess(config, mailStore, env)
     : config;
@@ -63,16 +70,46 @@ export function createMailRuntime({
         if (!current?.syncHistory || historyBackfillComplete(current)) continue;
         try {
           logger.log(`${new Date().toISOString()} history backfill started account=${current.id}`);
+          updateHistoryBackfillStatus(mailStore, current.id, {
+            status: "running",
+            historyWindow: mailStore.getSetting?.(SETTING_SYNC_WINDOW, "all") ?? "all",
+            includeAttachments: false,
+            startedAt: current.providerMetadata?.cartaSyncStatus?.startedAt ?? new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          events.emit("accounts.changed", { accountId: current.id, backfilled: true });
           const result = await providers.backfillAccountHistory(current.id, {
             limit: runtimeConfig.historyBackfillLimit
           });
           if (closing) break;
           logger.log(`${new Date().toISOString()} history backfill completed account=${current.id} imported=${result.imported} complete=${result.complete}`);
+          const latest = mailStore.getAccount(current.id);
+          const previousStatus = latest?.providerMetadata?.cartaSyncStatus ?? {};
+          const imported = Number(previousStatus.imported ?? 0) + Number(result.imported ?? 0);
+          const backfilled = Number(previousStatus.backfilled ?? 0) + Number(result.imported ?? 0);
+          const complete = result.complete === true || (latest ? historyBackfillComplete(latest) : false);
+          updateHistoryBackfillStatus(mailStore, current.id, {
+            status: complete ? "complete" : "running",
+            historyWindow: previousStatus.historyWindow ?? mailStore.getSetting?.(SETTING_SYNC_WINDOW, "all") ?? "all",
+            includeAttachments: previousStatus.includeAttachments ?? false,
+            imported,
+            backfilled,
+            oldestReceivedAt: mailStore.oldestEmailReceivedAt(current.id),
+            error: null,
+            completedAt: complete ? new Date().toISOString() : null,
+            updatedAt: new Date().toISOString()
+          });
           events.emit("accounts.changed", { accountId: current.id, backfilled: true });
           if (result.imported > 0) {
             events.emit("emails.changed", { accountId: current.id, backfilled: true });
           }
         } catch (error) {
+          updateHistoryBackfillStatus(mailStore, current.id, {
+            status: "failed",
+            error: error.message,
+            updatedAt: new Date().toISOString()
+          });
+          events.emit("accounts.changed", { accountId: current.id, backfilled: true });
           logger.warn(`${new Date().toISOString()} history backfill failed account=${current.id}: ${error.message}`);
         }
       }
@@ -242,6 +279,17 @@ async function waitForBackgroundWorkToStop({
     if (Date.now() - startedAt >= timeoutMs) return;
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
+}
+
+function updateHistoryBackfillStatus(store, accountId, patch) {
+  const account = store.getAccount(accountId);
+  if (!account) return;
+  store.updateAccountMetadata(accountId, {
+    cartaSyncStatus: {
+      ...(account.providerMetadata?.cartaSyncStatus ?? {}),
+      ...patch
+    }
+  });
 }
 
 function historyBackfillComplete(account) {

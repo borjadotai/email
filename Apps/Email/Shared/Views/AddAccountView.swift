@@ -70,7 +70,7 @@ struct AddAccountView: View {
           .font(.headline)
 
         HStack(spacing: 10) {
-          ForEach(MailProvider.allCases) { provider in
+          ForEach(clientProviderChoices) { provider in
             ProviderChoiceButton(
               provider: provider,
               isSelected: self.provider == provider
@@ -217,7 +217,7 @@ struct AddAccountView: View {
     Form {
       Section {
         Picker("Provider", selection: $provider) {
-          ForEach(MailProvider.allCases) { provider in
+          ForEach(clientProviderChoices) { provider in
             Label(provider.displayName, systemImage: provider.systemImage)
               .tag(provider)
           }
@@ -312,6 +312,8 @@ struct AddAccountView: View {
         if connected {
           dismiss()
         }
+      case .imap:
+        break
       }
     }
   }
@@ -326,6 +328,8 @@ struct AddAccountView: View {
     case .icloud:
       return email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         appPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    case .imap:
+      return true
     }
   }
 
@@ -333,7 +337,12 @@ struct AddAccountView: View {
     switch provider {
     case .gmail: "Sign in with Google"
     case .icloud: "Connect iCloud Mail"
+    case .imap: "Connect IMAP"
     }
+  }
+
+  private var clientProviderChoices: [MailProvider] {
+    [.gmail, .icloud]
   }
 }
 

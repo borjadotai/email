@@ -132,6 +132,48 @@ test("search results are sorted by newest received date first", () => {
   }
 });
 
+test("account stats include local storage and attachment download totals", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-account-stats-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    store.upsertProviderEmail(testProviderEmail({
+      id: "stats-message",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-stats-message",
+      senderName: "Storage Bot",
+      senderEmail: "storage@example.com",
+      subject: "Storage report",
+      bodyText: "This body is stored locally.",
+      attachments: [{
+        filename: "report.pdf",
+        mimeType: "application/pdf",
+        size: 2048,
+        data: Buffer.from("downloaded attachment bytes")
+      }]
+    }));
+
+    const stats = store.accountEmailStats(account.id);
+    assert.equal(stats.totalCount, 1);
+    assert.equal(stats.attachmentCount, 1);
+    assert.equal(stats.downloadedAttachmentCount, 1);
+    assert.ok(stats.messageBytes > 0);
+    assert.ok(stats.downloadedAttachmentBytes > 0);
+    assert.equal(stats.storedBytes, stats.messageBytes + stats.downloadedAttachmentBytes);
+    assert.equal(store.listAccounts({ includeStats: true })[0].stats.storedBytes, stats.storedBytes);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("persists account and filter sidebar order", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const databasePath = join(dir, "mail.sqlite");
@@ -794,6 +836,110 @@ test("creates saved filters from natural language and applies them dynamically",
     assert.equal(store.getFilter(filter.id)?.emailCount, 4);
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === imageOnly.id));
     assert.ok(!store.listEmails({ filterId: filter.id }).some(email => email.id === orderNewsletter.id));
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rejects unsafe generated tax filter SQL and falls back to precise tax signals", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-tax-filter-"));
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: () => ({
+      name: "Tax",
+      color: "teal",
+      icon: "doc.text.magnifyingglass",
+      source: "codex",
+      sql: `SELECT e.id
+FROM emails e
+WHERE lower(e.subject) LIKE '%iva%'
+   OR lower(e.body_text) LIKE '%tax%'
+ORDER BY e.received_at DESC`
+    })
+  });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const taxscouts = store.upsertProviderEmail(testProviderEmail({
+      id: "tax-filter-hit-taxscouts",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-tax-filter-hit-taxscouts",
+      senderName: "TaxScouts",
+      senderEmail: "hello@taxscouts.com",
+      subject: "Your tax return",
+      receivedAt: "2026-05-23T10:00:00.000Z"
+    }));
+    const accountant = store.upsertProviderEmail(testProviderEmail({
+      id: "tax-filter-hit-accountant",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-tax-filter-hit-accountant",
+      senderName: "Gestoria Fiscal",
+      senderEmail: "alex@gestoria.example",
+      subject: "IRPF documents",
+      receivedAt: "2026-05-23T11:00:00.000Z"
+    }));
+    const attachment = store.upsertProviderEmail(testProviderEmail({
+      id: "tax-filter-hit-attachment",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-tax-filter-hit-attachment",
+      senderName: "Files",
+      senderEmail: "files@example.com",
+      subject: "Documents",
+      attachments: [{ filename: "iva-2026.pdf", mimeType: "application/pdf", size: 128 }],
+      receivedAt: "2026-05-23T12:00:00.000Z"
+    }));
+    store.upsertProviderEmail(testProviderEmail({
+      id: "tax-filter-miss-reddit-privacy",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-tax-filter-miss-reddit",
+      senderName: "Reddit",
+      senderEmail: "noreply@policy.redditmail.com",
+      subject: "Updates to Reddit's Privacy Policy and User Agreement",
+      bodyText: "Privacy policy update.",
+      receivedAt: "2026-05-23T13:00:00.000Z"
+    }));
+    store.upsertProviderEmail(testProviderEmail({
+      id: "tax-filter-miss-fly-activate",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-tax-filter-miss-fly",
+      senderName: "Fly",
+      senderEmail: "support@fly.io",
+      subject: "Activate your Fly.io account",
+      receivedAt: "2026-05-23T14:00:00.000Z"
+    }));
+    store.upsertProviderEmail(testProviderEmail({
+      id: "tax-filter-miss-vercel-vat",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-tax-filter-miss-vercel",
+      senderName: "Vercel",
+      senderEmail: "notifications@vercel.com",
+      subject: "Billing update: Collection of Value-Added Tax (VAT) / GST",
+      receivedAt: "2026-05-23T15:00:00.000Z"
+    }));
+
+    const filter = store.createFilter({
+      naturalLanguage: "A tax filter for accountants, gestorías, TaxScouts, TaxDown, Hacienda and tax return emails"
+    });
+
+    assert.equal(filter.querySource, "heuristic");
+    assert.ok(!filter.querySQL.includes("LIKE '%iva%'"));
+    assert.ok(!filter.querySQL.includes("LIKE '%tax%'"));
+    assert.deepEqual(
+      store.listEmails({ filterId: filter.id }).map(email => email.id),
+      [attachment.id, accountant.id, taxscouts.id]
+    );
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

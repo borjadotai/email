@@ -212,7 +212,7 @@ test("CLI interactive first-run setup accepts typed answers and stored relay con
     assert.equal(status.initialized, true);
     assert.equal(status.profile.displayName, "Borja");
     assert.equal(status.profile.primaryEmail, "hi@borja.ai");
-    assert.equal(status.defaults.history, "6-months");
+    assert.equal(status.defaults.history, "last-week");
     assert.equal(status.server.access.mode, "tailscale");
     assert.equal(status.server.host, "127.0.0.1");
     assert.equal(status.server.baseURL, "https://space.tailb90a7f.ts.net:8443");
@@ -787,6 +787,85 @@ test("CLI renders a separate LaunchAgent for the background server", async () =>
     assert.match(result.launchAgent.plist, /<key>CARTA_USE_STORED_SERVER_ACCESS<\/key>\n    <string>1<\/string>/u);
     assert.doesNotMatch(result.launchAgent.plist, /<key>\s*<key>/u);
     assert.doesNotMatch(result.launchAgent.plist, /EmailApp|com\.borjadotai\.email\.server/u);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("CLI renders a systemd service for Linux background server", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "carta-cli-systemd-"));
+  try {
+    const out = new CaptureStream();
+    await runCLI([
+      "server",
+      "install",
+      "--dry-run",
+      "--json",
+      "--bin", "/usr/local/bin/carta",
+      "--user"
+    ], {
+      platform: "linux",
+      env: {
+        CARTA_DATA_DIR: join(temp, "data"),
+        CARTA_SERVER_PORT: "7332",
+        HOME: temp,
+        CARTA_RELAY_BASE_URL: "https://relay.example.test",
+        CARTA_RELAY_TOKEN: "relay-token"
+      },
+      cwd: temp,
+      stdout: out,
+      stderr: new CaptureStream(),
+      stdin: fakeInput(),
+      systemctl: async () => {
+        throw new Error("systemctl should not be called in dry-run mode");
+      }
+    });
+    const result = JSON.parse(out.text);
+    assert.equal(result.systemd.name, "carta-email-cli.service");
+    assert.equal(result.systemd.scope, "user");
+    assert.equal(result.systemd.unitPath, join(temp, ".config", "systemd", "user", "carta-email-cli.service"));
+    assert.deepEqual(result.systemd.programArguments, ["/usr/local/bin/carta", "server", "start"]);
+    assert.equal(result.systemd.environmentVariables.CARTA_CLI, "1");
+    assert.equal(result.systemd.environmentVariables.CARTA_USE_STORED_SERVER_ACCESS, "1");
+    assert.equal(result.systemd.environmentVariables.CARTA_DATA_DIR, join(temp, "data"));
+    assert.equal(result.systemd.environmentVariables.CARTA_SECRETS_PATH, join(temp, "data", "secrets.json"));
+    assert.equal(result.systemd.environmentVariables.CARTA_RELAY_BASE_URL, "https://relay.example.test");
+    assert.equal(result.systemd.environmentVariables.CARTA_RELAY_TOKEN, "relay-token");
+    assert.match(result.systemd.unit, /Description=Carta Email CLI Server/u);
+    assert.match(result.systemd.unit, /ExecStart="\/usr\/local\/bin\/carta" "server" "start"/u);
+    assert.match(result.systemd.unit, /WantedBy=default\.target/u);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("CLI accepts shallow history windows for test backfills", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "carta-cli-shallow-history-"));
+  try {
+    const env = testEnv(temp);
+    await runCLI([
+      "init",
+      "--name", "Shallow Tester",
+      "--email", "shallow@example.com",
+      "--history", "last-week",
+      "--attachments", "false"
+    ], { env, stdout: new CaptureStream(), stderr: new CaptureStream(), stdin: fakeInput() });
+
+    const statusOut = new CaptureStream();
+    await runCLI(["status", "--json"], { env, stdout: statusOut, stderr: new CaptureStream(), stdin: fakeInput() });
+    assert.equal(JSON.parse(statusOut.text).defaults.history, "last-week");
+
+    await runCLI([
+      "init",
+      "--name", "Shallow Tester",
+      "--email", "shallow@example.com",
+      "--history", "last-month",
+      "--attachments", "false"
+    ], { env, stdout: new CaptureStream(), stderr: new CaptureStream(), stdin: fakeInput() });
+
+    const monthOut = new CaptureStream();
+    await runCLI(["status", "--json"], { env, stdout: monthOut, stderr: new CaptureStream(), stdin: fakeInput() });
+    assert.equal(JSON.parse(monthOut.text).defaults.history, "last-month");
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

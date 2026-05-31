@@ -281,8 +281,9 @@ export class ProviderService {
     this.store.linkAccountToLocalUser(account.id, "icloud", email);
 
     console.log(`${new Date().toISOString()} iCloud syncing INBOX email=${redactEmail(email)}`);
+    const initialSyncLimit = clampSyncLimit(input.initialSyncLimit ?? this.initialSyncLimit(), this.initialSyncLimit());
     const sync = await this.syncICloudAccount(account.id, {
-      limit: syncHistory ? Math.min(this.initialSyncLimit(), 200) : 50
+      limit: syncHistory ? Math.min(initialSyncLimit, 200) : 50
     });
     return { account: this.store.getAccount(account.id), sync };
   }
@@ -332,8 +333,9 @@ export class ProviderService {
     this.store.linkAccountToLocalUser(account.id, "imap", email);
 
     console.log(`${new Date().toISOString()} IMAP syncing INBOX email=${redactEmail(email)}`);
+    const initialSyncLimit = clampSyncLimit(input.initialSyncLimit ?? this.initialSyncLimit(), this.initialSyncLimit());
     const sync = await this.syncIMAPAccount(account.id, {
-      limit: syncHistory ? Math.min(this.initialSyncLimit(), 200) : 50
+      limit: syncHistory ? Math.min(initialSyncLimit, 200) : 50
     });
     return { account: this.store.getAccount(account.id), sync };
   }

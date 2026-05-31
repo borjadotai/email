@@ -25,8 +25,17 @@ const SETTING_INITIALIZED = "carta.initialized";
 const SETTING_SYNC_WINDOW = "carta.sync.window";
 const SETTING_SYNC_ATTACHMENTS = "carta.sync.attachments";
 const CLI_LAUNCH_AGENT_LABEL = "com.carta.email.cli.server";
+const SYSTEMD_SERVICE_NAME = "carta-email-cli.service";
 
 const HISTORY_WINDOWS = new Map([
+  ["last-week", { id: "last-week", label: "last week", days: 7, defaultInitialLimit: 50, defaultBatchLimit: 50 }],
+  ["1-week", { id: "last-week", label: "last week", days: 7, defaultInitialLimit: 50, defaultBatchLimit: 50 }],
+  ["week", { id: "last-week", label: "last week", days: 7, defaultInitialLimit: 50, defaultBatchLimit: 50 }],
+  ["7-days", { id: "last-week", label: "last week", days: 7, defaultInitialLimit: 50, defaultBatchLimit: 50 }],
+  ["last-month", { id: "last-month", label: "last month", months: 1, defaultInitialLimit: 100, defaultBatchLimit: 100 }],
+  ["1-month", { id: "last-month", label: "last month", months: 1, defaultInitialLimit: 100, defaultBatchLimit: 100 }],
+  ["month", { id: "last-month", label: "last month", months: 1, defaultInitialLimit: 100, defaultBatchLimit: 100 }],
+  ["30-days", { id: "last-month", label: "last month", days: 30, defaultInitialLimit: 100, defaultBatchLimit: 100 }],
   ["6-months", { id: "6-months", label: "last 6 months", months: 6 }],
   ["last-year", { id: "last-year", label: "last year", years: 1 }],
   ["1-year", { id: "last-year", label: "last year", years: 1 }],
@@ -50,23 +59,27 @@ export async function runCLI(argv = process.argv.slice(2), options = {}) {
     return 0;
   }
 
+  const platform = options.platform ?? process.platform;
   const env = prepareEnv(options.env ?? process.env, cwd);
   const { createMailRuntime } = await import("./runtime.js");
   const runtime = createMailRuntime({
     env,
     secretStore: options.secretStore,
     store: options.store,
-    logger: options.logger ?? quietLogger()
+    logger: options.logger ?? quietLogger(),
+    platform
   });
   const context = {
     ...runtime,
     env,
     cwd,
+    platform,
     streams,
     detectTailscale: options.detectTailscale ?? detectTailscale,
     configureTailscaleServe: options.configureTailscaleServe ?? configureTailscaleServe,
     openBrowser: options.openBrowser ?? openBrowser,
-    launchctl: options.launchctl ?? launchctl
+    launchctl: options.launchctl ?? launchctl,
+    systemctl: options.systemctl ?? systemctl
   };
   const keepRuntimeOpen = command === "server" && subcommand === "start";
 
@@ -161,6 +174,8 @@ async function initCommand(context, options) {
       ?? await prompts.text("Carta account email", profile.primaryEmail ?? "");
     const historyWindow = normalizeHistoryWindow(options.history
       ?? await prompts.select("How far back should account sync go?", DEFAULT_HISTORY_WINDOW, [
+        "last-week",
+        "last-month",
         "6-months",
         "last-year",
         "2-years",
@@ -362,7 +377,7 @@ async function maybeInstallBackgroundServerDuringSetup(context, options) {
   if (explicitInstall === false || options["no-install-server"]) return null;
 
   let shouldInstall = explicitInstall;
-  if (shouldInstall === null && process.platform === "darwin" && context.streams.stdin.isTTY) {
+  if (shouldInstall === null && serverServiceSupported(context.platform) && context.streams.stdin.isTTY) {
     const prompts = createPrompts(context.streams);
     try {
       shouldInstall = await prompts.confirm("Start Carta server in background now?", true);
@@ -372,7 +387,7 @@ async function maybeInstallBackgroundServerDuringSetup(context, options) {
   }
   if (!shouldInstall) return null;
 
-  await installServerLaunchAgent(context, options);
+  await installServerService(context, options);
   return {
     status: options["dry-run"] ? "dry-run" : "installed"
   };
@@ -664,7 +679,7 @@ async function connectionPayload(context, { check = false } = {}) {
     security: connectionSecurity(status.server.access),
     databasePath: status.databasePath,
     command: "carta server start",
-    backgroundCommand: process.platform === "darwin" ? "carta server install" : null,
+    backgroundCommand: serverServiceSupported(context.platform) ? "carta server install" : null,
     statusCommand: "carta server status --check",
     health: null
   };
@@ -917,7 +932,8 @@ async function addICloudCommand(context, options) {
       appPassword,
       username,
       displayName,
-      syncHistory: policy.history.id !== "recent"
+      syncHistory: policy.history.id !== "recent",
+      initialSyncLimit: policy.initialLimit
     });
     writeSuccess(context, `Connected ${result.account.email}. Imported ${result.sync.imported} recent messages.`);
     await syncBackfill(context, result.account, policy);
@@ -959,7 +975,8 @@ async function addIMAPCommand(context, options) {
       displayName,
       archiveMailbox: options["archive-mailbox"],
       trashMailbox: options["trash-mailbox"],
-      syncHistory: policy.history.id !== "recent"
+      syncHistory: policy.history.id !== "recent",
+      initialSyncLimit: policy.initialLimit
     });
     writeSuccess(context, `Connected ${result.account.email}. Imported ${result.sync.imported} recent messages.`);
     await syncBackfill(context, result.account, policy);
@@ -1083,7 +1100,25 @@ async function syncBackfill(context, account, policy, alreadyImported = 0, optio
   let imported = 0;
   let complete = false;
   let batch = 0;
-  let oldest = null;
+  let oldest = context.store.oldestEmailReceivedAt(account.id);
+
+  if (historyWindowReached(policy, oldest)) {
+    setAccountSyncStatus(context.store, account.id, {
+      status: "complete",
+      historyWindow: policy.history.id,
+      includeAttachments: policy.includeAttachments,
+      imported: alreadyImported,
+      backfilled: 0,
+      oldestReceivedAt: oldest,
+      updatedAt: new Date().toISOString()
+    });
+    return {
+      imported: 0,
+      batches: 0,
+      complete: true,
+      oldestReceivedAt: oldest
+    };
+  }
 
   while (!complete) {
     batch += 1;
@@ -1098,7 +1133,7 @@ async function syncBackfill(context, account, policy, alreadyImported = 0, optio
     });
     imported += result.imported ?? 0;
     oldest = context.store.oldestEmailReceivedAt(account.id);
-    const reachedWindow = policy.cutoffDate ? oldest && Date.parse(oldest) <= policy.cutoffDate.getTime() : false;
+    const reachedWindow = historyWindowReached(policy, oldest);
     complete = result.complete === true || reachedWindow || result.imported === 0;
     setAccountSyncStatus(context.store, account.id, {
       status: complete ? "complete" : "running",
@@ -1357,20 +1392,72 @@ async function serverCommand(context, subcommand, _rest = [], options = {}) {
       });
       return;
     case "install":
-      await installServerLaunchAgent(context, options);
+      await installServerService(context, options);
       return;
     case "status":
-      await serverLaunchAgentStatusCommand(context, options);
+      await serverServiceStatusCommand(context, options);
       return;
     case "restart":
-      await restartServerLaunchAgent(context, options);
+      await restartServerService(context, options);
       return;
     case "uninstall":
-      await uninstallServerLaunchAgent(context, options);
+      await uninstallServerService(context, options);
       return;
     default:
       throw cliError(64, "Usage: carta server start|install|status|restart|uninstall");
   }
+}
+
+async function installServerService(context, options) {
+  if (context.platform === "darwin") {
+    await installServerLaunchAgent(context, options);
+    return;
+  }
+  if (context.platform === "linux") {
+    await installSystemdService(context, options);
+    return;
+  }
+  throw cliError(78, "Background server install is supported on macOS and Linux. Use carta server start on this platform.");
+}
+
+async function serverServiceStatusCommand(context, options) {
+  if (context.platform === "darwin") {
+    await serverLaunchAgentStatusCommand(context, options);
+    return;
+  }
+  if (context.platform === "linux") {
+    await systemdServiceStatusCommand(context, options);
+    return;
+  }
+  throw cliError(78, "Background server status is supported on macOS and Linux. Use carta server start on this platform.");
+}
+
+async function restartServerService(context, options) {
+  if (context.platform === "darwin") {
+    await restartServerLaunchAgent(context, options);
+    return;
+  }
+  if (context.platform === "linux") {
+    await restartSystemdService(context, options);
+    return;
+  }
+  throw cliError(78, "Background server restart is supported on macOS and Linux. Use carta server start on this platform.");
+}
+
+async function uninstallServerService(context, options) {
+  if (context.platform === "darwin") {
+    await uninstallServerLaunchAgent(context, options);
+    return;
+  }
+  if (context.platform === "linux") {
+    await uninstallSystemdService(context, options);
+    return;
+  }
+  throw cliError(78, "Background server uninstall is supported on macOS and Linux.");
+}
+
+function serverServiceSupported(platform = process.platform) {
+  return platform === "darwin" || platform === "linux";
 }
 
 async function installServerLaunchAgent(context, options) {
@@ -1379,7 +1466,7 @@ async function installServerLaunchAgent(context, options) {
     writeJSONOrText(context.streams.stdout, options.json, { launchAgent: agent }, () => formatLaunchAgentDryRun(agent));
     return;
   }
-  assertLaunchAgentSupported();
+  assertLaunchAgentSupported(context);
   mkdirSync(dirname(agent.plistPath), { recursive: true });
   mkdirSync(agent.logDir, { recursive: true });
   writeFileSync(agent.plistPath, agent.plist, { mode: 0o644 });
@@ -1427,7 +1514,7 @@ async function serverLaunchAgentStatusCommand(context, options) {
 
 async function restartServerLaunchAgent(context, options) {
   const agent = await buildLaunchAgent(context, options);
-  assertLaunchAgentSupported();
+  assertLaunchAgentSupported(context);
   if (!existsSync(agent.plistPath)) {
     throw cliError(78, `Carta CLI server LaunchAgent is not installed. Run carta server install first.`);
   }
@@ -1460,7 +1547,7 @@ async function uninstallServerLaunchAgent(context, options) {
     ));
     return;
   }
-  assertLaunchAgentSupported();
+  assertLaunchAgentSupported(context);
   await launchctlBootout(context, agent).catch(() => {});
   if (existsSync(agent.plistPath)) {
     unlinkSync(agent.plistPath);
@@ -1468,6 +1555,255 @@ async function uninstallServerLaunchAgent(context, options) {
   writeJSONOrText(context.streams.stdout, options.json, { launchAgent: agent, removed: true }, () => (
     `Uninstalled Carta CLI server LaunchAgent: ${agent.label}\n`
   ));
+}
+
+async function installSystemdService(context, options) {
+  const service = await buildSystemdService(context, options);
+  if (options["dry-run"]) {
+    writeJSONOrText(context.streams.stdout, options.json, { systemd: service }, () => formatSystemdDryRun(service));
+    return;
+  }
+  assertSystemdSupported(context);
+  mkdirSync(dirname(service.unitPath), { recursive: true });
+  writeFileSync(service.unitPath, service.unit, { mode: 0o644 });
+  await context.systemctl(systemctlArgs(service, ["daemon-reload"]));
+  await context.systemctl(systemctlArgs(service, ["enable", "--now", service.name]));
+  const status = await readSystemdStatus(context, service);
+  const health = await waitForServerHealth(launchAgentHealthURL(context.config), { attempts: 8, delayMs: 500 });
+  writeJSONOrText(context.streams.stdout, options.json, {
+    systemd: {
+      ...service,
+      loaded: status.loaded,
+      status: status.status
+    },
+    health
+  }, () => [
+    `Installed Carta CLI server systemd service: ${service.unitPath}`,
+    `Scope: ${service.scope}`,
+    `Logs: journalctl ${service.scope === "user" ? "--user " : ""}-u ${service.name}`,
+    `Server: ${effectiveServerBaseURL(context.config)}`,
+    `Health: ${health.ok ? "ok" : `unreachable (${health.error ?? health.status})`}`,
+    service.lingerHint ? `VPS note: ${service.lingerHint}` : null,
+    ""
+  ].filter(Boolean).join("\n"));
+}
+
+async function systemdServiceStatusCommand(context, options) {
+  const service = await buildSystemdService(context, options);
+  const status = await readSystemdStatus(context, service);
+  const payload = {
+    systemd: {
+      ...service,
+      loaded: status.loaded,
+      status: status.status,
+      detail: status.detail
+    },
+    health: options.check ? await checkServerHealth(`${effectiveServerBaseURL(context.config)}/api/health`) : null
+  };
+  writeJSONOrText(context.streams.stdout, options.json, payload, () => formatSystemdStatus(payload));
+}
+
+async function restartSystemdService(context, options) {
+  const service = await buildSystemdService(context, options);
+  assertSystemdSupported(context);
+  if (!existsSync(service.unitPath)) {
+    throw cliError(78, `Carta CLI server systemd service is not installed. Run carta server install first.`);
+  }
+  await context.systemctl(systemctlArgs(service, ["daemon-reload"]));
+  await context.systemctl(systemctlArgs(service, ["restart", service.name]));
+  const health = await waitForServerHealth(launchAgentHealthURL(context.config), { attempts: 8, delayMs: 500 });
+  writeJSONOrText(context.streams.stdout, options.json, {
+    systemd: {
+      ...service,
+      restarted: true
+    },
+    health
+  }, () => [
+    `Restarted Carta CLI server systemd service: ${service.name}`,
+    `Health: ${health.ok ? "ok" : `unreachable (${health.error ?? health.status})`}`,
+    ""
+  ].join("\n"));
+}
+
+async function uninstallSystemdService(context, options) {
+  const service = await buildSystemdService(context, options);
+  if (options["dry-run"]) {
+    writeJSONOrText(context.streams.stdout, options.json, { systemd: service, removed: false }, () => (
+      `Would uninstall Carta CLI server systemd service: ${service.unitPath}\n`
+    ));
+    return;
+  }
+  assertSystemdSupported(context);
+  await context.systemctl(systemctlArgs(service, ["disable", "--now", service.name])).catch(() => {});
+  if (existsSync(service.unitPath)) {
+    unlinkSync(service.unitPath);
+  }
+  await context.systemctl(systemctlArgs(service, ["daemon-reload"])).catch(() => {});
+  writeJSONOrText(context.streams.stdout, options.json, { systemd: service, removed: true }, () => (
+    `Uninstalled Carta CLI server systemd service: ${service.name}\n`
+  ));
+}
+
+async function buildSystemdService(context, options = {}) {
+  const scope = systemdServiceScope(context, options);
+  const paths = systemdServicePaths(context, scope, options);
+  const program = await resolveCartaExecutable(options);
+  const environmentVariables = systemdEnvironment(context);
+  const programArguments = [program, "server", "start"];
+  const service = {
+    name: SYSTEMD_SERVICE_NAME,
+    scope,
+    unitPath: paths.unitPath,
+    program,
+    programArguments,
+    workingDirectory: paths.workingDirectory,
+    environmentVariables,
+    installTarget: scope === "system" ? "multi-user.target" : "default.target",
+    serviceUser: systemdServiceUser(context, options, scope),
+    lingerHint: scope === "user" ? "run `loginctl enable-linger $USER` if this should keep running after SSH logout." : ""
+  };
+  return {
+    ...service,
+    unit: renderSystemdUnit(service)
+  };
+}
+
+function systemdServiceScope(context, options = {}) {
+  const explicit = String(context.env.CARTA_SYSTEMD_SCOPE ?? "").trim().toLowerCase();
+  if (options.system === true || explicit === "system") return "system";
+  if (options.user === true || explicit === "user") return "user";
+  return process.getuid?.() === 0 ? "system" : "user";
+}
+
+function systemdServicePaths(context, scope, options = {}) {
+  const home = context.env.HOME || process.env.HOME;
+  const workingDirectory = options.cwd
+    ? resolve(String(options.cwd))
+    : context.config.dataDir;
+  if (scope === "system") {
+    return {
+      unitPath: options["unit-path"] ?? context.env.CARTA_SYSTEMD_UNIT_PATH ?? join("/etc/systemd/system", SYSTEMD_SERVICE_NAME),
+      workingDirectory
+    };
+  }
+  if (!home) {
+    throw cliError(78, "Cannot install a user systemd service because HOME is not set.");
+  }
+  return {
+    unitPath: options["unit-path"] ?? context.env.CARTA_SYSTEMD_UNIT_PATH ?? join(home, ".config", "systemd", "user", SYSTEMD_SERVICE_NAME),
+    workingDirectory
+  };
+}
+
+function systemdEnvironment(context) {
+  const env = {
+    PATH: context.env.CARTA_SYSTEMD_PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    CARTA_CLI: "1",
+    CARTA_DATA_DIR: context.config.dataDir,
+    CARTA_SECRETS_PATH: context.env.CARTA_SECRETS_PATH || join(context.config.dataDir, "secrets.json"),
+    CARTA_USE_STORED_SERVER_ACCESS: "1",
+    EMAIL_AUTO_SYNC: context.env.EMAIL_AUTO_SYNC ?? "1",
+    EMAIL_AUTO_HISTORY_BACKFILL: context.env.EMAIL_AUTO_HISTORY_BACKFILL ?? "1"
+  };
+  const defaultDatabasePath = join(context.config.dataDir, "mail.sqlite");
+  if (context.config.databasePath !== defaultDatabasePath) {
+    env.EMAIL_DATABASE_PATH = context.config.databasePath;
+  }
+  for (const key of [
+    "CARTA_RELAY_BASE_URL",
+    "CARTA_RELAY_TOKEN",
+    "EMAIL_RELAY_BASE_URL",
+    "EMAIL_RELAY_TOKEN",
+    "CARTA_GOOGLE_OAUTH_CLIENT_ID",
+    "CARTA_GOOGLE_OAUTH_CLIENT_SECRET",
+    "CARTA_DEFAULT_GOOGLE_OAUTH_CLIENT_ID",
+    "CARTA_DEFAULT_GOOGLE_OAUTH_CLIENT_SECRET",
+    "CARTA_DISABLE_BUNDLED_GOOGLE_OAUTH",
+    "CARTA_SECRET_STORE",
+    "CARTA_SECRETS_PATH"
+  ]) {
+    if (String(context.env[key] ?? "").trim()) {
+      env[key] = context.env[key];
+    }
+  }
+  return env;
+}
+
+function systemdServiceUser(context, options, scope) {
+  if (scope !== "system") return "";
+  return String(options["service-user"] ?? context.env.CARTA_SERVICE_USER ?? "").trim();
+}
+
+function renderSystemdUnit(service) {
+  const environment = Object.entries(service.environmentVariables)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `Environment=${quoteSystemd(`${key}=${value}`)}`)
+    .join("\n");
+  const user = service.serviceUser ? `User=${service.serviceUser}\n` : "";
+  return `[Unit]
+Description=Carta Email CLI Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${quoteSystemd(service.workingDirectory)}
+ExecStart=${service.programArguments.map(quoteSystemd).join(" ")}
+Restart=always
+RestartSec=5
+${user}${environment}
+
+[Install]
+WantedBy=${service.installTarget}
+`;
+}
+
+async function readSystemdStatus(context, service) {
+  if (context.platform !== "linux") {
+    return { loaded: false, status: "unsupported", detail: "systemd services are only available on Linux." };
+  }
+  try {
+    const active = await context.systemctl(systemctlArgs(service, ["is-active", service.name]));
+    return { loaded: true, status: active.stdout.trim() || "active", detail: active.stdout.trim() };
+  } catch (error) {
+    return {
+      loaded: false,
+      status: existsSync(service.unitPath) ? "installed-not-running" : "not-installed",
+      detail: error.stderr || error.stdout || error.message
+    };
+  }
+}
+
+function formatSystemdDryRun(service) {
+  return [
+    `systemd service: ${service.name}`,
+    `Scope: ${service.scope}`,
+    `Unit: ${service.unitPath}`,
+    `Command: ${service.programArguments.join(" ")}`,
+    service.lingerHint ? `VPS note: ${service.lingerHint}` : null,
+    "",
+    service.unit
+  ].filter(line => line !== null).join("\n");
+}
+
+function formatSystemdStatus(payload) {
+  const service = payload.systemd;
+  const lines = [
+    `systemd service: ${service.name}`,
+    `Status: ${service.status}`,
+    `Loaded: ${service.loaded ? "yes" : "no"}`,
+    `Scope: ${service.scope}`,
+    `Unit: ${service.unitPath}`,
+    `Command: ${service.programArguments.join(" ")}`
+  ];
+  if (payload.health) {
+    lines.push(`Health: ${payload.health.ok ? "ok" : `unreachable (${payload.health.error ?? payload.health.status})`}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function systemctlArgs(service, args) {
+  return service.scope === "user" ? ["--user", ...args] : args;
 }
 
 async function buildLaunchAgent(context, options = {}) {
@@ -1530,7 +1866,9 @@ function launchAgentEnvironment(context) {
     "CARTA_GOOGLE_OAUTH_CLIENT_SECRET",
     "CARTA_DEFAULT_GOOGLE_OAUTH_CLIENT_ID",
     "CARTA_DEFAULT_GOOGLE_OAUTH_CLIENT_SECRET",
-    "CARTA_DISABLE_BUNDLED_GOOGLE_OAUTH"
+    "CARTA_DISABLE_BUNDLED_GOOGLE_OAUTH",
+    "CARTA_SECRET_STORE",
+    "CARTA_SECRETS_PATH"
   ]) {
     if (String(context.env[key] ?? "").trim()) {
       env[key] = context.env[key];
@@ -1605,7 +1943,7 @@ ${environment}
 }
 
 async function readLaunchAgentStatus(context, agent) {
-  if (process.platform !== "darwin") {
+  if (context.platform !== "darwin") {
     return { loaded: false, status: "unsupported", detail: "LaunchAgents are only available on macOS." };
   }
   try {
@@ -1718,10 +2056,20 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function assertLaunchAgentSupported() {
-  if (process.platform !== "darwin") {
+function assertLaunchAgentSupported(context) {
+  if (context.platform !== "darwin") {
     throw cliError(78, "LaunchAgent install is only available on macOS. Use carta server start on this platform.");
   }
+}
+
+function assertSystemdSupported(context) {
+  if (context.platform !== "linux") {
+    throw cliError(78, "systemd install is only available on Linux. Use carta server start on this platform.");
+  }
+}
+
+function quoteSystemd(value) {
+  return `"${String(value ?? "").replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
 function escapePlist(value) {
@@ -1839,8 +2187,8 @@ function syncPolicyFromOptions(context, options) {
   const history = normalizeHistoryWindow(options.history ?? options.window ?? historySetting);
   const includeAttachments = parseBoolean(options.attachments, null)
     ?? (context.store.getSetting(SETTING_SYNC_ATTACHMENTS, "1") === "1");
-  const initialLimit = clampInt(options["initial-limit"] ?? options.limit, 1, 5000, DEFAULT_INITIAL_LIMIT);
-  const batchLimit = clampInt(options["batch-limit"], 1, 5000, DEFAULT_BATCH_LIMIT);
+  const initialLimit = clampInt(options["initial-limit"] ?? options.limit, 1, 5000, initialLimitForHistory(history));
+  const batchLimit = clampInt(options["batch-limit"], 1, 5000, batchLimitForHistory(history));
   const maxBatches = clampInt(options["max-batches"], 1, 10000, history.all ? 10000 : 100);
   const cutoffDate = history.all ? null : cutoffForHistory(history);
   return {
@@ -2328,13 +2676,24 @@ function normalizeHistoryWindow(value) {
   const key = String(value ?? DEFAULT_HISTORY_WINDOW).toLowerCase();
   const window = HISTORY_WINDOWS.get(key);
   if (!window) {
-    throw cliError(64, `Unknown history window: ${value}. Use 6-months, last-year, 2-years, 5-years, or all.`);
+    throw cliError(64, `Unknown history window: ${value}. Use last-week, last-month, 6-months, last-year, 2-years, 5-years, or all.`);
   }
   return window;
 }
 
+function initialLimitForHistory(history) {
+  return history.defaultInitialLimit ?? DEFAULT_INITIAL_LIMIT;
+}
+
+function batchLimitForHistory(history) {
+  return history.defaultBatchLimit ?? DEFAULT_BATCH_LIMIT;
+}
+
 function cutoffForHistory(history) {
   const date = new Date();
+  if (history.days) {
+    date.setDate(date.getDate() - history.days);
+  }
   if (history.months) {
     date.setMonth(date.getMonth() - history.months);
   }
@@ -2342,6 +2701,14 @@ function cutoffForHistory(history) {
     date.setFullYear(date.getFullYear() - history.years);
   }
   return date;
+}
+
+function historyWindowReached(policy, oldest) {
+  return Boolean(
+    policy.cutoffDate
+      && oldest
+      && Date.parse(oldest) <= policy.cutoffDate.getTime()
+  );
 }
 
 function gmailCallbackBaseURL(config, options = {}) {
@@ -2715,6 +3082,10 @@ function launchctl(args) {
   return execFileOutput("launchctl", args, { timeout: 5000, maxBuffer: 1024 * 1024 });
 }
 
+function systemctl(args) {
+  return execFileOutput("systemctl", args, { timeout: 10000, maxBuffer: 1024 * 1024 });
+}
+
 function openBrowser(url) {
   return new Promise((resolveOpen, rejectOpen) => {
     execFile("open", [url], error => {
@@ -2764,7 +3135,7 @@ function helpText() {
   return `Carta email CLI
 
 Usage:
-  carta init [--name NAME] [--email EMAIL] [--history last-year] [--attachments true]
+  carta init [--name NAME] [--email EMAIL] [--history last-week|last-month|last-year] [--attachments true]
   carta setup [--expose tailscale|local-only|open-port] [--public-url URL] [--install-server] [--allow-insecure-open-port]
   carta status [--json]
   carta reset [--yes] [--all|--keep-relay false] [--dry-run] [--json]
@@ -2775,10 +3146,10 @@ Usage:
   carta profile [--name NAME] [--email EMAIL] [--json]
   carta accounts providers [--json]
   carta accounts list [--json]
-  carta accounts add gmail [--history last-year] [--attachments true]
+  carta accounts add gmail [--history last-week|last-month|last-year] [--attachments true]
   carta accounts add icloud --email you@icloud.com --app-password xxxx-xxxx-xxxx-xxxx [--imap-username apple-id@icloud.com]
   carta accounts add imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com
-  carta sync run [--account all|EMAIL|ID] [--history last-year|all] [--quick] [--json]
+  carta sync run [--account all|EMAIL|ID] [--history last-week|last-month|last-year|all] [--quick] [--json]
   carta sync status [--account all|EMAIL|ID] [--json]
   carta list [--mailbox inbox|sent|archive|trash|all] [--from NAME] [--since 7d] [--unread] [--json]
   carta search "invoice from stripe" [--from NAME] [--since 7d] [--has-attachments] [--attachment-kind invoice] [--json]
@@ -2793,12 +3164,12 @@ Usage:
   carta mark-unread EMAIL_ID [--json]
   carta fixtures seed [--preset agent-smoke] [--json]
   carta server start
-  carta server install [--dry-run] [--json]
+  carta server install [--dry-run] [--json] [--system|--user]
   carta server status [--check] [--json]
   carta server restart
   carta server uninstall
   carta doctor [--json]
 
-History windows: 6-months, last-year, 2-years, 5-years, all.
+History windows: last-week, last-month, 6-months, last-year, 2-years, 5-years, all.
 `;
 }

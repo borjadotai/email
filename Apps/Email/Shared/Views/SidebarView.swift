@@ -220,6 +220,7 @@ struct SidebarView: View {
       avatarEmail: account.email,
       avatarURL: account.avatarURL,
       count: unreadCount(for: account),
+      showsProgress: account.isImportingMail,
       isSelected: model.selectedAccountID == account.id
         && model.selectedMailboxID == nil
         && model.selectedLabelID == nil
@@ -304,6 +305,10 @@ struct SidebarView: View {
           filterSidebarRow(filter)
         }
         .onMove(perform: moveFilters)
+
+        ForEach(model.pendingFilterCreations) { filter in
+          PendingFilterSidebarRow(filter: filter)
+        }
 
         SidebarButton(
           title: "New Filter",
@@ -526,10 +531,18 @@ struct SidebarView: View {
       if let filter = context.filter {
         await model.updateFilter(
           filter,
+          name: draft.name,
+          color: draft.color,
+          icon: draft.icon,
           naturalLanguage: draft.naturalLanguage
         )
       } else {
-        await model.createFilter(naturalLanguage: draft.naturalLanguage)
+        await model.createFilter(
+          name: draft.name,
+          color: draft.color,
+          icon: draft.icon,
+          naturalLanguage: draft.naturalLanguage
+        )
       }
     }
   }
@@ -649,21 +662,68 @@ private struct FilterEditorContext: Identifiable {
 }
 
 private struct FilterEditorDraft {
+  var name: String
+  var color: String
+  var icon: String
   var naturalLanguage: String
 }
+
+private struct FilterColorChoice: Identifiable {
+  var id: String
+  var name: String
+  var color: Color
+}
+
+private let filterColorChoices: [FilterColorChoice] = [
+  FilterColorChoice(id: "teal", name: "Teal", color: .teal),
+  FilterColorChoice(id: "blue", name: "Blue", color: .blue),
+  FilterColorChoice(id: "green", name: "Green", color: .green),
+  FilterColorChoice(id: "purple", name: "Purple", color: .purple),
+  FilterColorChoice(id: "orange", name: "Orange", color: .orange),
+  FilterColorChoice(id: "red", name: "Red", color: .red),
+  FilterColorChoice(id: "yellow", name: "Yellow", color: .yellow),
+  FilterColorChoice(id: "pink", name: "Pink", color: .pink),
+  FilterColorChoice(id: "indigo", name: "Indigo", color: .indigo),
+  FilterColorChoice(id: "mint", name: "Mint", color: .mint)
+]
+
+private let filterIconChoices = [
+  "line.3.horizontal.decrease.circle",
+  "tray",
+  "envelope.badge",
+  "newspaper",
+  "doc.text",
+  "doc.richtext",
+  "paperclip",
+  "creditcard",
+  "cart",
+  "person.crop.circle",
+  "building.2",
+  "bell",
+  "star",
+  "clock",
+  "exclamationmark.triangle"
+]
 
 private struct FilterEditorSheet: View {
   @Environment(\.dismiss) private var dismiss
   var context: FilterEditorContext
   var onSave: (FilterEditorDraft) -> Void
 
+  @State private var name: String
+  @State private var selectedColor: String
+  @State private var selectedIcon: String
   @State private var naturalLanguage: String
+  @FocusState private var nameFocused: Bool
   @FocusState private var promptFocused: Bool
 
   init(context: FilterEditorContext, onSave: @escaping (FilterEditorDraft) -> Void) {
     self.context = context
     self.onSave = onSave
     let filter = context.filter
+    _name = State(initialValue: filter?.name ?? "")
+    _selectedColor = State(initialValue: filter?.color ?? "teal")
+    _selectedIcon = State(initialValue: filter?.systemImage ?? "line.3.horizontal.decrease.circle")
     _naturalLanguage = State(initialValue: filter?.naturalLanguage ?? "")
   }
 
@@ -672,7 +732,8 @@ private struct FilterEditorSheet: View {
       header
       Divider()
       ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
+          presentationBuilder
           naturalLanguageBuilder
         }
         .padding(20)
@@ -681,13 +742,17 @@ private struct FilterEditorSheet: View {
       footer
     }
     #if os(macOS)
-    .frame(width: 640, height: 430)
+    .frame(width: 640, height: 590)
     #endif
     #if os(iOS)
     .presentationDetents([.large])
     #endif
     .task {
-      promptFocused = true
+      if trimmedName.isEmpty {
+        nameFocused = true
+      } else {
+        promptFocused = true
+      }
     }
   }
 
@@ -708,6 +773,86 @@ private struct FilterEditorSheet: View {
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 16)
+  }
+
+  private var presentationBuilder: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(alignment: .bottom, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
+          Text("Title")
+            .font(.headline)
+          TextField("Invoices", text: $name)
+            .focused($nameFocused)
+            .textFieldStyle(.roundedBorder)
+        }
+
+        FilterPreviewPill(
+          name: trimmedName.isEmpty ? "New Filter" : trimmedName,
+          icon: selectedIcon,
+          color: selectedColor
+        )
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Color")
+          .font(.headline)
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            ForEach(filterColorChoices) { choice in
+              Button {
+                selectedColor = choice.id
+              } label: {
+                Circle()
+                  .fill(choice.color)
+                  .frame(width: 22, height: 22)
+                  .overlay {
+                    if selectedColor == choice.id {
+                      Image(systemName: "checkmark")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                    }
+                  }
+                  .padding(5)
+                  .overlay(
+                    Circle()
+                      .strokeBorder(selectedColor == choice.id ? choice.color : Color.primary.opacity(0.12), lineWidth: 2)
+                  )
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(choice.name)
+            }
+          }
+          .padding(.vertical, 2)
+        }
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Icon")
+          .font(.headline)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 34), spacing: 8)], alignment: .leading, spacing: 8) {
+          ForEach(visibleIconChoices, id: \.self) { icon in
+            Button {
+              selectedIcon = icon
+            } label: {
+              Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(selectedIcon == icon ? selectedTint : .secondary)
+                .frame(width: 32, height: 32)
+                .background(
+                  selectedIcon == icon ? selectedTint.opacity(0.16) : Color.primary.opacity(0.05),
+                  in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(selectedIcon == icon ? selectedTint : Color.primary.opacity(0.08), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(icon)
+          }
+        }
+      }
+    }
   }
 
   private var naturalLanguageBuilder: some View {
@@ -767,7 +912,7 @@ private struct FilterEditorSheet: View {
       Button("Cancel") {
         dismiss()
       }
-      Button("Save") {
+      Button(context.filter == nil ? "Create" : "Save") {
         onSave(draft)
         dismiss()
       }
@@ -780,16 +925,60 @@ private struct FilterEditorSheet: View {
 
   private var draft: FilterEditorDraft {
     FilterEditorDraft(
+      name: trimmedName,
+      color: selectedColor,
+      icon: selectedIcon,
       naturalLanguage: trimmedNaturalLanguage
     )
   }
 
   private var canSave: Bool {
-    !trimmedNaturalLanguage.isEmpty
+    !trimmedName.isEmpty && !trimmedNaturalLanguage.isEmpty
+  }
+
+  private var trimmedName: String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private var trimmedNaturalLanguage: String {
     naturalLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var selectedTint: Color {
+    filterColorChoices.first(where: { $0.id == selectedColor })?.color ?? .secondary
+  }
+
+  private var visibleIconChoices: [String] {
+    if filterIconChoices.contains(selectedIcon) {
+      return filterIconChoices
+    }
+    return [selectedIcon] + filterIconChoices
+  }
+}
+
+private struct FilterPreviewPill: View {
+  var name: String
+  var icon: String
+  var color: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: icon)
+        .font(.caption.weight(.semibold))
+      Text(name)
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(tint.opacity(0.14), in: Capsule())
+    .frame(maxWidth: 190, alignment: .trailing)
+    .accessibilityHidden(true)
+  }
+
+  private var tint: Color {
+    filterColorChoices.first(where: { $0.id == color })?.color ?? .secondary
   }
 }
 
@@ -983,6 +1172,42 @@ private struct FilterSidebarRow: View {
   }
 }
 
+private struct PendingFilterSidebarRow: View {
+  var filter: PendingFilterCreation
+
+  var body: some View {
+    SidebarRowContent(
+      title: filter.name,
+      subtitle: "Creating...",
+      systemImage: systemImage,
+      avatarName: nil,
+      avatarEmail: nil,
+      avatarURL: nil,
+      tint: tint,
+      count: 0,
+      showsProgress: true,
+      showsDragHandle: false
+    )
+    .opacity(0.76)
+    .listRowBackground(
+      SidebarRowBackground(
+        isSelected: false,
+        isHovered: false
+      )
+    )
+    .sidebarListRowChrome()
+  }
+
+  private var systemImage: String {
+    let value = filter.icon.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? "line.3.horizontal.decrease.circle" : value
+  }
+
+  private var tint: Color {
+    filterColorChoices.first(where: { $0.id == filter.color })?.color ?? .secondary
+  }
+}
+
 private struct SidebarButton: View {
   var title: String
   var subtitle: String?
@@ -992,6 +1217,7 @@ private struct SidebarButton: View {
   var avatarURL: String? = nil
   var tint: Color = .secondary
   var count: Int = 0
+  var showsProgress = false
   var isSelected: Bool
   var isReorderable = false
   var isEditing = false
@@ -1013,6 +1239,7 @@ private struct SidebarButton: View {
         avatarURL: avatarURL,
         tint: tint,
         count: count,
+        showsProgress: showsProgress,
         showsDragHandle: isReorderable && (isEditing || isHovered)
       )
       .contentShape(Rectangle())
@@ -1054,6 +1281,7 @@ private struct SidebarDragPreview: View {
   var avatarURL: String? = nil
   var tint: Color = .secondary
   var count: Int = 0
+  var showsProgress = false
 
   var body: some View {
     SidebarRowContent(
@@ -1065,6 +1293,7 @@ private struct SidebarDragPreview: View {
       avatarURL: avatarURL,
       tint: tint,
       count: count,
+      showsProgress: showsProgress,
       showsDragHandle: true
     )
     .padding(.horizontal, 10)
@@ -1088,6 +1317,7 @@ private struct SidebarRowContent: View {
   var avatarURL: String?
   var tint: Color
   var count: Int
+  var showsProgress: Bool = false
   var showsDragHandle: Bool
 
   var body: some View {
@@ -1126,6 +1356,13 @@ private struct SidebarRowContent: View {
           .font(countFont)
           .foregroundStyle(.secondary)
           .monospacedDigit()
+      }
+
+      if showsProgress {
+        ProgressView()
+          .controlSize(.small)
+          .frame(width: 14, height: 14)
+          .accessibilityLabel("In progress")
       }
 
       if showsDragHandle {

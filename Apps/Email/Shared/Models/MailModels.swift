@@ -4,6 +4,7 @@ import SwiftUI
 enum MailProvider: String, Codable, CaseIterable, Identifiable {
   case gmail
   case icloud
+  case imap
 
   var id: String { rawValue }
 
@@ -11,6 +12,7 @@ enum MailProvider: String, Codable, CaseIterable, Identifiable {
     switch self {
     case .gmail: "Gmail"
     case .icloud: "iCloud"
+    case .imap: "IMAP"
     }
   }
 
@@ -18,6 +20,7 @@ enum MailProvider: String, Codable, CaseIterable, Identifiable {
     switch self {
     case .gmail: "envelope.circle"
     case .icloud: "icloud"
+    case .imap: "server.rack"
     }
   }
 }
@@ -33,7 +36,151 @@ struct MailAccount: Codable, Identifiable, Hashable {
   var syncHistory: Bool
   var sortOrder: Int?
   var lastSyncAt: String?
+  var providerMetadata: AccountProviderMetadata?
+  var stats: AccountMailStats?
   var createdAt: String
+}
+
+struct AccountProviderMetadata: Codable, Hashable {
+  var cartaSyncStatus: MailImportStatus?
+}
+
+struct AccountMailStats: Codable, Hashable {
+  var totalCount: Int
+  var unreadCount: Int
+  var oldestReceivedAt: String?
+  var newestReceivedAt: String?
+  var attachmentEmailCount: Int
+  var attachmentCount: Int?
+  var fileAttachmentCount: Int?
+  var downloadedAttachmentCount: Int?
+  var messageBytes: Int?
+  var attachmentBytes: Int?
+  var downloadedAttachmentBytes: Int?
+  var storedBytes: Int?
+  var byMailbox: [AccountMailboxStats]?
+
+  var localStorageBytes: Int {
+    storedBytes ?? ((messageBytes ?? 0) + (downloadedAttachmentBytes ?? 0))
+  }
+}
+
+struct AccountMailboxStats: Codable, Hashable, Identifiable {
+  var role: String
+  var name: String
+  var totalCount: Int
+  var unreadCount: Int
+
+  var id: String { "\(role)-\(name)" }
+}
+
+struct MailImportStatus: Codable, Hashable {
+  var status: String?
+  var historyWindow: String?
+  var includeAttachments: Bool?
+  var imported: Int?
+  var backfilled: Int?
+  var oldestReceivedAt: String?
+  var startedAt: String?
+  var updatedAt: String?
+  var completedAt: String?
+  var error: String?
+
+  var normalizedStatus: String {
+    status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  }
+
+  var isImporting: Bool {
+    normalizedStatus == "running"
+  }
+
+  var isComplete: Bool {
+    normalizedStatus == "complete"
+  }
+
+  var isPartial: Bool {
+    normalizedStatus == "partial"
+  }
+
+  var isFailed: Bool {
+    normalizedStatus == "failed"
+  }
+
+  var isFullHistory: Bool {
+    historyWindow == "all"
+  }
+
+  var shouldShowInClient: Bool {
+    ["running", "partial", "failed"].contains(normalizedStatus)
+  }
+
+  var title: String {
+    switch normalizedStatus {
+    case "failed":
+      "Import needs attention"
+    case "partial":
+      "Import paused"
+    default:
+      "Importing mail"
+    }
+  }
+
+  var countText: String? {
+    guard let imported, imported > 0 else { return nil }
+    return "\(imported.formatted()) imported"
+  }
+
+  var oldestText: String? {
+    guard let oldestReceivedAt, !oldestReceivedAt.isEmpty else { return nil }
+    return "oldest \(String(oldestReceivedAt.prefix(10)))"
+  }
+
+  var windowText: String? {
+    guard let historyWindow, !historyWindow.isEmpty else { return nil }
+    if historyWindow == "all" {
+      return "full history"
+    }
+    return historyWindow.replacingOccurrences(of: "-", with: " ")
+  }
+
+  var attachmentText: String {
+    includeAttachments == true ? "attachments downloaded" : "attachments on demand"
+  }
+
+  func detailText(account: MailAccount? = nil) -> String {
+    if normalizedStatus == "failed", let error, !error.isEmpty {
+      return error
+    }
+
+    var parts: [String] = []
+    if let account {
+      parts.append(account.displayName)
+    }
+    if let countText {
+      parts.append(countText)
+    }
+    if let oldestText {
+      parts.append(oldestText)
+    }
+    if let windowText {
+      parts.append(windowText)
+    }
+    return parts.isEmpty ? "Messages may still be arriving." : parts.joined(separator: " - ")
+  }
+}
+
+extension MailAccount {
+  var importStatus: MailImportStatus? {
+    providerMetadata?.cartaSyncStatus
+  }
+
+  var isImportingMail: Bool {
+    importStatus?.isImporting == true
+  }
+
+  var shouldShowImportStatus: Bool {
+    importStatus?.shouldShowInClient == true
+  }
 }
 
 struct UserProfile: Codable, Identifiable, Hashable {
@@ -310,6 +457,13 @@ struct ProviderSyncResult: Codable, Hashable {
   var newEmailIds: [String]?
 }
 
+struct ProviderBackfillResult: Codable, Hashable {
+  var provider: String?
+  var status: String?
+  var imported: Int?
+  var complete: Bool?
+}
+
 struct ProviderConnectResponse: Decodable {
   var account: MailAccount
   var sync: ProviderSyncResult
@@ -317,6 +471,10 @@ struct ProviderConnectResponse: Decodable {
 
 struct SyncResponse: Decodable {
   var sync: ProviderSyncResult
+}
+
+struct BackfillResponse: Decodable {
+  var backfill: ProviderBackfillResult
 }
 
 struct PushTokenRegistrationRequest: Encodable {

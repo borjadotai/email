@@ -35,6 +35,13 @@ private struct EmailListCacheKey: Hashable {
   }
 }
 
+struct PendingFilterCreation: Identifiable, Hashable {
+  var id: String
+  var name: String
+  var color: String
+  var icon: String
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -47,6 +54,7 @@ final class AppModel {
   }
   var labels: [MailLabel] = []
   var filters: [MailFilter] = []
+  var pendingFilterCreations: [PendingFilterCreation] = []
   var emails: [EmailSummary] = []
   var selectedEmail: EmailDetail?
   var conversationEmails: [EmailDetail] = []
@@ -67,6 +75,7 @@ final class AppModel {
   var isSending = false
   var isConnectingAccount = false
   var syncingAccountID: String?
+  var backfillingAccountID: String?
   var errorMessage: String?
   var statusMessage: String?
   var health: HealthResponse?
@@ -140,6 +149,7 @@ final class AppModel {
   @ObservationIgnored private var emailThreadCache: [String: [EmailDetail]] = [:]
   @ObservationIgnored private var emailDetailCacheOrder: [String] = []
   @ObservationIgnored private var emailDetailPrefetchTask: Task<Void, Never>?
+  @ObservationIgnored private var importStatusPollingTask: Task<Void, Never>?
   @ObservationIgnored private var prefetchingEmailIDs: Set<String> = []
   @ObservationIgnored private var activeEmailQuery: EmailQuery?
   @ObservationIgnored private var nextEmailOffset = 0
@@ -151,6 +161,7 @@ final class AppModel {
   @ObservationIgnored private let nextEmailPageSize = 80
   @ObservationIgnored private let maxEmailDetailCacheSize = 120
   @ObservationIgnored private let emailDetailPrefetchWindow = 5
+  @ObservationIgnored private let importStatusPollingIntervalSeconds = 4
 
   init() {
     var initialServerURL = UserDefaults.standard.string(forKey: Defaults.serverURL) ?? Defaults.defaultServerURL
@@ -207,6 +218,13 @@ final class AppModel {
     mailboxes
       .filter { $0.role == "inbox" }
       .reduce(0) { $0 + $1.unreadCount }
+  }
+
+  var visibleImportAccounts: [MailAccount] {
+    let scope = importAccountIDsForCurrentScope
+    return accounts.filter { account in
+      account.shouldShowImportStatus && (scope == nil || scope?.contains(account.id) == true)
+    }
   }
 
   var canTriageCurrentInbox: Bool {
@@ -306,6 +324,7 @@ final class AppModel {
     filters = try await apiClient.filters()
     try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
     prefetchInboxTriageIfNeeded()
+    configureImportStatusPolling()
     errorMessage = nil
   }
 
@@ -454,8 +473,69 @@ final class AppModel {
   }
 
   private func refreshSidebarCounts() async throws {
+    accounts = try await apiClient.accounts()
     mailboxes = try await apiClient.mailboxes()
     filters = try await apiClient.filters()
+    configureImportStatusPolling()
+  }
+
+  private func configureImportStatusPolling() {
+    if accounts.contains(where: { $0.isImportingMail }) {
+      startImportStatusPollingIfNeeded()
+    } else {
+      stopImportStatusPolling()
+    }
+  }
+
+  private func startImportStatusPollingIfNeeded() {
+    guard importStatusPollingTask == nil else { return }
+    importStatusPollingTask = Task { @MainActor in
+      defer { importStatusPollingTask = nil }
+
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(importStatusPollingIntervalSeconds))
+        guard !Task.isCancelled else { return }
+
+        do {
+          accounts = try await apiClient.accounts()
+          if visibleImportAccounts.contains(where: { $0.isImportingMail }),
+             !isLoadingEmails,
+             !isRefreshingMail,
+             !isLoadingMoreEmails {
+            try? await loadEmails(refreshFilterCache: selectedFilterID != nil)
+          }
+          mailboxes = try await apiClient.mailboxes()
+          if !accounts.contains(where: { $0.isImportingMail }) {
+            return
+          }
+        } catch {
+          continue
+        }
+      }
+    }
+  }
+
+  private func stopImportStatusPolling() {
+    importStatusPollingTask?.cancel()
+    importStatusPollingTask = nil
+  }
+
+  private var importAccountIDsForCurrentScope: Set<String>? {
+    if let selectedAccountID {
+      return [selectedAccountID]
+    }
+
+    if let selectedMailboxID,
+       let accountID = mailboxes.first(where: { $0.id == selectedMailboxID })?.accountId {
+      return [accountID]
+    }
+
+    if let selectedLabelID,
+       let accountID = labels.first(where: { $0.id == selectedLabelID })?.accountId {
+      return [accountID]
+    }
+
+    return nil
   }
 
   private func reportError(_ error: Error) {
@@ -618,10 +698,12 @@ final class AppModel {
   }
 
   private func reloadVisibleMailAfterSync(refreshFilterCache: Bool = false) async throws {
+    accounts = try await apiClient.accounts()
     mailboxes = try await apiClient.mailboxes()
     try await loadEmails(refreshFilterCache: refreshFilterCache)
     filters = try await apiClient.filters()
     prefetchInboxTriageIfNeeded()
+    configureImportStatusPolling()
   }
 
   private func quickSyncAccounts(_ accountIds: [String]) async -> [String] {
@@ -781,31 +863,63 @@ final class AppModel {
     }
   }
 
-  func createFilter(naturalLanguage: String) async {
+  func createFilter(name: String, color: String, icon: String, naturalLanguage: String) async {
+    let pending = PendingFilterCreation(
+      id: UUID().uuidString,
+      name: name,
+      color: color,
+      icon: icon
+    )
+    pendingFilterCreations.append(pending)
+    statusMessage = "Creating \(name)"
+    errorMessage = nil
+    defer {
+      pendingFilterCreations.removeAll { $0.id == pending.id }
+    }
+
     do {
-      let filter = try await apiClient.createFilter(naturalLanguage: naturalLanguage)
+      let filter = try await apiClient.createFilter(
+        name: name,
+        color: color,
+        icon: icon,
+        naturalLanguage: naturalLanguage
+      )
       filters = try await apiClient.filters()
       await selectFilter(filter)
+      statusMessage = "Created \(filter.name)"
+      errorMessage = nil
     } catch {
       reportError(error)
+      statusMessage = nil
     }
   }
 
   func updateFilter(
     _ filter: MailFilter,
+    name: String,
+    color: String,
+    icon: String,
     naturalLanguage: String
   ) async {
+    statusMessage = "Updating \(name)"
+    errorMessage = nil
     do {
       let updated = try await apiClient.updateFilter(
         id: filter.id,
+        name: name,
+        color: color,
+        icon: icon,
         naturalLanguage: naturalLanguage
       )
       filters = filters.map { $0.id == updated.id ? updated : $0 }
       if selectedFilterID == updated.id {
         try await loadEmails(refreshFilterCache: true)
       }
+      statusMessage = "Updated \(updated.name)"
+      errorMessage = nil
     } catch {
       reportError(error)
+      statusMessage = nil
     }
   }
 
@@ -1174,7 +1288,7 @@ final class AppModel {
     }
   }
 
-  func syncAccount(_ account: MailAccount) async {
+  func syncAccount(_ account: MailAccount, includeDiagnostics: Bool = false) async {
     syncingAccountID = account.id
     defer { syncingAccountID = nil }
 
@@ -1182,7 +1296,46 @@ final class AppModel {
       let result = try await apiClient.syncAccount(id: account.id)
       statusMessage = "Imported \(result.imported) messages"
       errorMessage = nil
-      await refreshAll()
+      if includeDiagnostics {
+        await refreshAccountDiagnostics()
+      } else {
+        await refreshAll()
+      }
+    } catch {
+      reportError(error)
+    }
+  }
+
+  func startFullHistorySync(_ account: MailAccount) async {
+    guard backfillingAccountID == nil else { return }
+    backfillingAccountID = account.id
+    statusMessage = "Starting full history sync"
+    errorMessage = nil
+    defer { backfillingAccountID = nil }
+
+    do {
+      _ = try await apiClient.startHistoryBackfill(
+        id: account.id,
+        includeAttachmentData: account.importStatus?.includeAttachments ?? true,
+        historyWindow: "all"
+      )
+      accounts = try await apiClient.accounts(includeStats: true)
+      mailboxes = try await apiClient.mailboxes()
+      configureImportStatusPolling()
+      statusMessage = "Full history sync started"
+      errorMessage = nil
+    } catch {
+      reportError(error)
+      statusMessage = nil
+    }
+  }
+
+  func refreshAccountDiagnostics() async {
+    do {
+      accounts = try await apiClient.accounts(includeStats: true)
+      mailboxes = try await apiClient.mailboxes()
+      configureImportStatusPolling()
+      errorMessage = nil
     } catch {
       reportError(error)
     }

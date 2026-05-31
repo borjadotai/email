@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 enum AppSheet: Identifiable {
   case addAccount
@@ -34,7 +37,7 @@ struct RootView: View {
     NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
       SidebarView(
         onAddAccount: { sheet = .addAccount },
-        onSettings: { sheet = .settings },
+        onSettings: openSettings,
         onShowMessages: { setPreferredCompactColumn(.content) }
       )
     } content: {
@@ -70,7 +73,7 @@ struct RootView: View {
       sheet = .compose
     }
     .onChange(of: model.settingsRequestCount) { _, _ in
-      sheet = .settings
+      openSettings()
     }
     .onChange(of: model.notificationNavigationRequestCount) { _, _ in
       sheet = nil
@@ -128,6 +131,15 @@ struct RootView: View {
     preferredCompactColumn = column
     #else
     _ = column
+    #endif
+  }
+
+  private func openSettings() {
+    #if os(macOS)
+    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    NSApp.activate(ignoringOtherApps: true)
+    #else
+    sheet = .settings
     #endif
   }
 

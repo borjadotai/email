@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { DatabaseSync } from "node:sqlite";
-import { defaultFilterQueryPlan, fallbackFilterQueryPlan, isInvoicePrompt } from "./filterQueryPlanner.js";
+import { defaultFilterQueryPlan, fallbackFilterQueryPlan, isInvoicePrompt, isTaxPrompt } from "./filterQueryPlanner.js";
 import { senderLogoURLForEmail } from "./logoResolver.js";
 
 const SYSTEM_MAILBOXES = [
@@ -22,12 +22,13 @@ const SYSTEM_LABELS = [
 ];
 
 const SEARCH_INDEX_VERSION = "3";
-const FILTER_CACHE_VERSION = "2";
+const FILTER_CACHE_VERSION = "3";
 const CONTACT_INDEX_VERSION = "1";
 const CONTACT_INDEX_SYNC_REBUILD_LIMIT = 5_000;
 const CONTACT_INDEX_REBUILD_BATCH_SIZE = 500;
 const SEARCHABLE_BODY_TEXT_LIMIT = 250_000;
 const HTML_SEARCH_INPUT_LIMIT = 750_000;
+const ESTIMATED_MESSAGE_STORAGE_BYTES = 52 * 1024;
 
 export class MailStore {
   constructor({ databasePath = ":memory:", seedDemo = false, filterQueryPlanner = defaultFilterQueryPlan } = {}) {
@@ -177,6 +178,7 @@ export class MailStore {
         snippet TEXT NOT NULL,
         body_text TEXT NOT NULL,
         body_html TEXT,
+        storage_bytes INTEGER NOT NULL DEFAULT 0,
         rfc_message_id TEXT,
         in_reply_to TEXT,
         references_json TEXT NOT NULL DEFAULT '[]',
@@ -330,6 +332,7 @@ export class MailStore {
     this.ensureColumn("emails", "rfc_message_id", "TEXT");
     this.ensureColumn("emails", "in_reply_to", "TEXT");
     this.ensureColumn("emails", "references_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("emails", "storage_bytes", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("saved_filters", "query_sql", "TEXT");
     this.ensureColumn("saved_filters", "query_source", "TEXT NOT NULL DEFAULT 'criteria'");
     this.ensureColumn("saved_filters", "query_error", "TEXT");
@@ -520,7 +523,7 @@ export class MailStore {
     return this.getAccount(account.id);
   }
 
-  listAccounts() {
+  listAccounts({ includeStats = false } = {}) {
     return this.db.prepare(`
       SELECT a.id, a.provider, a.email, a.display_name AS displayName,
              ${accountAvatarSelect("a")},
@@ -533,7 +536,8 @@ export class MailStore {
     `).all().map(row => ({
       ...row,
       syncHistory: Boolean(row.syncHistory),
-      providerMetadata: parseJSON(row.providerMetadataJSON, {})
+      providerMetadata: parseJSON(row.providerMetadataJSON, {}),
+      ...(includeStats ? { stats: this.accountEmailStats(row.id, { requireAccount: false }) } : {})
     }));
   }
 
@@ -970,21 +974,39 @@ export class MailStore {
     return this.getAccount(id);
   }
 
+  setAccountSyncHistory(id, syncHistory) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+    this.db.prepare("UPDATE accounts SET sync_history = ? WHERE id = ?").run(syncHistory ? 1 : 0, id);
+    return this.getAccount(id);
+  }
+
   oldestEmailReceivedAt(accountId) {
     return this.db.prepare("SELECT MIN(received_at) AS oldest FROM emails WHERE account_id = ?").get(accountId)?.oldest ?? null;
   }
 
-  accountEmailStats(accountId) {
-    const account = this.getAccount(accountId);
-    if (!account) return null;
+  accountEmailStats(accountId, { requireAccount = true } = {}) {
+    if (requireAccount && !this.getAccount(accountId)) return null;
 
     const totals = this.db.prepare(`
       SELECT COUNT(*) AS totalCount,
              SUM(CASE WHEN e.is_read = 0 THEN 1 ELSE 0 END) AS unreadCount,
              MIN(e.received_at) AS oldestReceivedAt,
              MAX(e.received_at) AS newestReceivedAt,
-             SUM(CASE WHEN e.has_attachments = 1 THEN 1 ELSE 0 END) AS attachmentEmailCount
+             SUM(CASE WHEN e.has_attachments = 1 THEN 1 ELSE 0 END) AS attachmentEmailCount,
+             SUM(CASE WHEN e.storage_bytes > 0 THEN e.storage_bytes ELSE ? END) AS messageBytes
       FROM emails e
+      WHERE e.account_id = ?
+    `).get(ESTIMATED_MESSAGE_STORAGE_BYTES, accountId);
+
+    const attachments = this.db.prepare(`
+      SELECT COUNT(ea.id) AS attachmentCount,
+             SUM(CASE WHEN ea.is_inline = 0 THEN 1 ELSE 0 END) AS fileAttachmentCount,
+             SUM(CASE WHEN ea.data IS NOT NULL THEN 1 ELSE 0 END) AS downloadedAttachmentCount,
+             SUM(CASE WHEN ea.is_inline = 0 THEN ea.size ELSE 0 END) AS attachmentBytes,
+             SUM(CASE WHEN ea.data IS NOT NULL THEN ea.size ELSE 0 END) AS downloadedAttachmentBytes
+      FROM email_attachments ea
+      JOIN emails e ON e.id = ea.email_id
       WHERE e.account_id = ?
     `).get(accountId);
 
@@ -998,12 +1020,21 @@ export class MailStore {
       ORDER BY m.role
     `).all(accountId);
 
+    const messageBytes = totals?.messageBytes ?? 0;
+
     return {
       totalCount: totals?.totalCount ?? 0,
       unreadCount: totals?.unreadCount ?? 0,
       oldestReceivedAt: totals?.oldestReceivedAt ?? null,
       newestReceivedAt: totals?.newestReceivedAt ?? null,
       attachmentEmailCount: totals?.attachmentEmailCount ?? 0,
+      attachmentCount: attachments?.attachmentCount ?? 0,
+      fileAttachmentCount: attachments?.fileAttachmentCount ?? 0,
+      downloadedAttachmentCount: attachments?.downloadedAttachmentCount ?? 0,
+      messageBytes,
+      attachmentBytes: attachments?.attachmentBytes ?? 0,
+      downloadedAttachmentBytes: attachments?.downloadedAttachmentBytes ?? 0,
+      storedBytes: messageBytes + (attachments?.downloadedAttachmentBytes ?? 0),
       byMailbox: byMailbox.map(row => ({
         role: row.role,
         name: row.name,
@@ -1332,7 +1363,7 @@ export class MailStore {
   }
 
   repairFilterQueryPlanIfNeeded(filter) {
-    if (!isInvoicePrompt(filter.naturalLanguage)) {
+    if (!isInvoicePrompt(filter.naturalLanguage) && !isTaxPrompt(filter.naturalLanguage)) {
       return filter;
     }
 
@@ -1422,9 +1453,13 @@ export class MailStore {
     }
 
     const lower = query.toLowerCase();
-    const blocked = /\b(insert|update|delete|drop|alter|create|replace|pragma|attach|detach|vacuum|reindex|truncate)\b/u;
+    const blocked = /\b(insert|update|delete|drop|alter|create|pragma|attach|detach|vacuum|reindex|truncate)\b/u;
     if (blocked.test(lower)) {
       throw httpError(400, "Filter query must be read-only.");
+    }
+    const unsafeLooseLike = lower.match(/\b(?:like|glob)\s+(['"])[%*]?(tax|vat|iva)[%*]?\1/u);
+    if (unsafeLooseLike) {
+      throw httpError(400, `Filter query uses an unsafe loose match for "${unsafeLooseLike[2]}"; short tax terms must be matched as whole words or stronger phrases.`);
     }
 
     const allowedTables = new Set(["emails", "accounts", "mailboxes", "labels", "email_labels", "email_attachments", "email_fts"]);
@@ -2587,10 +2622,10 @@ export class MailStore {
       INSERT INTO emails (
         id, account_id, mailbox_id, provider_uid, thread_id, sender_name, sender_email,
         sender_avatar_url, recipients_json, cc_json, bcc_json, subject, snippet,
-        body_text, body_html, rfc_message_id, in_reply_to, references_json,
+        body_text, body_html, storage_bytes, rfc_message_id, in_reply_to, references_json,
         sent_at, received_at, is_read, is_starred, importance,
         has_attachments, tracking_id, opened_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       email.id,
       email.accountId,
@@ -2607,6 +2642,7 @@ export class MailStore {
       email.snippet,
       email.bodyText,
       email.bodyHTML,
+      emailStorageBytes(email),
       email.rfcMessageID ?? null,
       email.inReplyTo ?? null,
       JSON.stringify(email.references ?? []),
@@ -2671,7 +2707,7 @@ export class MailStore {
         UPDATE emails
         SET mailbox_id = ?, provider_uid = ?, thread_id = ?, sender_name = ?, sender_email = ?,
             sender_avatar_url = ?, recipients_json = ?, cc_json = ?, bcc_json = ?,
-            subject = ?, snippet = ?, body_text = ?, body_html = ?,
+            subject = ?, snippet = ?, body_text = ?, body_html = ?, storage_bytes = ?,
             rfc_message_id = ?, in_reply_to = ?, references_json = ?,
             sent_at = ?, received_at = ?, is_read = ?, is_starred = ?,
             importance = ?, has_attachments = ?
@@ -2690,6 +2726,7 @@ export class MailStore {
         resolvedEmail.snippet,
         resolvedEmail.bodyText,
         resolvedEmail.bodyHTML,
+        emailStorageBytes(resolvedEmail),
         resolvedEmail.rfcMessageID ?? null,
         resolvedEmail.inReplyTo ?? null,
         JSON.stringify(resolvedEmail.references ?? []),
@@ -3667,6 +3704,25 @@ function searchableBodyText(email) {
     optionalString(email.bodyText),
     htmlToSearchText(email.bodyHTML)
   ].filter(Boolean).join("\n"));
+}
+
+function emailStorageBytes(email) {
+  const fields = [
+    email.senderName,
+    email.senderEmail,
+    JSON.stringify(email.recipients ?? []),
+    JSON.stringify(email.cc ?? []),
+    JSON.stringify(email.bcc ?? []),
+    email.subject,
+    email.snippet,
+    email.bodyText,
+    email.bodyHTML,
+    JSON.stringify(email.references ?? [])
+  ];
+  return fields.reduce((total, value) => {
+    if (typeof value !== "string" || value.length === 0) return total;
+    return total + Buffer.byteLength(value);
+  }, 0);
 }
 
 function emailFTSInputChanged(existing, next) {

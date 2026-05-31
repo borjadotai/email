@@ -47,6 +47,7 @@ test("runtime waits for in-flight background work before closing the store", asy
 
     const backfill = runtime.runHistoryBackfillPass();
     await backfillStarted;
+    assert.equal(runtime.store.getAccount(runtime.store.listAccounts()[0].id).providerMetadata.cartaSyncStatus.status, "running");
 
     let closeResolved = false;
     const close = new Promise(resolveClose => {
