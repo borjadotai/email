@@ -498,12 +498,6 @@ final class AppModel {
 
         do {
           accounts = try await apiClient.accounts()
-          if visibleImportAccounts.contains(where: { $0.isImportingMail }),
-             !isLoadingEmails,
-             !isRefreshingMail,
-             !isLoadingMoreEmails {
-            try? await loadEmails(refreshFilterCache: selectedFilterID != nil)
-          }
           mailboxes = try await apiClient.mailboxes()
           if !accounts.contains(where: { $0.isImportingMail }) {
             return

@@ -136,7 +136,7 @@ struct RootView: View {
 
   private func openSettings() {
     #if os(macOS)
-    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    sheet = .settings
     NSApp.activate(ignoringOtherApps: true)
     #else
     sheet = .settings
