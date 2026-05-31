@@ -191,12 +191,14 @@ sign_nested_bundles() {
 
   while IFS= read -r candidate; do
     /usr/bin/codesign "${CODESIGN_ARGS[@]}" "$candidate"
-  done < <(/usr/bin/find "$root" -depth -type d \( -name '*.xpc' -o -name '*.app' -o -name '*.framework' \) -print)
+  done < <(/usr/bin/find "$root" -depth -type d \( -name '*.appex' -o -name '*.xpc' -o -name '*.app' -o -name '*.framework' \) -print)
 }
 
 sign_macho_files "$SERVER_BUNDLE"
 sign_macho_files "$APP_BUNDLE/Contents/Frameworks"
+sign_macho_files "$APP_BUNDLE/Contents/PlugIns"
 sign_nested_bundles "$APP_BUNDLE/Contents/Frameworks"
+sign_nested_bundles "$APP_BUNDLE/Contents/PlugIns"
 
 /usr/bin/codesign "${APP_CODESIGN_ARGS[@]}" "$APP_BUNDLE"
 /usr/bin/codesign --verify --strict --deep --verbose=2 "$APP_BUNDLE"
