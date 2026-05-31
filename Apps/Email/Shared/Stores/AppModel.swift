@@ -64,6 +64,7 @@ final class AppModel {
   var selectedMailboxID: String?
   var selectedLabelID: String?
   var selectedFilterID: String?
+  var selectedFilterMailboxScope: FilterMailboxScope = .inbox
   var selectedGlobalFolder: GlobalMailboxFolder?
   var selectedUnreadOnly = false
   var searchText: String = ""
@@ -363,10 +364,17 @@ final class AppModel {
   }
 
   private func loadEmails(refreshFilterCache: Bool = false) async throws {
+    let mailboxRole: String?
+    if selectedFilterID != nil {
+      mailboxRole = selectedFilterMailboxScope.mailboxRole
+    } else {
+      mailboxRole = selectedGlobalFolder?.rawValue ?? defaultMailboxRole
+    }
+
     let query = EmailQuery(
       accountId: selectedAccountID,
       mailboxId: selectedMailboxID,
-      mailboxRole: selectedGlobalFolder?.rawValue ?? defaultMailboxRole,
+      mailboxRole: mailboxRole,
       labelId: selectedLabelID,
       filterId: selectedFilterID,
       q: searchText,
@@ -780,6 +788,7 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = nil
     selectedUnreadOnly = false
     await refreshEmails()
@@ -792,6 +801,7 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = nil
     selectedUnreadOnly = true
     await refreshEmails()
@@ -804,6 +814,7 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = folder
     selectedUnreadOnly = false
     await refreshEmails()
@@ -816,6 +827,7 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = nil
     selectedUnreadOnly = false
     await refreshEmails()
@@ -828,6 +840,7 @@ final class AppModel {
     selectedMailboxID = mailbox.id
     selectedLabelID = nil
     selectedFilterID = nil
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = nil
     selectedUnreadOnly = false
     await refreshEmails()
@@ -840,6 +853,7 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = label.id
     selectedFilterID = nil
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = nil
     selectedUnreadOnly = false
     await refreshEmails()
@@ -852,9 +866,16 @@ final class AppModel {
     selectedMailboxID = nil
     selectedLabelID = nil
     selectedFilterID = filter.id
+    selectedFilterMailboxScope = .inbox
     selectedGlobalFolder = nil
     selectedUnreadOnly = false
     await refreshEmails(refreshFilterCache: true)
+  }
+
+  func selectFilterMailboxScope(_ scope: FilterMailboxScope) async {
+    guard selectedFilterID != nil else { return }
+    selectedFilterMailboxScope = scope
+    await refreshEmails()
   }
 
   func createGlobalLabel(name: String, color: String, icon: String) async {
@@ -1013,6 +1034,7 @@ final class AppModel {
       filters.removeAll { $0.id == filter.id }
       if selectedFilterID == filter.id {
         selectedFilterID = nil
+        selectedFilterMailboxScope = .inbox
         selectedEmailID = nil
         selectedEmail = nil
         selectedEmailLoadErrorMessage = nil
@@ -1878,6 +1900,10 @@ final class AppModel {
 
     if let selectedGlobalFolder {
       return selectedGlobalFolder != .archive
+    }
+
+    if selectedFilterID != nil {
+      return selectedFilterMailboxScope == .inbox
     }
 
     return defaultMailboxRole == "inbox"

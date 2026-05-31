@@ -272,6 +272,46 @@ enum GlobalMailboxFolder: String, Codable, CaseIterable, Identifiable {
   }
 }
 
+enum FilterMailboxScope: String, CaseIterable, Identifiable {
+  case inbox
+  case archive
+  case spam
+  case trash
+  case sent
+  case blocked
+  case all
+
+  var id: String { rawValue }
+
+  var mailboxRole: String? {
+    self == .all ? nil : rawValue
+  }
+
+  var title: String {
+    switch self {
+    case .inbox: "Inbox"
+    case .archive: "Archive"
+    case .spam: "Spam"
+    case .trash: "Trash"
+    case .sent: "Sent"
+    case .blocked: "Blocked"
+    case .all: "All Mail"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .inbox: "tray"
+    case .archive: "archivebox"
+    case .spam: "exclamationmark.octagon"
+    case .trash: "trash"
+    case .sent: "paperplane"
+    case .blocked: "hand.raised"
+    case .all: "tray.full"
+    }
+  }
+}
+
 struct EmailSummary: Codable, Identifiable, Hashable {
   var id: String
   var accountId: String

@@ -57,12 +57,17 @@ struct EmailListView: View {
         title: iOSInboxTitle,
         filters: model.filters,
         selectedFilterID: model.selectedFilterID,
+        selectedFilterMailboxScope: model.selectedFilterMailboxScope,
         showsFilters: showsSavedFilterPills,
+        showsFilterMailboxScopes: model.selectedFilterID != nil,
         onSelectAll: {
           Task { await model.selectGlobalInbox() }
         },
         onSelectFilter: { filter in
           Task { await model.selectFilter(filter) }
+        },
+        onSelectFilterMailboxScope: { scope in
+          Task { await model.selectFilterMailboxScope(scope) }
         }
       )
       .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 6, trailing: 0))
@@ -157,6 +162,18 @@ struct EmailListView: View {
         MailImportStatusBanner(accounts: model.visibleImportAccounts)
           .padding(.horizontal, 14)
           .padding(.vertical, 10)
+        Divider()
+      }
+
+      if model.selectedFilterID != nil {
+        FilterMailboxScopePills(
+          selectedScope: model.selectedFilterMailboxScope,
+          horizontalPadding: 14,
+          verticalPadding: 10,
+          onSelect: { scope in
+            Task { await model.selectFilterMailboxScope(scope) }
+          }
+        )
         Divider()
       }
 
@@ -648,17 +665,60 @@ private struct EmailRow: View {
   }
 }
 
+private struct FilterMailboxScopePills: View {
+  var selectedScope: FilterMailboxScope
+  var horizontalPadding: CGFloat
+  var verticalPadding: CGFloat
+  var onSelect: (FilterMailboxScope) -> Void
+
+  var body: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        ForEach(FilterMailboxScope.allCases) { scope in
+          Button {
+            withAnimation(.snappy(duration: 0.2)) {
+              onSelect(scope)
+            }
+          } label: {
+            Label(scope.title, systemImage: scope.systemImage)
+              .font(.system(size: 13, weight: .semibold))
+              .labelStyle(.titleAndIcon)
+              .foregroundStyle(scope == selectedScope ? Color.primary : Color.secondary)
+              .padding(.horizontal, 12)
+              .padding(.vertical, 7)
+              .background(scopePillFill(isSelected: scope == selectedScope), in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .accessibilityAddTraits(scope == selectedScope ? .isSelected : [])
+        }
+      }
+      .padding(.horizontal, horizontalPadding)
+      .padding(.vertical, verticalPadding)
+    }
+    .scrollClipDisabled()
+  }
+
+  private func scopePillFill(isSelected: Bool) -> Color {
+    isSelected
+      ? Color.blue.opacity(0.16)
+      : Color.secondary.opacity(0.08)
+  }
+}
+
 #if os(iOS)
 private struct IOSInboxHeader: View {
   var title: String
   var filters: [MailFilter]
   var selectedFilterID: String?
+  var selectedFilterMailboxScope: FilterMailboxScope
   var showsFilters: Bool
+  var showsFilterMailboxScopes: Bool
   var onSelectAll: () -> Void
   var onSelectFilter: (MailFilter) -> Void
+  var onSelectFilterMailboxScope: (FilterMailboxScope) -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: 13) {
       Text(title)
         .font(.system(size: 40, weight: .bold))
         .foregroundStyle(.primary)
@@ -705,6 +765,15 @@ private struct IOSInboxHeader: View {
           .padding(.horizontal, 20)
         }
         .scrollClipDisabled()
+      }
+
+      if showsFilterMailboxScopes {
+        FilterMailboxScopePills(
+          selectedScope: selectedFilterMailboxScope,
+          horizontalPadding: 20,
+          verticalPadding: 0,
+          onSelect: onSelectFilterMailboxScope
+        )
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
