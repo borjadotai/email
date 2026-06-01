@@ -678,6 +678,71 @@ test("pending provider mutations protect optimistic local state from stale sync"
   }
 });
 
+test("completed provider mutations keep local state authoritative across later stale sync", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const saved = store.upsertProviderEmail(testProviderEmail({
+      id: "completed-provider-action",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-completed-action",
+      senderName: "Provider Sender",
+      senderEmail: "sender@example.com",
+      isRead: false
+    }));
+
+    store.archiveEmail(saved.id);
+    store.updateEmail(saved.id, { isRead: true });
+    const archiveMutation = store.enqueueProviderMutation({
+      accountId: account.id,
+      emailId: saved.id,
+      action: "archive",
+      payload: { providerEmail: { id: saved.id, accountId: account.id, providerUID: saved.providerUID, mailboxRole: "inbox" } }
+    });
+    const readMutation = store.enqueueProviderMutation({
+      accountId: account.id,
+      emailId: saved.id,
+      action: "read-status",
+      payload: { isRead: true, providerEmail: { id: saved.id, accountId: account.id, providerUID: saved.providerUID, mailboxRole: "inbox" } }
+    });
+    store.markProviderMutationSucceeded(archiveMutation.id);
+    store.markProviderMutationSucceeded(readMutation.id);
+
+    const oldTimestamp = "2026-01-01T00:00:00.000Z";
+    store.db.prepare(`
+      UPDATE provider_mutations
+      SET completed_at = ?, updated_at = ?
+      WHERE id IN (?, ?)
+    `).run(oldTimestamp, oldTimestamp, archiveMutation.id, readMutation.id);
+
+    const staleProviderCopy = store.upsertProviderEmail(testProviderEmail({
+      id: saved.id,
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: saved.providerUID,
+      senderName: "Provider Sender",
+      senderEmail: "sender@example.com",
+      isRead: false
+    }));
+
+    assert.equal(staleProviderCopy.mailboxRole, "archive");
+    assert.equal(staleProviderCopy.isRead, true);
+    assert.equal(store.getEmail(saved.id).mailboxRole, "archive");
+    assert.equal(store.getEmail(saved.id).isRead, true);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("natural language auto-archive rules match App Store Connect update mail narrowly", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({

@@ -595,7 +595,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				EMAIL_DEFAULT_SERVER_URL = "https://email.marlin-barbel.ts.net";
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -608,7 +608,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.mac;
 				PRODUCT_NAME = Email;
 				SDKROOT = macosx;
@@ -630,7 +630,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				EMAIL_DEFAULT_SERVER_URL = "https://email.marlin-barbel.ts.net";
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -643,7 +643,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.mac;
 				PRODUCT_NAME = Email;
 				SDKROOT = macosx;
@@ -663,7 +663,7 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = "Email/Resources/Email-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				EMAIL_DEFAULT_SERVER_URL = "https://email.marlin-barbel.ts.net";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -676,7 +676,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios;
 				PRODUCT_NAME = Email;
 				SDKROOT = iphoneos;
@@ -700,7 +700,7 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = "Email/Resources/Email-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				EMAIL_DEFAULT_SERVER_URL = "https://email.marlin-barbel.ts.net";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -713,7 +713,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios;
 				PRODUCT_NAME = Email;
 				SDKROOT = iphoneos;
@@ -732,7 +732,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EmailNotificationService/Info.plist;
@@ -742,7 +742,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios.notificationservice;
 				PRODUCT_NAME = EmailNotificationService;
 				SDKROOT = iphoneos;
@@ -761,7 +761,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EmailNotificationService/Info.plist;
@@ -771,7 +771,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.ios.notificationservice;
 				PRODUCT_NAME = EmailNotificationService;
 				SDKROOT = iphoneos;
@@ -789,7 +789,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EmailNotificationService/Info.plist;
@@ -799,7 +799,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.mac.notificationservice;
 				PRODUCT_NAME = EmailMacNotificationService;
 				SDKROOT = macosx;
@@ -817,7 +817,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 32HQUBGF5H;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EmailNotificationService/Info.plist;
@@ -827,7 +827,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.1.31;
+				MARKETING_VERSION = 0.1.32;
 				PRODUCT_BUNDLE_IDENTIFIER = com.borjadotai.email.mac.notificationservice;
 				PRODUCT_NAME = EmailMacNotificationService;
 				SDKROOT = macosx;

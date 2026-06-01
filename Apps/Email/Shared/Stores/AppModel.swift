@@ -48,6 +48,20 @@ struct PendingRuleCreation: Identifiable, Hashable {
   var action: String
 }
 
+private enum ClientPendingMutationAction: String, Codable {
+  case archive
+  case readStatus
+}
+
+private struct ClientPendingMutation: Codable, Identifiable, Hashable {
+  var id: String
+  var emailId: String
+  var action: ClientPendingMutationAction
+  var isRead: Bool?
+  var attempts: Int
+  var createdAt: Date
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -152,6 +166,7 @@ final class AppModel {
   private var hasBootstrapped = false
   @ObservationIgnored private var pendingArchiveTask: Task<Void, Never>?
   @ObservationIgnored private var sidebarCountsRefreshTask: Task<Void, Never>?
+  @ObservationIgnored private var clientMutationRetryTask: Task<Void, Never>?
   @ObservationIgnored private var isAutoPollingMail = false
   @ObservationIgnored private var emailListCache: [EmailListCacheKey: [EmailSummary]] = [:]
   @ObservationIgnored private var emailDetailCache: [String: EmailDetail] = [:]
@@ -166,6 +181,8 @@ final class AppModel {
   @ObservationIgnored private var markingReadEmailIDs: Set<String> = []
   @ObservationIgnored private var notificationSelectedEmailID: String?
   @ObservationIgnored private var inboxTriagePrefetchTask: Task<Void, Never>?
+  @ObservationIgnored private var clientPendingMutations: [ClientPendingMutation] = Defaults.loadClientPendingMutations()
+  @ObservationIgnored private var hasLoadedInitialData = false
   @ObservationIgnored private let initialEmailPageSize = 30
   @ObservationIgnored private let nextEmailPageSize = 80
   @ObservationIgnored private let maxEmailDetailCacheSize = 120
@@ -351,7 +368,9 @@ final class AppModel {
     try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
     prefetchInboxTriageIfNeeded()
     configureImportStatusPolling()
+    hasLoadedInitialData = true
     errorMessage = nil
+    scheduleClientMutationDrain()
   }
 
   private func recoverWithDefaultServer(refreshSelectedFilterCache: Bool = false) async -> Bool {
@@ -481,8 +500,35 @@ final class AppModel {
   }
 
   private func visibleEmails(_ summaries: [EmailSummary]) -> [EmailSummary] {
-    let pendingArchiveID = pendingArchive?.id
-    return summaries.filter { $0.id != pendingArchiveID }
+    var hiddenIDs = archivingEmailIDs
+    if let pendingArchiveID = pendingArchive?.id {
+      hiddenIDs.insert(pendingArchiveID)
+    }
+    hiddenIDs.formUnion(clientPendingArchiveEmailIDs)
+    return summaries
+      .filter { !hiddenIDs.contains($0.id) }
+      .map(summaryWithClientPendingMutations)
+  }
+
+  private var clientPendingArchiveEmailIDs: Set<String> {
+    Set(clientPendingMutations.compactMap { mutation in
+      mutation.action == .archive ? mutation.emailId : nil
+    })
+  }
+
+  private func pendingReadState(for emailId: String) -> Bool? {
+    clientPendingMutations.last { mutation in
+      mutation.emailId == emailId && mutation.action == .readStatus
+    }?.isRead
+  }
+
+  private func summaryWithClientPendingMutations(_ summary: EmailSummary) -> EmailSummary {
+    guard let isRead = pendingReadState(for: summary.id), summary.isRead != isRead else {
+      return summary
+    }
+    var updated = summary
+    updated.isRead = isRead
+    return updated
   }
 
   private func reconcileSelectedEmailWithVisibleList() {
@@ -567,6 +613,13 @@ final class AppModel {
   }
 
   private func reportError(_ error: Error) {
+    if Self.isConnectivityError(error), hasLoadedInitialData {
+      statusMessage = "Server reconnecting"
+      errorMessage = nil
+      scheduleClientMutationDrain(afterSeconds: 3)
+      return
+    }
+
     guard let message = errorDescriptionForReporting(error) else { return }
     errorMessage = message
   }
@@ -609,6 +662,33 @@ final class AppModel {
     }
 
     return false
+  }
+
+  private nonisolated static func isConnectivityError(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain {
+      return connectivityErrorCodes.contains(nsError.code)
+    }
+
+    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+       underlyingError.domain == NSURLErrorDomain {
+      return connectivityErrorCodes.contains(underlyingError.code)
+    }
+
+    return false
+  }
+
+  private nonisolated static var connectivityErrorCodes: Set<Int> {
+    [
+      NSURLErrorCannotFindHost,
+      NSURLErrorCannotConnectToHost,
+      NSURLErrorNetworkConnectionLost,
+      NSURLErrorDNSLookupFailed,
+      NSURLErrorNotConnectedToInternet,
+      NSURLErrorSecureConnectionFailed,
+      NSURLErrorServerCertificateUntrusted,
+      NSURLErrorAppTransportSecurityRequiresSecureConnection
+    ]
   }
 
   func refreshEmails(refreshFilterCache: Bool = false) async {
@@ -1150,10 +1230,12 @@ final class AppModel {
     selectedEmailID = id
     selectedEmailLoadErrorMessage = nil
     prefetchNearbyEmailDetails(after: id)
+    setEmailReadLocally(id: id, isRead: true)
     if selectedEmail?.id != id {
       if let cachedEmail = emailDetailCache[id] {
-        selectedEmail = cachedEmail
-        conversationEmails = emailThreadCache[id] ?? [cachedEmail]
+        let visibleEmail = emailMarkedReadForLocalDisplay(cachedEmail)
+        selectedEmail = visibleEmail
+        conversationEmails = (emailThreadCache[id] ?? [visibleEmail]).map(emailMarkedReadForLocalDisplay)
       } else {
         selectedEmail = nil
         conversationEmails = []
@@ -1167,14 +1249,15 @@ final class AppModel {
       let detail = try await apiClient.email(id: id)
       guard selectedEmailID == id else { return }
 
+      let visibleDetail = emailMarkedReadForLocalDisplay(detail)
       if !detail.isRead {
         markVisibleEmail(id: detail.id, isRead: true)
       }
 
-      cacheEmailDetail(detail)
+      cacheEmailDetail(visibleDetail)
       selectedEmailLoadErrorMessage = nil
-      selectedEmail = detail
-      conversationEmails = emailThreadCache[id] ?? [detail]
+      selectedEmail = visibleDetail
+      conversationEmails = (emailThreadCache[id] ?? [visibleDetail]).map(emailMarkedReadForLocalDisplay)
 
       if !detail.isRead {
         markEmailReadInBackground(detail)
@@ -1183,24 +1266,34 @@ final class AppModel {
       do {
         let thread = try await apiClient.thread(emailId: detail.id)
         guard selectedEmailID == id else { return }
-        cacheConversation(anchorID: id, thread)
-        conversationEmails = thread
+        let visibleThread = thread.map(emailMarkedReadForLocalDisplay)
+        cacheConversation(anchorID: id, visibleThread)
+        conversationEmails = visibleThread
       } catch {
         guard selectedEmailID == id else { return }
-        conversationEmails = emailThreadCache[id] ?? [detail]
+        conversationEmails = (emailThreadCache[id] ?? [visibleDetail]).map(emailMarkedReadForLocalDisplay)
       }
     } catch {
       guard selectedEmailID == id else { return }
       if let cachedEmail = emailDetailCache[id] {
         selectedEmailLoadErrorMessage = nil
-        selectedEmail = cachedEmail
-        conversationEmails = emailThreadCache[id] ?? [cachedEmail]
+        let visibleEmail = emailMarkedReadForLocalDisplay(cachedEmail)
+        selectedEmail = visibleEmail
+        conversationEmails = (emailThreadCache[id] ?? [visibleEmail]).map(emailMarkedReadForLocalDisplay)
+        enqueueClientReadStatus(emailId: id, isRead: true)
         return
       }
       selectedEmailLoadErrorMessage = errorDescriptionForReporting(error) ?? "Message took too long to load."
       selectedEmail = nil
       conversationEmails = []
     }
+  }
+
+  private func emailMarkedReadForLocalDisplay(_ email: EmailDetail) -> EmailDetail {
+    guard email.id == selectedEmailID, !email.isRead else { return email }
+    var visible = email
+    visible.isRead = true
+    return visible
   }
 
   func openEmailFromNotification(id: String) async {
@@ -1234,6 +1327,7 @@ final class AppModel {
           message.id == updated.id ? updated : message
         }
       } catch {
+        enqueueClientReadStatus(emailId: email.id, isRead: true)
         return
       }
     }
@@ -1247,6 +1341,37 @@ final class AppModel {
     for key in Array(emailListCache.keys) {
       guard let index = emailListCache[key]?.firstIndex(where: { $0.id == id }) else { continue }
       emailListCache[key]?[index].isRead = isRead
+    }
+  }
+
+  private func setEmailReadLocally(id: String, isRead: Bool) {
+    markVisibleEmail(id: id, isRead: isRead)
+
+    if var cachedEmail = emailDetailCache[id], cachedEmail.isRead != isRead {
+      cachedEmail.isRead = isRead
+      cacheEmailDetail(cachedEmail)
+    }
+
+    if selectedEmailID == id, var selectedEmail, selectedEmail.isRead != isRead {
+      selectedEmail.isRead = isRead
+      self.selectedEmail = selectedEmail
+    }
+
+    conversationEmails = conversationEmails.map { message in
+      guard message.id == id, message.isRead != isRead else { return message }
+      var updated = message
+      updated.isRead = isRead
+      return updated
+    }
+
+    for key in Array(emailThreadCache.keys) {
+      guard emailThreadCache[key]?.contains(where: { $0.id == id }) == true else { continue }
+      emailThreadCache[key] = emailThreadCache[key]?.map { message in
+        guard message.id == id, message.isRead != isRead else { return message }
+        var updated = message
+        updated.isRead = isRead
+        return updated
+      }
     }
   }
 
@@ -1637,13 +1762,14 @@ final class AppModel {
   }
 
   func toggleRead(_ email: EmailSummary) async {
+    let targetIsRead = !email.isRead
+    setEmailReadLocally(id: email.id, isRead: targetIsRead)
     do {
-      let updated = try await apiClient.updateEmail(id: email.id, isRead: !email.isRead)
+      let updated = try await apiClient.updateEmail(id: email.id, isRead: targetIsRead)
       applyEmailUpdate(updated)
       try await refreshSidebarCounts()
-      try await loadEmails()
     } catch {
-      reportError(error)
+      enqueueClientReadStatus(emailId: email.id, isRead: targetIsRead)
     }
   }
 
@@ -1787,15 +1913,9 @@ final class AppModel {
         applyEmailUpdate(updated)
       }
     } catch {
-      if archive.removedFromCurrentList {
-        withAnimation(.snappy(duration: 0.24)) {
-          emails = archive.previousEmails
-          selectedEmailID = archive.previousSelectedEmailID
-          selectedEmail = archive.previousSelectedEmail
-          conversationEmails = archive.previousConversationEmails
-        }
-      }
-      reportError(error)
+      enqueueClientArchive(emailId: archive.id)
+      statusMessage = "Archive queued"
+      errorMessage = nil
       return
     }
 
@@ -1893,13 +2013,24 @@ final class AppModel {
 
   private func updateSelectedEmail(isRead: Bool?, isStarred: Bool?) async {
     guard let selectedEmail else { return }
+    if let isRead, isStarred == nil {
+      setEmailReadLocally(id: selectedEmail.id, isRead: isRead)
+      do {
+        let updated = try await apiClient.updateEmail(id: selectedEmail.id, isRead: isRead)
+        applyEmailUpdate(updated)
+        try await refreshSidebarCounts()
+      } catch {
+        enqueueClientReadStatus(emailId: selectedEmail.id, isRead: isRead)
+      }
+      return
+    }
+
     do {
       let updated = try await apiClient.updateEmail(id: selectedEmail.id, isRead: isRead, isStarred: isStarred)
       applyEmailUpdate(updated)
       if isRead != nil {
         try await refreshSidebarCounts()
       }
-      try await loadEmails()
     } catch {
       reportError(error)
     }
@@ -1913,6 +2044,7 @@ final class AppModel {
 
   private func applyEmailUpdate(_ email: EmailDetail) {
     cacheEmailDetail(email)
+    updateVisibleSummary(from: email)
     if selectedEmailID == email.id {
       selectedEmail = email
     }
@@ -1924,6 +2056,44 @@ final class AppModel {
       emailThreadCache[key] = emailThreadCache[key]?.map { message in
         message.id == email.id ? email : message
       }
+    }
+  }
+
+  private func updateVisibleSummary(from email: EmailDetail) {
+    func apply(_ summary: inout EmailSummary) {
+      guard summary.id == email.id else { return }
+      summary.accountId = email.accountId
+      summary.accountEmail = email.accountEmail
+      summary.provider = email.provider
+      summary.mailboxId = email.mailboxId
+      summary.mailboxName = email.mailboxName
+      summary.mailboxRole = email.mailboxRole
+      summary.senderName = email.senderName
+      summary.senderEmail = email.senderEmail
+      summary.senderAvatarURL = email.senderAvatarURL
+      summary.subject = email.subject
+      summary.snippet = email.snippet
+      summary.receivedAt = email.receivedAt
+      summary.sentAt = email.sentAt
+      summary.isRead = email.isRead
+      summary.isStarred = email.isStarred
+      summary.importance = email.importance
+      summary.hasAttachments = email.hasAttachments
+      summary.trackingId = email.trackingId
+      summary.openedAt = email.openedAt
+      summary.labels = email.labels
+    }
+
+    if let index = emails.firstIndex(where: { $0.id == email.id }) {
+      apply(&emails[index])
+    }
+
+    for key in Array(emailListCache.keys) {
+      guard var cached = emailListCache[key],
+            let index = cached.firstIndex(where: { $0.id == email.id })
+      else { continue }
+      apply(&cached[index])
+      emailListCache[key] = cached
     }
   }
 
@@ -1953,6 +2123,121 @@ final class AppModel {
       try? await refreshSidebarCounts()
       guard !Task.isCancelled else { return }
       sidebarCountsRefreshTask = nil
+    }
+  }
+
+  private func enqueueClientArchive(emailId: String) {
+    guard !clientPendingMutations.contains(where: { $0.emailId == emailId && $0.action == .archive }) else {
+      scheduleClientMutationDrain(afterSeconds: 2)
+      return
+    }
+
+    clientPendingMutations.append(ClientPendingMutation(
+      id: UUID().uuidString,
+      emailId: emailId,
+      action: .archive,
+      isRead: nil,
+      attempts: 0,
+      createdAt: Date()
+    ))
+    persistClientPendingMutations()
+    removeEmailFromListCaches(id: emailId)
+    emails.removeAll { $0.id == emailId }
+    scheduleClientMutationDrain(afterSeconds: 2)
+  }
+
+  private func enqueueClientReadStatus(emailId: String, isRead: Bool) {
+    clientPendingMutations.removeAll { mutation in
+      mutation.emailId == emailId && mutation.action == .readStatus
+    }
+    clientPendingMutations.append(ClientPendingMutation(
+      id: UUID().uuidString,
+      emailId: emailId,
+      action: .readStatus,
+      isRead: isRead,
+      attempts: 0,
+      createdAt: Date()
+    ))
+    persistClientPendingMutations()
+    setEmailReadLocally(id: emailId, isRead: isRead)
+    scheduleClientMutationDrain(afterSeconds: 2)
+  }
+
+  private func scheduleClientMutationDrain(afterSeconds delaySeconds: Int = 0) {
+    guard !clientPendingMutations.isEmpty, clientMutationRetryTask == nil else { return }
+    clientMutationRetryTask = Task { @MainActor in
+      defer { clientMutationRetryTask = nil }
+      if delaySeconds > 0 {
+        do {
+          try await Task.sleep(for: .seconds(delaySeconds))
+        } catch {
+          return
+        }
+      }
+      await drainClientMutationQueue()
+    }
+  }
+
+  private func drainClientMutationQueue() async {
+    while !Task.isCancelled, let mutation = clientPendingMutations.first {
+      do {
+        switch mutation.action {
+        case .archive:
+          let updated = try await apiClient.archiveEmail(emailId: mutation.emailId)
+          cacheEmailDetail(updated)
+          removeEmailFromListCaches(id: mutation.emailId)
+          emails.removeAll { $0.id == mutation.emailId }
+          scheduleSidebarCountsRefresh()
+        case .readStatus:
+          guard let isRead = mutation.isRead else {
+            removeClientPendingMutation(id: mutation.id)
+            continue
+          }
+          let updated = try await apiClient.updateEmail(id: mutation.emailId, isRead: isRead)
+          applyEmailUpdate(updated)
+          try? await refreshSidebarCounts()
+        }
+
+        removeClientPendingMutation(id: mutation.id)
+        errorMessage = nil
+      } catch {
+        guard !isCancellationError(error) else { return }
+        incrementClientMutationAttempts(id: mutation.id)
+        if Self.isConnectivityError(error), hasLoadedInitialData {
+          statusMessage = "Server reconnecting"
+          errorMessage = nil
+        }
+        let attempts = clientPendingMutations.first(where: { $0.id == mutation.id })?.attempts ?? mutation.attempts + 1
+        do {
+          try await Task.sleep(for: .seconds(clientMutationRetryDelaySeconds(attempts: attempts)))
+        } catch {
+          return
+        }
+      }
+    }
+  }
+
+  private func removeClientPendingMutation(id: String) {
+    clientPendingMutations.removeAll { $0.id == id }
+    persistClientPendingMutations()
+  }
+
+  private func incrementClientMutationAttempts(id: String) {
+    guard let index = clientPendingMutations.firstIndex(where: { $0.id == id }) else { return }
+    clientPendingMutations[index].attempts += 1
+    persistClientPendingMutations()
+  }
+
+  private func persistClientPendingMutations() {
+    Defaults.saveClientPendingMutations(clientPendingMutations)
+  }
+
+  private func clientMutationRetryDelaySeconds(attempts: Int) -> Int {
+    switch attempts {
+    case ...1: 3
+    case 2: 8
+    case 3: 20
+    default: 60
     }
   }
 
@@ -2036,6 +2321,7 @@ private enum Defaults {
   static let serverURL = "email.serverURL"
   static let theme = "email.theme"
   static let shortcutBindings = "email.shortcutBindings.v1"
+  static let clientPendingMutations = "email.clientPendingMutations.v1"
   static let archiveUndoDurationSeconds = "email.archiveUndoDurationSeconds"
   static let showsGlobalFoldersSection = "email.sidebar.showsGlobalFoldersSection"
   static let showsIOSRefreshButton = "email.ios.showsRefreshButton"
@@ -2090,6 +2376,25 @@ private enum Defaults {
   static func saveShortcutBindings(_ bindings: [MailShortcutBinding]) {
     guard let data = try? JSONEncoder().encode(bindings) else { return }
     UserDefaults.standard.set(data, forKey: shortcutBindings)
+  }
+
+  static func loadClientPendingMutations() -> [ClientPendingMutation] {
+    guard
+      let data = UserDefaults.standard.data(forKey: clientPendingMutations),
+      let decoded = try? JSONDecoder().decode([ClientPendingMutation].self, from: data)
+    else {
+      return []
+    }
+    return decoded
+  }
+
+  static func saveClientPendingMutations(_ mutations: [ClientPendingMutation]) {
+    guard !mutations.isEmpty else {
+      UserDefaults.standard.removeObject(forKey: clientPendingMutations)
+      return
+    }
+    guard let data = try? JSONEncoder().encode(mutations) else { return }
+    UserDefaults.standard.set(data, forKey: clientPendingMutations)
   }
 
   static func loadShowsGlobalFoldersSection() -> Bool {

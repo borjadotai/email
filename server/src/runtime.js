@@ -233,9 +233,14 @@ export function createMailRuntime({
       autoSyncStartupTimer = null;
     }
     const finish = async () => {
-      await waitForBackgroundWorkToStop({
+      const stopped = await waitForBackgroundWorkToStop({
         isBusy: () => historyBackfillRunning || autoSyncRunning || providerMutations.isRunning()
       });
+      if (!stopped) {
+        logger.warn("Carta runtime shutdown timed out waiting for background work; leaving store open to avoid closing under active tasks.");
+        callback?.();
+        return;
+      }
       if (!closed) {
         mailStore.close();
         closed = true;
@@ -282,9 +287,10 @@ async function waitForBackgroundWorkToStop({
 }) {
   const startedAt = Date.now();
   while (isBusy()) {
-    if (Date.now() - startedAt >= timeoutMs) return;
+    if (Date.now() - startedAt >= timeoutMs) return false;
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
+  return true;
 }
 
 function updateHistoryBackfillStatus(store, accountId, patch) {

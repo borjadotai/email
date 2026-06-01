@@ -2373,17 +2373,14 @@ export class MailStore {
     return this.getProviderMutation(id);
   }
 
-  providerMutationOverridesForEmail(emailId, { recentSucceededMs = 5 * 60 * 1000 } = {}) {
-    const cutoff = new Date(Date.now() - recentSucceededMs).toISOString();
+  providerMutationOverridesForEmail(emailId) {
     const rows = this.db.prepare(`
       SELECT action
       FROM provider_mutations
       WHERE email_id = ?
-        AND (
-          status != 'succeeded'
-          OR completed_at >= ?
-        )
-    `).all(emailId, cutoff);
+        AND action IN ('archive', 'trash', 'spam', 'read-status')
+      ORDER BY updated_at DESC, created_at DESC
+    `).all(emailId);
     const actions = new Set(rows.map(row => row.action));
     return {
       preserveMailbox: actions.has("archive") || actions.has("trash") || actions.has("spam"),
