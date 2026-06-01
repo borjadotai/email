@@ -166,6 +166,26 @@ extension MailFilter {
   }
 }
 
+extension MailRule {
+  var systemImage: String {
+    switch action {
+    case "archive": "archivebox"
+    default: "bolt"
+    }
+  }
+
+  var actionTitle: String {
+    switch action {
+    case "archive": "Auto-archive"
+    default: action.capitalized
+    }
+  }
+
+  var swiftUIColor: Color {
+    enabled ? .indigo : .secondary
+  }
+}
+
 extension Color {
   static var mailSelectionBackground: Color {
     Color.primary.opacity(0.10)

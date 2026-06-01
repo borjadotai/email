@@ -335,6 +335,7 @@ test("marks provider email read locally without waiting for the remote provider"
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 
   let server;
+  let providerMutations;
   try {
     const account = store.createAccount({
       provider: "gmail",
@@ -387,7 +388,9 @@ test("marks provider email read locally without waiting for the remote provider"
         return { status: "updated", provider: "gmail" };
       }
     };
-    server = createServer({ store, providers }).server;
+    const app = createServer({ store, providers });
+    server = app.server;
+    providerMutations = app.providerMutations;
     await listen(server, 0);
     const baseURL = `http://127.0.0.1:${server.address().port}`;
 
@@ -401,8 +404,10 @@ test("marks provider email read locally without waiting for the remote provider"
     assert.equal(store.getEmail(email.id).isRead, true);
 
     await providerStarted;
+    await waitFor(() => store.db.prepare("SELECT status FROM provider_mutations").get()?.status === "succeeded");
     assert.deepEqual(providerUpdates, [{ id: email.id, providerUID: email.providerUID, isRead: true }]);
   } finally {
+    providerMutations?.stop?.();
     await close(server);
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -414,6 +419,7 @@ test("archives provider email locally without waiting for the remote provider", 
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
 
   let server;
+  let providerMutations;
   try {
     const account = store.createAccount({
       provider: "gmail",
@@ -443,7 +449,9 @@ test("archives provider email locally without waiting for the remote provider", 
           return { status: "updated", provider: "gmail" };
         }
       };
-      server = createServer({ store, providers }).server;
+      const app = createServer({ store, providers });
+      server = app.server;
+      providerMutations = app.providerMutations;
     });
     await listen(server, 0);
     const baseURL = `http://127.0.0.1:${server.address().port}`;
@@ -461,9 +469,104 @@ test("archives provider email locally without waiting for the remote provider", 
     assert.equal(providerEmail.id, email.id);
     assert.equal(providerEmail.mailboxRole, "inbox");
     resolveProviderArchive();
+    await waitFor(() => store.db.prepare("SELECT status FROM provider_mutations").get()?.status === "succeeded");
   } finally {
+    providerMutations?.stop?.();
     await close(server);
     store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("queued provider email actions are retried after server restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-auth-"));
+  const databasePath = join(dir, "mail.sqlite");
+  const store = new MailStore({ databasePath });
+
+  let firstServer;
+  let firstProviderMutations;
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const email = testEmail({
+      id: "email-archive-retry-test",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "gmail-archive-retry-provider-id"
+    });
+    store.insertEmail(email);
+    store.refreshMailboxUnread(inbox.id);
+
+    const first = createServer({
+      store,
+      providers: {
+        async archiveEmail() {
+          throw new Error("temporary provider outage");
+        }
+      }
+    });
+    firstServer = first.server;
+    firstProviderMutations = first.providerMutations;
+    await listen(firstServer, 0);
+    const baseURL = `http://127.0.0.1:${firstServer.address().port}`;
+
+    const response = await requestJSON(`${baseURL}/api/emails/${email.id}/archive`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "Content-Type": "application/json" }
+    });
+
+    assert.equal(response.email.mailboxRole, "archive");
+    await waitFor(() => {
+      const row = store.db.prepare("SELECT status, attempts AS attempts FROM provider_mutations").get();
+      return row?.status === "queued" && row.attempts === 1;
+    });
+    let queued = store.db.prepare("SELECT status, last_error AS lastError FROM provider_mutations").get();
+    assert.equal(queued.status, "queued");
+    assert.match(queued.lastError, /temporary provider outage/u);
+
+    firstProviderMutations.stop();
+    await close(firstServer);
+    store.close();
+
+    const reopened = new MailStore({ databasePath });
+    let retriedEmail = null;
+    const second = createServer({
+      store: reopened,
+      providers: {
+        async archiveEmail(providerEmail) {
+          retriedEmail = providerEmail;
+          return { status: "updated", provider: "gmail" };
+        }
+      }
+    });
+    try {
+      reopened.db.prepare("UPDATE provider_mutations SET next_attempt_at = ?").run(new Date().toISOString());
+      await listen(second.server, 0);
+      second.providerMutations.start();
+      await waitFor(() => reopened.db.prepare("SELECT status FROM provider_mutations").get()?.status === "succeeded");
+
+      queued = reopened.db.prepare("SELECT status, attempts AS attempts FROM provider_mutations").get();
+      assert.equal(queued.status, "succeeded");
+      assert.equal(queued.attempts, 2);
+      assert.equal(retriedEmail.id, email.id);
+      assert.equal(retriedEmail.mailboxRole, "inbox");
+      assert.equal(reopened.getEmail(email.id).mailboxRole, "archive");
+    } finally {
+      second.providerMutations.stop();
+      await close(second.server);
+      reopened.close();
+    }
+  } finally {
+    firstProviderMutations?.stop?.();
+    await close(firstServer);
+    try {
+      store.close();
+    } catch {}
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -613,6 +716,15 @@ function withTimeout(promise, milliseconds) {
 
 function sleep(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function waitFor(predicate, { timeoutMs = 1000, intervalMs = 10 } = {}) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return;
+    await sleep(intervalMs);
+  }
+  assert.fail("Timed out waiting for condition.");
 }
 
 function testEmail(overrides = {}) {

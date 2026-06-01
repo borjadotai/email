@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { DatabaseSync } from "node:sqlite";
-import { defaultFilterQueryPlan, fallbackFilterQueryPlan, isInvoicePrompt, isTaxPrompt } from "./filterQueryPlanner.js";
+import { defaultFilterQueryPlan, fallbackFilterQueryPlan, isAppStoreConnectUpdatePrompt, isInvoicePrompt, isTaxPrompt } from "./filterQueryPlanner.js";
 import { senderLogoURLForEmail } from "./logoResolver.js";
 
 const SYSTEM_MAILBOXES = [
@@ -62,11 +62,13 @@ export class MailStore {
       "email_contacts",
       "open_events",
       "outbound_messages",
+      "provider_mutations",
       "email_attachments",
       "email_labels",
       "emails",
       "blocked_senders",
       "saved_filters",
+      "mail_rules",
       "labels",
       "mailboxes",
       "account_user_links",
@@ -162,6 +164,23 @@ export class MailStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS mail_rules (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT 'archive' CHECK (action IN ('archive')),
+        enabled INTEGER NOT NULL DEFAULT 1,
+        natural_language TEXT,
+        criteria_json TEXT NOT NULL DEFAULT '{}',
+        query_sql TEXT,
+        query_source TEXT NOT NULL DEFAULT 'criteria',
+        query_error TEXT,
+        applied_count INTEGER NOT NULL DEFAULT 0,
+        last_applied_at TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS emails (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -221,6 +240,22 @@ export class MailStore {
         error TEXT,
         created_at TEXT NOT NULL,
         sent_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS provider_mutations (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        email_id TEXT REFERENCES emails(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        next_attempt_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS open_events (
@@ -312,6 +347,8 @@ export class MailStore {
         WHERE in_reply_to IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id);
       CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
+      CREATE INDEX IF NOT EXISTS idx_provider_mutations_due ON provider_mutations(status, next_attempt_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_provider_mutations_email ON provider_mutations(email_id, status, completed_at);
       CREATE INDEX IF NOT EXISTS idx_saved_filters_updated ON saved_filters(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_blocked_senders_account ON blocked_senders(account_id, scope, value);
       CREATE INDEX IF NOT EXISTS idx_push_tokens_active ON push_tokens(platform, bundle_id, environment)
@@ -339,9 +376,20 @@ export class MailStore {
     this.ensureColumn("saved_filters", "cached_email_ids_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("saved_filters", "cache_updated_at", "TEXT");
     this.ensureColumn("saved_filters", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("mail_rules", "action", "TEXT NOT NULL DEFAULT 'archive'");
+    this.ensureColumn("mail_rules", "enabled", "INTEGER NOT NULL DEFAULT 1");
+    this.ensureColumn("mail_rules", "criteria_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("mail_rules", "query_sql", "TEXT");
+    this.ensureColumn("mail_rules", "query_source", "TEXT NOT NULL DEFAULT 'criteria'");
+    this.ensureColumn("mail_rules", "query_error", "TEXT");
+    this.ensureColumn("mail_rules", "applied_count", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("mail_rules", "last_applied_at", "TEXT");
+    this.ensureColumn("mail_rules", "sort_order", "INTEGER NOT NULL DEFAULT 0");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order, created_at);
       CREATE INDEX IF NOT EXISTS idx_saved_filters_sort ON saved_filters(sort_order, name);
+      CREATE INDEX IF NOT EXISTS idx_mail_rules_sort ON mail_rules(sort_order, name);
+      CREATE INDEX IF NOT EXISTS idx_mail_rules_enabled ON mail_rules(enabled, sort_order);
     `);
     this.ensureSidebarSortOrders();
     this.ensureDefaultsForExistingAccounts();
@@ -1268,6 +1316,161 @@ export class MailStore {
     return existing;
   }
 
+  listRules() {
+    return this.db.prepare(`
+      SELECT id, name, action, enabled, natural_language AS naturalLanguage,
+             criteria_json AS criteriaJSON, query_sql AS querySQL,
+             query_source AS querySource, query_error AS queryError,
+             applied_count AS appliedCount, last_applied_at AS lastAppliedAt,
+             sort_order AS sortOrder, created_at AS createdAt, updated_at AS updatedAt
+      FROM mail_rules
+      ORDER BY sort_order ASC, name COLLATE NOCASE ASC
+    `).all().map(row => this.publicRule(row));
+  }
+
+  getRule(id) {
+    const row = this.db.prepare(`
+      SELECT id, name, action, enabled, natural_language AS naturalLanguage,
+             criteria_json AS criteriaJSON, query_sql AS querySQL,
+             query_source AS querySource, query_error AS queryError,
+             applied_count AS appliedCount, last_applied_at AS lastAppliedAt,
+             sort_order AS sortOrder, created_at AS createdAt, updated_at AS updatedAt
+      FROM mail_rules
+      WHERE id = ?
+    `).get(id);
+    return row ? this.publicRule(row) : null;
+  }
+
+  enabledRulesForApplication() {
+    return this.db.prepare(`
+      SELECT id, name, action, enabled, natural_language AS naturalLanguage,
+             criteria_json AS criteriaJSON, query_sql AS querySQL,
+             query_source AS querySource, query_error AS queryError,
+             applied_count AS appliedCount, last_applied_at AS lastAppliedAt,
+             sort_order AS sortOrder, created_at AS createdAt, updated_at AS updatedAt
+      FROM mail_rules
+      WHERE enabled = 1
+      ORDER BY sort_order ASC, name COLLATE NOCASE ASC
+    `).all().map(row => this.publicRule(row, { includeMatchCount: false }));
+  }
+
+  createRule(input = {}) {
+    const naturalLanguage = optionalString(input.naturalLanguage);
+    if (!naturalLanguage) throw httpError(400, "Rule description is required.");
+    const action = normalizeRuleAction(input.action ?? "archive");
+    let criteria = normalizeFilterCriteria(input.criteria);
+    const plan = this.filterQueryPlan(naturalLanguage, criteria);
+    if (plan && !hasMeaningfulFilterCriteria(criteria)) {
+      criteria = plan.criteria;
+    }
+
+    const name = optionalString(input.name) ?? plan.name;
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO mail_rules (
+        id, name, action, enabled, natural_language, criteria_json,
+        query_sql, query_source, query_error, applied_count, last_applied_at,
+        sort_order, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
+    `).run(
+      id,
+      name,
+      action,
+      input.enabled === false ? 0 : 1,
+      naturalLanguage,
+      JSON.stringify(criteria),
+      plan.sql,
+      plan.source,
+      plan.error ?? null,
+      this.nextSortOrder("mail_rules"),
+      now,
+      now
+    );
+
+    const result = this.applyRule(id);
+    return { rule: this.getRule(id), applied: result.applied };
+  }
+
+  updateRule(id, input = {}) {
+    const existing = this.getRule(id);
+    if (!existing) throw httpError(404, "Rule not found.");
+
+    const naturalLanguage = Object.hasOwn(input, "naturalLanguage")
+      ? optionalString(input.naturalLanguage)
+      : existing.naturalLanguage;
+    if (!naturalLanguage) throw httpError(400, "Rule description is required.");
+    const action = Object.hasOwn(input, "action")
+      ? normalizeRuleAction(input.action)
+      : existing.action;
+    const enabled = Object.hasOwn(input, "enabled") ? input.enabled !== false : existing.enabled;
+    let criteria = Object.hasOwn(input, "criteria")
+      ? normalizeFilterCriteria(input.criteria)
+      : existing.criteria;
+    const plan = this.filterQueryPlan(naturalLanguage, criteria);
+    if (plan && !hasMeaningfulFilterCriteria(criteria)) {
+      criteria = plan.criteria;
+    }
+    const naturalLanguageChanged = Object.hasOwn(input, "naturalLanguage") && naturalLanguage !== existing.naturalLanguage;
+    const name = optionalString(input.name) ?? (naturalLanguageChanged ? plan.name : existing.name) ?? plan.name;
+    const now = new Date().toISOString();
+
+    this.db.prepare(`
+      UPDATE mail_rules
+      SET name = ?, action = ?, enabled = ?, natural_language = ?, criteria_json = ?,
+          query_sql = ?, query_source = ?, query_error = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      name,
+      action,
+      enabled ? 1 : 0,
+      naturalLanguage,
+      JSON.stringify(criteria),
+      plan.sql,
+      plan.source,
+      plan.error ?? null,
+      now,
+      id
+    );
+
+    const result = enabled ? this.applyRule(id) : { applied: [] };
+    return { rule: this.getRule(id), applied: result.applied };
+  }
+
+  deleteRule(id) {
+    const existing = this.getRule(id);
+    if (!existing) throw httpError(404, "Rule not found.");
+    this.db.prepare("DELETE FROM mail_rules WHERE id = ?").run(id);
+    return existing;
+  }
+
+  publicRule(row, { includeMatchCount = true } = {}) {
+    const criteria = normalizeFilterCriteria(parseJSON(row.criteriaJSON, {}));
+    return {
+      id: row.id,
+      name: row.name,
+      action: row.action,
+      enabled: Boolean(row.enabled),
+      naturalLanguage: row.naturalLanguage,
+      criteria,
+      querySQL: row.querySQL,
+      querySource: row.querySource,
+      queryError: row.queryError,
+      matchCount: includeMatchCount
+        ? this.emailCountForRule({
+            querySQL: row.querySQL,
+            criteria
+          })
+        : null,
+      appliedCount: Number(row.appliedCount ?? 0),
+      lastAppliedAt: row.lastAppliedAt,
+      sortOrder: row.sortOrder,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    };
+  }
+
   publicFilter(row) {
     const criteria = normalizeFilterCriteria(parseJSON(row.criteriaJSON, {}));
     const cachedEmailIds = parseJSON(row.cachedEmailIdsJSON, []);
@@ -1363,7 +1566,7 @@ export class MailStore {
   }
 
   repairFilterQueryPlanIfNeeded(filter) {
-    if (!isInvoicePrompt(filter.naturalLanguage) && !isTaxPrompt(filter.naturalLanguage)) {
+    if (!isInvoicePrompt(filter.naturalLanguage) && !isTaxPrompt(filter.naturalLanguage) && !isAppStoreConnectUpdatePrompt(filter.naturalLanguage)) {
       return filter;
     }
 
@@ -1403,6 +1606,142 @@ export class MailStore {
     return uniqueStrings(rows.map(row => row.id));
   }
 
+  emailIdsForRule(rule) {
+    if (rule.querySQL) {
+      return this.emailIdsForFilterSQL(rule.querySQL);
+    }
+
+    const where = this.whereForFilters(rule.criteria ?? {});
+    const rows = this.db.prepare(`
+      SELECT e.id
+      FROM emails e
+      ${where.joins.join("\n")}
+      WHERE ${where.sql}
+      ORDER BY e.received_at DESC
+    `).all(...where.args);
+    return uniqueStrings(rows.map(row => row.id));
+  }
+
+  emailCountForRule({ querySQL = null, criteria = {} } = {}) {
+    try {
+      const ids = querySQL
+        ? this.emailIdsForFilterSQL(querySQL)
+        : this.emailIdsForRule({ criteria });
+      return ids.length;
+    } catch {
+      return 0;
+    }
+  }
+
+  applyRule(id) {
+    const rule = this.getRule(id);
+    if (!rule) throw httpError(404, "Rule not found.");
+    if (!rule.enabled) return { rule, applied: [] };
+
+    const applied = [];
+    for (const emailId of this.emailIdsForRule(rule)) {
+      const result = this.applyRuleToEmail(rule, emailId);
+      if (result) applied.push(result);
+    }
+
+    if (applied.length > 0) {
+      const now = new Date().toISOString();
+      this.db.prepare(`
+        UPDATE mail_rules
+        SET applied_count = applied_count + ?,
+            last_applied_at = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(applied.length, now, now, id);
+    }
+
+    return { rule: this.getRule(id), applied };
+  }
+
+  applyRulesToEmail(emailId) {
+    const email = this.getEmail(emailId);
+    if (!email || email.mailboxRole !== "inbox") return [];
+
+    const rules = this.enabledRulesForApplication();
+    const applied = [];
+    for (const rule of rules) {
+      if (!this.ruleMatchesEmail(rule, emailId)) continue;
+      const result = this.applyRuleToEmail(rule, emailId);
+      if (result) applied.push(result);
+    }
+    this.recordRuleApplications(applied);
+    return applied;
+  }
+
+  recordRuleApplications(applied = []) {
+    if (!Array.isArray(applied) || applied.length === 0) return;
+    const counts = new Map();
+    for (const item of applied) {
+      counts.set(item.ruleId, (counts.get(item.ruleId) ?? 0) + 1);
+    }
+    const now = new Date().toISOString();
+    const update = this.db.prepare(`
+      UPDATE mail_rules
+      SET applied_count = applied_count + ?,
+          last_applied_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `);
+    this.transaction(() => {
+      for (const [ruleId, count] of counts) {
+        update.run(count, now, now, ruleId);
+      }
+    });
+  }
+
+  ruleMatchesEmail(rule, emailId) {
+    if (rule.querySQL) {
+      const safeSQL = this.validateFilterQuerySQL(rule.querySQL);
+      const row = this.db.prepare(`
+        SELECT 1 AS matched
+        FROM (${safeSQL}) rule_result
+        WHERE id = ?
+        LIMIT 1
+      `).get(emailId);
+      return Boolean(row);
+    }
+
+    const where = this.whereForFilters(rule.criteria ?? {});
+    const row = this.db.prepare(`
+      SELECT 1 AS matched
+      FROM emails e
+      ${where.joins.join("\n")}
+      WHERE e.id = ?
+        AND ${where.sql}
+      LIMIT 1
+    `).get(emailId, ...where.args);
+    return Boolean(row);
+  }
+
+  applyRuleToEmail(rule, emailId) {
+    const email = this.getEmail(emailId);
+    if (!email || email.mailboxRole !== "inbox" || rule.action !== "archive") return null;
+    if (this.hasActiveProviderMutation(email.id, "archive")) return null;
+
+    const providerEmail = providerEmailSnapshotForMutation(email);
+    const archived = this.archiveEmail(email.id);
+    this.enqueueProviderMutation({
+      accountId: email.accountId,
+      emailId: email.id,
+      action: "archive",
+      payload: {
+        ruleId: rule.id,
+        providerEmail
+      }
+    });
+
+    return {
+      ruleId: rule.id,
+      emailId: archived.id,
+      action: rule.action
+    };
+  }
+
   emailCountForFilter({ querySQL = null, cachedEmailIds = [], criteria = {} } = {}) {
     try {
       if (querySQL) {
@@ -1412,6 +1751,27 @@ export class MailStore {
     } catch {
       return Array.isArray(cachedEmailIds) ? cachedEmailIds.length : 0;
     }
+  }
+
+  whereForFilters(criteria = {}) {
+    const normalizedCriteria = normalizeFilterCriteria(criteria);
+    const joins = [];
+    const where = [];
+    const args = [];
+    const query = normalizeSearch(normalizedCriteria.query);
+
+    if (query) {
+      joins.push("JOIN email_fts ON email_fts.email_id = e.id");
+      where.push("email_fts MATCH ?");
+      args.push(query);
+    }
+
+    this.applyFilterCriteria({ criteria: normalizedCriteria, where, args });
+    return {
+      joins,
+      sql: where.length ? where.join(" AND ") : "1 = 1",
+      args
+    };
   }
 
   emailCountForFilterCriteria(criteria = {}) {
@@ -1886,6 +2246,167 @@ export class MailStore {
     }
 
     return this.getEmail(id);
+  }
+
+  enqueueProviderMutation({ accountId, emailId = null, action, payload = {}, maxAttempts = 0 }) {
+    const account = this.getAccount(requiredString(accountId, "accountId"));
+    if (!account) throw httpError(404, "Account not found.");
+    const normalizedAction = requiredString(action, "action");
+    if (emailId && !this.getEmail(emailId)) throw httpError(404, "Email not found.");
+
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO provider_mutations (
+        id, account_id, email_id, action, payload_json, status, attempts,
+        max_attempts, last_error, next_attempt_at, created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, NULL, ?, ?, ?, NULL)
+    `).run(
+      id,
+      account.id,
+      emailId,
+      normalizedAction,
+      JSON.stringify(payload ?? {}),
+      Number.isFinite(Number(maxAttempts)) ? Math.max(0, Number(maxAttempts)) : 0,
+      now,
+      now,
+      now
+    );
+    return this.getProviderMutation(id);
+  }
+
+  getProviderMutation(id) {
+    const row = this.db.prepare(`
+      SELECT id, account_id AS accountId, email_id AS emailId, action,
+             payload_json AS payloadJSON, status, attempts, max_attempts AS maxAttempts,
+             last_error AS lastError, next_attempt_at AS nextAttemptAt,
+             created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
+      FROM provider_mutations
+      WHERE id = ?
+    `).get(id);
+    return row ? normalizeProviderMutation(row) : null;
+  }
+
+  claimNextProviderMutation({ now = new Date(), staleAfterMs = 2 * 60 * 1000 } = {}) {
+    const nowText = now.toISOString();
+    const staleBefore = new Date(now.getTime() - staleAfterMs).toISOString();
+    const row = this.db.prepare(`
+      SELECT id
+      FROM provider_mutations
+      WHERE (
+          status = 'queued'
+          AND next_attempt_at <= ?
+        )
+        OR (
+          status = 'running'
+          AND updated_at <= ?
+        )
+      ORDER BY next_attempt_at ASC, created_at ASC
+      LIMIT 1
+    `).get(nowText, staleBefore);
+    if (!row) return null;
+
+    const result = this.db.prepare(`
+      UPDATE provider_mutations
+      SET status = 'running',
+          attempts = attempts + 1,
+          updated_at = ?
+      WHERE id = ?
+        AND (
+          (status = 'queued' AND next_attempt_at <= ?)
+          OR (status = 'running' AND updated_at <= ?)
+        )
+    `).run(nowText, row.id, nowText, staleBefore);
+    if ((result.changes ?? 0) === 0) return null;
+    return this.getProviderMutation(row.id);
+  }
+
+  hasDueProviderMutations({ now = new Date(), staleAfterMs = 2 * 60 * 1000 } = {}) {
+    const nowText = now.toISOString();
+    const staleBefore = new Date(now.getTime() - staleAfterMs).toISOString();
+    const row = this.db.prepare(`
+      SELECT 1 AS present
+      FROM provider_mutations
+      WHERE (status = 'queued' AND next_attempt_at <= ?)
+        OR (status = 'running' AND updated_at <= ?)
+      LIMIT 1
+    `).get(nowText, staleBefore);
+    return Boolean(row);
+  }
+
+  markProviderMutationSucceeded(id) {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE provider_mutations
+      SET status = 'succeeded',
+          last_error = NULL,
+          completed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(now, now, id);
+    return this.getProviderMutation(id);
+  }
+
+  markProviderMutationFailed(id, error, { nextAttemptAt = null } = {}) {
+    const mutation = this.getProviderMutation(id);
+    if (!mutation) return null;
+
+    const now = new Date();
+    const maxAttempts = Number(mutation.maxAttempts ?? 0);
+    const attempts = Number(mutation.attempts ?? 0);
+    const exhausted = maxAttempts > 0 && attempts >= maxAttempts;
+    const retryAt = nextAttemptAt ?? new Date(now.getTime() + providerMutationBackoffMs(attempts));
+    this.db.prepare(`
+      UPDATE provider_mutations
+      SET status = ?,
+          last_error = ?,
+          next_attempt_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      exhausted ? "failed" : "queued",
+      String(error?.message ?? error ?? "Provider mutation failed."),
+      exhausted ? "9999-12-31T23:59:59.999Z" : retryAt.toISOString(),
+      now.toISOString(),
+      id
+    );
+    return this.getProviderMutation(id);
+  }
+
+  providerMutationOverridesForEmail(emailId, { recentSucceededMs = 5 * 60 * 1000 } = {}) {
+    const cutoff = new Date(Date.now() - recentSucceededMs).toISOString();
+    const rows = this.db.prepare(`
+      SELECT action
+      FROM provider_mutations
+      WHERE email_id = ?
+        AND (
+          status != 'succeeded'
+          OR completed_at >= ?
+        )
+    `).all(emailId, cutoff);
+    const actions = new Set(rows.map(row => row.action));
+    return {
+      preserveMailbox: actions.has("archive") || actions.has("trash") || actions.has("spam"),
+      preserveRead: actions.has("read-status")
+    };
+  }
+
+  hasActiveProviderMutation(emailId, action = null) {
+    const args = [emailId];
+    let actionSQL = "";
+    if (action) {
+      actionSQL = "AND action = ?";
+      args.push(action);
+    }
+    const row = this.db.prepare(`
+      SELECT 1 AS present
+      FROM provider_mutations
+      WHERE email_id = ?
+        ${actionSQL}
+        AND status IN ('queued', 'running', 'failed')
+      LIMIT 1
+    `).get(...args);
+    return Boolean(row);
   }
 
   listBlockedSenders(accountId = null) {
@@ -2473,6 +2994,7 @@ export class MailStore {
   ensureSidebarSortOrders() {
     this.ensureDenseSortOrder("accounts");
     this.ensureDenseSortOrder("saved_filters");
+    this.ensureDenseSortOrder("mail_rules");
   }
 
   ensureDenseSortOrder(table) {
@@ -2701,9 +3223,17 @@ export class MailStore {
       : null;
     const existing = providerUIDMatch ?? rfcMessageIDMatch ?? stableHeaderMatch;
 
-      if (existing) {
-        const existingFTS = this.emailFTSSnapshot(existing.id);
-        this.db.prepare(`
+    if (existing) {
+      const existingEmail = this.getEmail(existing.id);
+      const localOverrides = this.providerMutationOverridesForEmail(existing.id);
+      if (existingEmail && localOverrides.preserveMailbox) {
+        resolvedEmail = { ...resolvedEmail, mailboxId: existingEmail.mailboxId };
+      }
+      if (existingEmail && localOverrides.preserveRead) {
+        resolvedEmail = { ...resolvedEmail, isRead: existingEmail.isRead };
+      }
+      const existingFTS = this.emailFTSSnapshot(existing.id);
+      this.db.prepare(`
         UPDATE emails
         SET mailbox_id = ?, provider_uid = ?, thread_id = ?, sender_name = ?, sender_email = ?,
             sender_avatar_url = ?, recipients_json = ?, cc_json = ?, bcc_json = ?,
@@ -2748,11 +3278,13 @@ export class MailStore {
       }
       this.refreshMailboxUnread(existing.mailboxId);
       this.refreshMailboxUnread(resolvedEmail.mailboxId);
+      this.applyRulesToEmail(existing.id);
       return { ...this.getEmail(existing.id), wasNew: false };
     }
 
     this.insertEmail(resolvedEmail);
     this.refreshMailboxUnread(resolvedEmail.mailboxId);
+    this.applyRulesToEmail(resolvedEmail.id);
     return { ...this.getEmail(resolvedEmail.id), wasNew: true };
   }
 
@@ -3155,6 +3687,38 @@ export class MailStore {
   }
 }
 
+function normalizeProviderMutation(row) {
+  return {
+    id: row.id,
+    accountId: row.accountId,
+    emailId: row.emailId,
+    action: row.action,
+    payload: parseJSON(row.payloadJSON, {}),
+    status: row.status,
+    attempts: Number(row.attempts ?? 0),
+    maxAttempts: Number(row.maxAttempts ?? 0),
+    lastError: row.lastError,
+    nextAttemptAt: row.nextAttemptAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    completedAt: row.completedAt
+  };
+}
+
+function providerMutationBackoffMs(attempts) {
+  const attempt = Math.max(1, Number(attempts ?? 1));
+  return Math.min(5 * 60 * 1000, 2000 * (2 ** Math.min(7, attempt - 1)));
+}
+
+function providerEmailSnapshotForMutation(email) {
+  return {
+    id: email.id,
+    accountId: email.accountId,
+    providerUID: email.providerUID,
+    mailboxRole: email.mailboxRole
+  };
+}
+
 export function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
@@ -3204,6 +3768,14 @@ function normalizeBlockScope(value) {
     throw httpError(400, "Block scope must be email or domain.");
   }
   return value;
+}
+
+function normalizeRuleAction(value) {
+  const action = String(value ?? "archive").trim().toLowerCase();
+  if (action !== "archive") {
+    throw httpError(400, "Rule action must be archive.");
+  }
+  return action;
 }
 
 function normalizeEmailAddress(value, name) {
@@ -3286,7 +3858,7 @@ function accountAvatarSelect(alias) {
 }
 
 function sidebarSortTable(table) {
-  if (table === "accounts" || table === "saved_filters") {
+  if (table === "accounts" || table === "saved_filters" || table === "mail_rules") {
     return table;
   }
   throw httpError(500, `Unsupported sidebar sort table ${table}.`);
@@ -3297,6 +3869,8 @@ function sidebarSortOrderSQL(table) {
     case "accounts":
       return "sort_order ASC, created_at ASC, id ASC";
     case "saved_filters":
+      return "sort_order ASC, name COLLATE NOCASE ASC, created_at ASC, id ASC";
+    case "mail_rules":
       return "sort_order ASC, name COLLATE NOCASE ASC, created_at ASC, id ASC";
     default:
       throw httpError(500, `Unsupported sidebar sort table ${table}.`);
@@ -3309,6 +3883,8 @@ function sidebarSortLabel(table) {
       return "Account";
     case "saved_filters":
       return "Filter";
+    case "mail_rules":
+      return "Rule";
     default:
       return "Item";
   }

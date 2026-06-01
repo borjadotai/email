@@ -621,6 +621,141 @@ test("archives messages into the account archive mailbox", () => {
   }
 });
 
+test("pending provider mutations protect optimistic local state from stale sync", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const saved = store.upsertProviderEmail(testProviderEmail({
+      id: "pending-provider-action",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-pending-action",
+      senderName: "Provider Sender",
+      senderEmail: "sender@example.com",
+      isRead: false
+    }));
+
+    const archived = store.archiveEmail(saved.id);
+    store.updateEmail(saved.id, { isRead: true });
+    store.enqueueProviderMutation({
+      accountId: account.id,
+      emailId: saved.id,
+      action: "archive",
+      payload: { providerEmail: { id: saved.id, accountId: account.id, providerUID: saved.providerUID, mailboxRole: "inbox" } }
+    });
+    store.enqueueProviderMutation({
+      accountId: account.id,
+      emailId: saved.id,
+      action: "read-status",
+      payload: { isRead: true, providerEmail: { id: saved.id, accountId: account.id, providerUID: saved.providerUID, mailboxRole: "inbox" } }
+    });
+
+    const staleProviderCopy = store.upsertProviderEmail(testProviderEmail({
+      id: saved.id,
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: saved.providerUID,
+      senderName: "Provider Sender",
+      senderEmail: "sender@example.com",
+      isRead: false
+    }));
+
+    assert.equal(archived.mailboxRole, "archive");
+    assert.equal(staleProviderCopy.mailboxRole, "archive");
+    assert.equal(staleProviderCopy.isRead, true);
+    assert.equal(store.getEmail(saved.id).mailboxRole, "archive");
+    assert.equal(store.getEmail(saved.id).isRead, true);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("natural language auto-archive rules match App Store Connect update mail narrowly", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const store = new MailStore({
+    databasePath: join(dir, "mail.sqlite"),
+    filterQueryPlanner: fallbackFilterQueryPlan
+  });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+
+    const build = store.upsertProviderEmail(testProviderEmail({
+      id: "app-store-connect-build",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-app-store-connect-build",
+      senderName: "App Store Connect",
+      senderEmail: "no-reply@apple.com",
+      subject: "Your build 29 has completed processing",
+      snippet: "The build is ready to test in TestFlight."
+    }));
+    const appleReceipt = store.upsertProviderEmail(testProviderEmail({
+      id: "apple-receipt",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-apple-receipt",
+      senderName: "Apple",
+      senderEmail: "no-reply@apple.com",
+      subject: "Your receipt from Apple",
+      snippet: "Thank you for your purchase."
+    }));
+    const genericConnect = store.upsertProviderEmail(testProviderEmail({
+      id: "app-store-connect-generic",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-app-store-connect-generic",
+      senderName: "App Store Connect",
+      senderEmail: "no-reply@apple.com",
+      subject: "Banking information required",
+      snippet: "Open App Store Connect to review your banking details.",
+      bodyText: "App Store Connect needs updated banking details before future payments."
+    }));
+
+    const { rule, applied } = store.createRule({
+      name: "App updates",
+      naturalLanguage: "Auto-archive App Store Connect TestFlight build and app update notifications"
+    });
+
+    assert.equal(rule.action, "archive");
+    assert.equal(applied.length, 1);
+    assert.deepEqual(applied.map(item => item.emailId), [build.id]);
+    assert.equal(store.getEmail(build.id).mailboxRole, "archive");
+    assert.equal(store.getEmail(appleReceipt.id).mailboxRole, "inbox");
+    assert.equal(store.getEmail(genericConnect.id).mailboxRole, "inbox");
+
+    const future = store.upsertProviderEmail(testProviderEmail({
+      id: "app-store-connect-future-build",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-app-store-connect-future-build",
+      senderName: "App Store Connect",
+      senderEmail: "no-reply@apple.com",
+      subject: "Version 1.2 is ready to test",
+      snippet: "Your TestFlight app update is ready to test."
+    }));
+
+    assert.equal(store.getEmail(future.id).mailboxRole, "archive");
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM provider_mutations WHERE action = 'archive'").get().count, 2);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("filters message lists by mailbox role", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

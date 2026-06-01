@@ -27,6 +27,7 @@ struct EmailPreviewView: View {
   @Environment(AppModel.self) private var model
   @State private var previewMode: EmailPreviewMode = .rendered
   @State private var blockCandidate: EmailBlockCandidate?
+  @State private var ruleEditor: RuleEditorContext?
   @State private var attachmentBrowserContext: AttachmentBrowserContext?
   @State private var expandedMessageIDs: Set<String> = []
   @State private var revealedSenderEmailID: String?
@@ -138,6 +139,13 @@ struct EmailPreviewView: View {
                 Label("Block Sender", systemImage: "hand.raised.slash")
               }
               .help("Block Sender")
+
+              Button {
+                ruleEditor = .autoArchiveLike(email)
+              } label: {
+                Label("Auto-Archive Like This", systemImage: "bolt.circle")
+              }
+              .help("Auto-Archive Like This")
               #else
               Menu {
                 Section("Preview") {
@@ -186,6 +194,12 @@ struct EmailPreviewView: View {
                 } label: {
                   Label("Block Sender", systemImage: "hand.raised.slash")
                 }
+
+                Button {
+                  ruleEditor = .autoArchiveLike(email)
+                } label: {
+                  Label("Auto-Archive Like This", systemImage: "bolt.circle")
+                }
               } label: {
                 Label("More", systemImage: "ellipsis.circle")
               }
@@ -196,6 +210,11 @@ struct EmailPreviewView: View {
           .sheet(item: $blockCandidate) { candidate in
             BlockSenderSheet(candidate: candidate)
               .environment(model)
+          }
+          .sheet(item: $ruleEditor) { context in
+            RuleEditorSheet(context: context) { draft in
+              saveRule(context: context, draft: draft)
+            }
           }
       } else if model.selectedEmailID != nil {
         loadingPreview
@@ -752,6 +771,27 @@ struct EmailPreviewView: View {
       senderEmail: email.senderEmail,
       senderDomain: email.senderEmail.emailDomain
     )
+  }
+
+  private func saveRule(context: RuleEditorContext, draft: RuleEditorDraft) {
+    Task {
+      if let rule = context.rule {
+        await model.updateRule(
+          rule,
+          name: draft.name,
+          action: draft.action,
+          enabled: draft.enabled,
+          naturalLanguage: draft.naturalLanguage
+        )
+      } else {
+        await model.createRule(
+          name: draft.name,
+          action: draft.action,
+          enabled: draft.enabled,
+          naturalLanguage: draft.naturalLanguage
+        )
+      }
+    }
   }
 
   private func attachmentItems(for email: EmailDetail) -> [EmailAttachmentItem] {

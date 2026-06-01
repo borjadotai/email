@@ -42,6 +42,12 @@ struct PendingFilterCreation: Identifiable, Hashable {
   var icon: String
 }
 
+struct PendingRuleCreation: Identifiable, Hashable {
+  var id: String
+  var name: String
+  var action: String
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -55,6 +61,8 @@ final class AppModel {
   var labels: [MailLabel] = []
   var filters: [MailFilter] = []
   var pendingFilterCreations: [PendingFilterCreation] = []
+  var rules: [MailRule] = []
+  var pendingRuleCreations: [PendingRuleCreation] = []
   var emails: [EmailSummary] = []
   var selectedEmail: EmailDetail?
   var conversationEmails: [EmailDetail] = []
@@ -339,6 +347,7 @@ final class AppModel {
     mailboxes = try await apiClient.mailboxes()
     labels = try await apiClient.labels()
     filters = try await apiClient.filters()
+    rules = try await apiClient.rules()
     try await loadEmails(refreshFilterCache: refreshSelectedFilterCache && selectedFilterID != nil)
     prefetchInboxTriageIfNeeded()
     configureImportStatusPolling()
@@ -500,6 +509,7 @@ final class AppModel {
     replaceAccounts(try await apiClient.accounts())
     mailboxes = try await apiClient.mailboxes()
     filters = try await apiClient.filters()
+    rules = try await apiClient.rules()
     configureImportStatusPolling()
   }
 
@@ -720,6 +730,7 @@ final class AppModel {
     mailboxes = try await apiClient.mailboxes()
     try await loadEmails(refreshFilterCache: refreshFilterCache)
     filters = try await apiClient.filters()
+    rules = try await apiClient.rules()
     prefetchInboxTriageIfNeeded()
     configureImportStatusPolling()
   }
@@ -1038,6 +1049,84 @@ final class AppModel {
         try await loadEmails()
       }
       statusMessage = "Filter deleted"
+      errorMessage = nil
+    } catch {
+      reportError(error)
+    }
+  }
+
+  func createRule(name: String, action: String = "archive", enabled: Bool = true, naturalLanguage: String) async {
+    let pending = PendingRuleCreation(
+      id: UUID().uuidString,
+      name: name,
+      action: action
+    )
+    pendingRuleCreations.append(pending)
+    statusMessage = "Creating \(name)"
+    errorMessage = nil
+    defer {
+      pendingRuleCreations.removeAll { $0.id == pending.id }
+    }
+
+    do {
+      let response = try await apiClient.createRule(
+        name: name,
+        action: action,
+        enabled: enabled,
+        naturalLanguage: naturalLanguage
+      )
+      rules = try await apiClient.rules()
+      if !response.applied.isEmpty {
+        removeEmailFromListCaches(ids: response.applied.map(\.emailId))
+        try await loadEmails()
+      }
+      statusMessage = response.applied.isEmpty
+        ? "Created \(response.rule.name)"
+        : "Created \(response.rule.name) and archived \(response.applied.count)"
+      errorMessage = nil
+    } catch {
+      reportError(error)
+      statusMessage = nil
+    }
+  }
+
+  func updateRule(
+    _ rule: MailRule,
+    name: String,
+    action: String = "archive",
+    enabled: Bool,
+    naturalLanguage: String
+  ) async {
+    statusMessage = "Updating \(name)"
+    errorMessage = nil
+    do {
+      let response = try await apiClient.updateRule(
+        id: rule.id,
+        name: name,
+        action: action,
+        enabled: enabled,
+        naturalLanguage: naturalLanguage
+      )
+      rules = rules.map { $0.id == response.rule.id ? response.rule : $0 }
+      if !response.applied.isEmpty {
+        removeEmailFromListCaches(ids: response.applied.map(\.emailId))
+        try await loadEmails()
+      }
+      statusMessage = response.applied.isEmpty
+        ? "Updated \(response.rule.name)"
+        : "Updated \(response.rule.name) and archived \(response.applied.count)"
+      errorMessage = nil
+    } catch {
+      reportError(error)
+      statusMessage = nil
+    }
+  }
+
+  func deleteRule(_ rule: MailRule) async {
+    do {
+      _ = try await apiClient.deleteRule(id: rule.id)
+      rules.removeAll { $0.id == rule.id }
+      statusMessage = "Rule deleted"
       errorMessage = nil
     } catch {
       reportError(error)
@@ -1841,6 +1930,14 @@ final class AppModel {
   private func removeEmailFromListCaches(id: String) {
     for key in Array(emailListCache.keys) {
       emailListCache[key]?.removeAll { $0.id == id }
+    }
+  }
+
+  private func removeEmailFromListCaches(ids: [String]) {
+    let removed = Set(ids)
+    guard !removed.isEmpty else { return }
+    for key in Array(emailListCache.keys) {
+      emailListCache[key]?.removeAll { removed.contains($0.id) }
     }
   }
 

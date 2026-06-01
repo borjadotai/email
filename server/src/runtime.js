@@ -40,7 +40,7 @@ export function createMailRuntime({
   });
   const pushNotifications = new PushNotificationService({ store: mailStore, config: runtimeConfig });
   const inboxTriage = new InboxTriageService({ store: mailStore });
-  const { server, events } = createServer({
+  const { server, events, providerMutations } = createServer({
     store: mailStore,
     providers,
     pushNotifications,
@@ -81,6 +81,7 @@ export function createMailRuntime({
           const result = await providers.backfillAccountHistory(current.id, {
             limit: runtimeConfig.historyBackfillLimit
           });
+          providerMutations.wake();
           if (closing) break;
           logger.log(`${new Date().toISOString()} history backfill completed account=${current.id} imported=${result.imported} complete=${result.complete}`);
           const latest = mailStore.getAccount(current.id);
@@ -132,6 +133,7 @@ export function createMailRuntime({
             limit: runtimeConfig.autoSyncLimit,
             quick: true
           });
+          providerMutations.wake();
           if (closing) break;
           const newEmailCount = Array.isArray(sync.newEmails)
             ? sync.newEmails.length
@@ -207,10 +209,13 @@ export function createMailRuntime({
       autoSyncTimer = setInterval(runAutoSyncPass, intervalMs);
       autoSyncStartupTimer = setTimeout(runAutoSyncPass, 10_000);
     }
+
+    providerMutations.start();
   }
 
   function close(callback = null) {
     closing = true;
+    providerMutations.stop();
     if (historyBackfillTimer) {
       clearInterval(historyBackfillTimer);
       historyBackfillTimer = null;
@@ -229,7 +234,7 @@ export function createMailRuntime({
     }
     const finish = async () => {
       await waitForBackgroundWorkToStop({
-        isBusy: () => historyBackfillRunning || autoSyncRunning
+        isBusy: () => historyBackfillRunning || autoSyncRunning || providerMutations.isRunning()
       });
       if (!closed) {
         mailStore.close();
@@ -260,6 +265,7 @@ export function createMailRuntime({
     providers,
     pushNotifications,
     inboxTriage,
+    providerMutations,
     server,
     events,
     start,

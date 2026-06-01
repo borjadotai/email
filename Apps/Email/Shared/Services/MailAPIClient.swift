@@ -24,6 +24,15 @@ struct FilterResponse: Decodable {
   var filter: MailFilter
 }
 
+struct RulesResponse: Decodable {
+  var rules: [MailRule]
+}
+
+struct RuleResponse: Decodable {
+  var rule: MailRule
+  var applied: [MailRuleApplication]
+}
+
 struct EmailsResponse: Decodable {
   var emails: [EmailSummary]
 }
@@ -320,6 +329,73 @@ struct MailAPIClient: Sendable {
       body: EmptyBody()
     )
     return response.filter
+  }
+
+  func rules() async throws -> [MailRule] {
+    let response: RulesResponse = try await request("api/rules")
+    return response.rules
+  }
+
+  func createRule(
+    name: String,
+    action: String = "archive",
+    enabled: Bool = true,
+    naturalLanguage: String
+  ) async throws -> RuleResponse {
+    struct RulePayload: Encodable {
+      var name: String
+      var action: String
+      var enabled: Bool
+      var naturalLanguage: String
+      var criteria: MailFilterCriteria
+    }
+    return try await request(
+      "api/rules",
+      method: "POST",
+      body: RulePayload(
+        name: name,
+        action: action,
+        enabled: enabled,
+        naturalLanguage: naturalLanguage,
+        criteria: MailFilterCriteria()
+      )
+    )
+  }
+
+  func updateRule(
+    id: String,
+    name: String,
+    action: String = "archive",
+    enabled: Bool,
+    naturalLanguage: String
+  ) async throws -> RuleResponse {
+    struct RulePayload: Encodable {
+      var name: String
+      var action: String
+      var enabled: Bool
+      var naturalLanguage: String
+      var criteria: MailFilterCriteria
+    }
+    return try await request(
+      "api/rules/\(id)",
+      method: "PATCH",
+      body: RulePayload(
+        name: name,
+        action: action,
+        enabled: enabled,
+        naturalLanguage: naturalLanguage,
+        criteria: MailFilterCriteria()
+      )
+    )
+  }
+
+  func deleteRule(id: String) async throws -> MailRule {
+    let response: RuleResponse = try await request(
+      "api/rules/\(id)",
+      method: "DELETE",
+      body: EmptyBody()
+    )
+    return response.rule
   }
 
   func emails(query: EmailQuery) async throws -> [EmailSummary] {

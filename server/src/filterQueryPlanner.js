@@ -6,9 +6,10 @@ import { join } from "node:path";
 const DEFAULT_CODEX_TIMEOUT_MS = 25_000;
 
 const STOP_WORDS = new Set([
-  "a", "all", "and", "any", "are", "create", "email", "emails", "for", "from",
-  "have", "i", "in", "is", "it", "mail", "me", "messages", "my", "of", "on",
-  "or", "show", "that", "the", "to", "view", "with"
+  "a", "all", "and", "any", "archive", "archived", "archives", "are", "auto",
+  "automatically", "create", "email", "emails", "for", "from", "have", "i",
+  "in", "is", "it", "mail", "me", "messages", "my", "of", "on", "or", "rule",
+  "rules", "show", "that", "the", "to", "view", "with"
 ]);
 
 export function defaultFilterQueryPlan(prompt, options = {}) {
@@ -16,7 +17,7 @@ export function defaultFilterQueryPlan(prompt, options = {}) {
   if (process.env.EMAIL_FILTER_DISABLE_CODEX === "1") {
     return fallback;
   }
-  if (isInvoicePrompt(prompt) || isTaxPrompt(prompt)) {
+  if (isInvoicePrompt(prompt) || isTaxPrompt(prompt) || isAppStoreConnectUpdatePrompt(prompt)) {
     return fallback;
   }
 
@@ -148,6 +149,10 @@ ORDER BY e.received_at DESC`
     return taxFilterQueryPlan();
   }
 
+  if (isAppStoreConnectUpdatePrompt(prompt)) {
+    return appStoreConnectUpdateQueryPlan();
+  }
+
   const terms = meaningfulTerms(prompt);
   const conditions = terms.length
     ? terms.map(term => {
@@ -174,6 +179,12 @@ export function isInvoicePrompt(prompt) {
 
 export function isTaxPrompt(prompt) {
   return /\b(tax|taxes|taxation|accountant|accountants|accounting|taxscouts|taxdown|impuesto|impuestos|renta|irpf|iva|vat|hacienda|aeat|gestor|gestores|gestoria|gestoría|gestorias|gestorías|asesor fiscal|asesoria fiscal|asesoría fiscal|agencia tributaria)\b/iu.test(String(prompt ?? ""));
+}
+
+export function isAppStoreConnectUpdatePrompt(prompt) {
+  const value = String(prompt ?? "");
+  return /\b(app store connect|testflight|app review|app version|build processing|build processed|ready to test)\b/iu.test(value)
+    && /\b(update|updates|notification|notifications|testflight|build|version|processing|processed|ready to test|app review)\b/iu.test(value);
 }
 
 function codexArgs() {
@@ -236,6 +247,7 @@ email_fts: email_id, account_id, subject, sender_name, sender_email, recipients,
 For "invoices", match invoice/receipt/factura/recibo/billing/payment evidence in subject, sender, or attachment filename. Body-only evidence should be used only with another signal such as e.has_attachments = 1, because newsletters often mention invoice words in footers. Do not require e.has_attachments = 1 just because the prompt says invoice; many receipt emails are link-only.
 For "newsletters", look for newsletter/digest signals and subscription markers such as unsubscribe, manage preferences, view in browser, read online, sender/newsletter naming.
 For "tax/accountant/tax firm" views, do not use loose substring checks for short tax terms like "iva", "vat", or "tax"; those match unrelated words like "privacy" and "activation". Prefer sender/domain tax firm signals, tax-return phrases, official tax authority names, or attachment filenames. Body-only tax mentions are usually too noisy. Generic vendor VAT billing notices should not match unless the user explicitly asks for vendor VAT/GST billing.
+For "App Store Connect/TestFlight app update notifications", require both an App Store Connect sender or body identity AND a build/version/TestFlight/app-review/update signal. Do not match every Apple email or every App Store Connect email.
 
 User request: ${JSON.stringify(String(prompt ?? ""))}`;
 }
@@ -295,6 +307,45 @@ WHERE (
           ${attachmentSignals.filter(Boolean).join("\n          OR ")}
         )
     )
+  )
+ORDER BY e.received_at DESC`
+  };
+}
+
+function appStoreConnectUpdateQueryPlan() {
+  const identitySignals = [
+    likeAny("e.sender_name", ["app store connect", "testflight"]),
+    likeAny("e.sender_email", ["appstoreconnect", "app-store-connect", "email.apple.com", "developer.apple.com"]),
+    likeAny("e.subject", ["app store connect", "testflight"]),
+    likeAny("e.snippet", ["app store connect", "testflight"])
+  ];
+  const updateSignals = [
+    likeAny("e.subject", [
+      "testflight", "build", "version", "processing", "processed", "ready to test",
+      "app review", "ready for review", "app version", "metadata", "submission"
+    ]),
+    likeAny("e.snippet", [
+      "testflight", "build", "version", "processing", "processed", "ready to test",
+      "app review", "ready for review", "app version", "metadata", "submission"
+    ]),
+    likeAny("e.body_text", [
+      "testflight", "has completed processing", "ready to test", "app review",
+      "ready for review", "app version"
+    ])
+  ];
+
+  return {
+    name: "App Updates",
+    color: "indigo",
+    icon: "app.badge",
+    source: "heuristic",
+    sql: `SELECT e.id
+FROM emails e
+WHERE (
+    ${identitySignals.filter(Boolean).join("\n    OR ")}
+  )
+  AND (
+    ${updateSignals.filter(Boolean).join("\n    OR ")}
   )
 ORDER BY e.received_at DESC`
   };

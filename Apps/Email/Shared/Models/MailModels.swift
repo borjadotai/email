@@ -239,6 +239,29 @@ struct MailFilter: Codable, Identifiable, Hashable {
   var updatedAt: String
 }
 
+struct MailRuleApplication: Codable, Hashable {
+  var ruleId: String
+  var emailId: String
+  var action: String
+}
+
+struct MailRule: Codable, Identifiable, Hashable {
+  var id: String
+  var name: String
+  var action: String
+  var enabled: Bool
+  var naturalLanguage: String?
+  var criteria: MailFilterCriteria
+  var querySource: String?
+  var queryError: String?
+  var matchCount: Int?
+  var appliedCount: Int?
+  var lastAppliedAt: String?
+  var sortOrder: Int?
+  var createdAt: String
+  var updatedAt: String
+}
+
 enum GlobalMailboxFolder: String, Codable, CaseIterable, Identifiable {
   case sent
   case drafts

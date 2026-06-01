@@ -1,5 +1,6 @@
 import { createServer as createHTTPServer } from "node:http";
 import { Buffer } from "node:buffer";
+import { createProviderMutationQueueProcessor, providerEmailSnapshot } from "./providerMutationQueue.js";
 import { summarizePushNotificationResult } from "./pushNotifications.js";
 import { httpError } from "./store.js";
 
@@ -9,12 +10,13 @@ const MAX_DETAIL_TEXT_FALLBACK_LENGTH = 200_000;
 
 export function createServer({ store, providers, pushNotifications, inboxTriage, host = "127.0.0.1", port = 7332, publicBaseURL } = {}) {
   const events = new EventHub();
+  const providerMutations = createProviderMutationQueueProcessor({ store, providers, events });
   const configuredBaseURL = normalizedBaseURL(publicBaseURL);
   const fallbackBaseURL = normalizedBaseURL(`http://${host}:${port}`);
 
   const server = createHTTPServer(async (req, res) => {
     try {
-      await route({ req, res, store, providers, pushNotifications, inboxTriage, events, configuredBaseURL, fallbackBaseURL });
+      await route({ req, res, store, providers, pushNotifications, inboxTriage, events, providerMutations, configuredBaseURL, fallbackBaseURL });
     } catch (error) {
       const status = error.status ?? 500;
       console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
@@ -30,10 +32,10 @@ export function createServer({ store, providers, pushNotifications, inboxTriage,
     }
   });
 
-  return { server, events };
+  return { server, events, providerMutations };
 }
 
-async function route({ req, res, store, providers, pushNotifications, inboxTriage, events, configuredBaseURL, fallbackBaseURL }) {
+async function route({ req, res, store, providers, pushNotifications, inboxTriage, events, providerMutations, configuredBaseURL, fallbackBaseURL }) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = decodeURIComponent(url.pathname);
   const baseURL = requestBaseURL(req, configuredBaseURL, fallbackBaseURL);
@@ -114,7 +116,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const result = await providers.completeGmailAuth(Object.fromEntries(url.searchParams.entries()));
     events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ store, providers, events, accountId: result.account.id, limit: result.syncLimit });
+    syncAccountInBackground({ store, providers, events, providerMutations, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -123,7 +125,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const result = await providers.completeGmailRelayAuth(await readJSONOrForm(req));
     events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ store, providers, events, accountId: result.account.id, limit: result.syncLimit });
+    syncAccountInBackground({ store, providers, events, providerMutations, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -132,7 +134,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     requireProviders(providers);
     const result = await providers.completeGmailRelayCodeAuth(Object.fromEntries(url.searchParams.entries()));
     events.emit("accounts.changed", { accountId: result.account.id });
-    syncAccountInBackground({ store, providers, events, accountId: result.account.id, limit: result.syncLimit });
+    syncAccountInBackground({ store, providers, events, providerMutations, accountId: result.account.id, limit: result.syncLimit });
     sendHTML(res, 200, authSuccessPage(result));
     return;
   }
@@ -186,6 +188,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
       limit: body.limit,
       quick: body.quick === true || url.searchParams.get("quick") === "1"
     });
+    providerMutations?.wake?.();
     events.emit("emails.changed", { accountId: accountSyncMatch[1] });
     await sendPushNotifications(pushNotifications, sync.newEmails);
     prefetchInboxTriage(inboxTriage);
@@ -202,6 +205,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
         store,
         providers,
         events,
+        providerMutations,
         accountId: accountBackfillMatch[1],
         limit: body.limit,
         includeAttachmentData: body.includeAttachmentData === true,
@@ -219,6 +223,7 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
       limit: body.limit,
       includeAttachmentData: body.includeAttachmentData === true
     });
+    providerMutations?.wake?.();
     if (backfill.imported > 0) {
       events.emit("emails.changed", { accountId: accountBackfillMatch[1], backfilled: true });
     }
@@ -282,6 +287,53 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     const filter = store.deleteFilter(filterRouteMatch[1]);
     events.emit("filters.changed", { filterId: filter.id, deleted: true });
     sendJSON(res, 200, { filter });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/api/rules") {
+    sendJSON(res, 200, { rules: store.listRules() });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/rules") {
+    const result = store.createRule(await readJSON(req));
+    if (result.applied.length > 0) {
+      providerMutations?.wake?.();
+      events.emit("emails.changed", { ruleId: result.rule.id, appliedRule: true });
+    }
+    events.emit("rules.changed", { ruleId: result.rule.id });
+    sendJSON(res, 201, result);
+    return;
+  }
+
+  const ruleRouteMatch = path.match(/^\/api\/rules\/([^/]+)$/);
+  if (ruleRouteMatch && req.method === "PATCH") {
+    const result = store.updateRule(ruleRouteMatch[1], await readJSON(req));
+    if (result.applied.length > 0) {
+      providerMutations?.wake?.();
+      events.emit("emails.changed", { ruleId: result.rule.id, appliedRule: true });
+    }
+    events.emit("rules.changed", { ruleId: result.rule.id });
+    sendJSON(res, 200, result);
+    return;
+  }
+
+  if (ruleRouteMatch && req.method === "DELETE") {
+    const rule = store.deleteRule(ruleRouteMatch[1]);
+    events.emit("rules.changed", { ruleId: rule.id, deleted: true });
+    sendJSON(res, 200, { rule, applied: [] });
+    return;
+  }
+
+  const ruleApplyMatch = path.match(/^\/api\/rules\/([^/]+)\/apply$/);
+  if (ruleApplyMatch && req.method === "POST") {
+    const result = store.applyRule(ruleApplyMatch[1]);
+    if (result.applied.length > 0) {
+      providerMutations?.wake?.();
+      events.emit("emails.changed", { ruleId: result.rule.id, appliedRule: true });
+    }
+    events.emit("rules.changed", { ruleId: result.rule.id, applied: true });
+    sendJSON(res, 200, result);
     return;
   }
 
@@ -355,11 +407,12 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     if (!email) throw httpError(404, "Email not found.");
     events.emit("emails.changed", { emailId: email.id });
     if (typeof patch.isRead === "boolean") {
-      providerActionInBackground({
-        providers,
+      enqueueProviderMutation({
+        store,
+        providerMutations,
         email: current,
-        action: `read-status=${patch.isRead}`,
-        run: () => providers.updateEmailReadStatus(current, patch.isRead)
+        action: "read-status",
+        payload: { isRead: patch.isRead }
       });
     }
     sendJSON(res, 200, { email: compactEmailDetail(email) });
@@ -372,11 +425,11 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     if (!current) throw httpError(404, "Email not found.");
     const email = store.markEmailSpam(spamMatch[1]);
     events.emit("emails.changed", { emailId: email.id });
-    providerActionInBackground({
-      providers,
+    enqueueProviderMutation({
+      store,
+      providerMutations,
       email: current,
-      action: "spam",
-      run: () => providers.markEmailSpam(current)
+      action: "spam"
     });
     sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
@@ -388,11 +441,11 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     if (!current) throw httpError(404, "Email not found.");
     const email = store.archiveEmail(archiveMatch[1]);
     events.emit("emails.changed", { emailId: email.id });
-    providerActionInBackground({
-      providers,
+    enqueueProviderMutation({
+      store,
+      providerMutations,
       email: current,
-      action: "archive",
-      run: () => providers.archiveEmail(current)
+      action: "archive"
     });
     sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
@@ -404,11 +457,11 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
     if (!current) throw httpError(404, "Email not found.");
     const email = store.trashEmail(trashMatch[1]);
     events.emit("emails.changed", { emailId: email.id });
-    providerActionInBackground({
-      providers,
+    enqueueProviderMutation({
+      store,
+      providerMutations,
       email: current,
-      action: "trash",
-      run: () => providers.trashEmail(current)
+      action: "trash"
     });
     sendJSON(res, 200, { email: compactEmailDetail(email) });
     return;
@@ -616,6 +669,21 @@ function prefetchInboxTriage(inboxTriage) {
   }
 }
 
+function enqueueProviderMutation({ store, providerMutations, email, action, payload = {} }) {
+  if (!email) return null;
+  const mutation = store.enqueueProviderMutation({
+    accountId: email.accountId,
+    emailId: email.id,
+    action,
+    payload: {
+      ...payload,
+      providerEmail: providerEmailSnapshot(email)
+    }
+  });
+  providerMutations?.wake?.();
+  return mutation;
+}
+
 async function sendPushNotifications(pushNotifications, newEmails = []) {
   if (!pushNotifications || !Array.isArray(newEmails) || newEmails.length === 0) return;
   try {
@@ -689,7 +757,7 @@ function authSuccessPage(result) {
 </html>`;
 }
 
-function syncAccountInBackground({ store, providers, events, accountId, limit }) {
+function syncAccountInBackground({ store, providers, events, providerMutations, accountId, limit }) {
   setTimeout(async () => {
     try {
       console.log(`${new Date().toISOString()} background sync started account=${accountId}`);
@@ -702,6 +770,7 @@ function syncAccountInBackground({ store, providers, events, accountId, limit })
       });
       events.emit("accounts.changed", { accountId });
       const sync = await providers.syncGmailAccount(accountId, { limit });
+      providerMutations?.wake?.();
       console.log(`${new Date().toISOString()} background sync completed account=${accountId} imported=${sync.imported}`);
       const account = store.getAccount(accountId);
       const previousStatus = account?.providerMetadata?.cartaSyncStatus ?? {};
@@ -731,6 +800,7 @@ function backfillAccountInBackground({
   store,
   providers,
   events,
+  providerMutations,
   accountId,
   limit = 500,
   includeAttachmentData = false,
@@ -763,6 +833,7 @@ function backfillAccountInBackground({
           limit: batchLimit,
           includeAttachmentData
         });
+        providerMutations?.wake?.();
         const latest = store.getAccount(accountId);
         const previousStatus = latest?.providerMetadata?.cartaSyncStatus ?? {};
         const imported = Number(previousStatus.imported ?? 0) + Number(result.imported ?? 0);

@@ -5,6 +5,8 @@ struct SidebarView: View {
   @Environment(AppModel.self) private var model
   @State private var filterEditor: FilterEditorContext?
   @State private var filterPendingDeletion: MailFilter?
+  @State private var ruleEditor: RuleEditorContext?
+  @State private var rulePendingDeletion: MailRule?
   @State private var draggingAccountID: String?
   @State private var draggingFilterID: String?
   @State private var accountDropTargetID: String?
@@ -28,6 +30,7 @@ struct SidebarView: View {
         accountsSection
         globalFoldersSection
         filtersSection
+        rulesSection
         foldersSection
         labelsSection
         settingsSection
@@ -71,6 +74,23 @@ struct SidebarView: View {
         saveFilter(context: context, draft: draft)
       }
     }
+    .confirmationDialog(
+      "Delete Rule?",
+      isPresented: isDeleteRuleConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      if let rule = rulePendingDeletion {
+        Button("Delete \(rule.name)", role: .destructive) {
+          deleteRule(rule)
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    }
+    .sheet(item: $ruleEditor) { context in
+      RuleEditorSheet(context: context) { draft in
+        saveRule(context: context, draft: draft)
+      }
+    }
   }
 
   private var isDeleteFilterConfirmationPresented: Binding<Bool> {
@@ -81,6 +101,19 @@ struct SidebarView: View {
       set: { isPresented in
         if !isPresented {
           filterPendingDeletion = nil
+        }
+      }
+    )
+  }
+
+  private var isDeleteRuleConfirmationPresented: Binding<Bool> {
+    Binding(
+      get: {
+        rulePendingDeletion != nil
+      },
+      set: { isPresented in
+        if !isPresented {
+          rulePendingDeletion = nil
         }
       }
     )
@@ -112,7 +145,7 @@ struct SidebarView: View {
   }
 
   private var canEditSidebarItems: Bool {
-    model.accounts.count > 1 || (activeSidebarAccountID == nil && !model.filters.isEmpty)
+    model.accounts.count > 1 || (activeSidebarAccountID == nil && (!model.filters.isEmpty || !model.rules.isEmpty))
   }
 
   private var isEditingSidebar: Bool {
@@ -318,6 +351,40 @@ struct SidebarView: View {
           isSelected: false
         ) {
           filterEditor = .create
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var rulesSection: some View {
+    if activeSidebarAccountID == nil {
+      Section("Rules") {
+        ForEach(model.rules) { rule in
+          RuleSidebarRow(
+            rule: rule,
+            isEditing: isEditingSidebar,
+            onEdit: {
+              ruleEditor = .edit(rule)
+            },
+            onDelete: {
+              rulePendingDeletion = rule
+            }
+          )
+        }
+
+        ForEach(model.pendingRuleCreations) { rule in
+          PendingRuleSidebarRow(rule: rule)
+        }
+
+        SidebarButton(
+          title: "New Rule",
+          subtitle: nil,
+          systemImage: "plus.circle",
+          tint: .secondary,
+          isSelected: false
+        ) {
+          ruleEditor = .create
         }
       }
     }
@@ -547,9 +614,36 @@ struct SidebarView: View {
     }
   }
 
+  private func saveRule(context: RuleEditorContext, draft: RuleEditorDraft) {
+    Task {
+      if let rule = context.rule {
+        await model.updateRule(
+          rule,
+          name: draft.name,
+          action: draft.action,
+          enabled: draft.enabled,
+          naturalLanguage: draft.naturalLanguage
+        )
+      } else {
+        await model.createRule(
+          name: draft.name,
+          action: draft.action,
+          enabled: draft.enabled,
+          naturalLanguage: draft.naturalLanguage
+        )
+      }
+    }
+  }
+
   private func deleteFilter(_ filter: MailFilter) {
     Task {
       await model.deleteFilter(filter)
+    }
+  }
+
+  private func deleteRule(_ rule: MailRule) {
+    Task {
+      await model.deleteRule(rule)
     }
   }
 
@@ -1205,6 +1299,105 @@ private struct PendingFilterSidebarRow: View {
 
   private var tint: Color {
     filterColorChoices.first(where: { $0.id == filter.color })?.color ?? .secondary
+  }
+}
+
+private struct RuleSidebarRow: View {
+  var rule: MailRule
+  var isEditing = false
+  var onEdit: () -> Void
+  var onDelete: () -> Void
+
+  @State private var isHovered = false
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Button(action: onEdit) {
+        SidebarRowContent(
+          title: rule.name,
+          subtitle: rule.enabled ? rule.actionTitle : "Paused",
+          systemImage: rule.systemImage,
+          avatarName: nil,
+          avatarEmail: nil,
+          avatarURL: nil,
+          tint: rule.swiftUIColor,
+          count: rule.appliedCount ?? 0,
+          showsDragHandle: false
+        )
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      if showsInlineActions {
+        Button(action: onEdit) {
+          Image(systemName: "pencil")
+            .font(.caption.weight(.semibold))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Edit rule")
+
+        Button(role: .destructive, action: onDelete) {
+          Image(systemName: "trash")
+            .font(.caption.weight(.semibold))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Delete rule")
+      }
+    }
+    .contentShape(Rectangle())
+    .onHover { hovering in
+      withAnimation(.snappy(duration: 0.14)) {
+        isHovered = hovering
+      }
+    }
+    .animation(.snappy(duration: 0.18), value: showsInlineActions)
+    .listRowBackground(
+      SidebarRowBackground(
+        isSelected: false,
+        isHovered: isHovered
+      )
+    )
+    .sidebarListRowChrome()
+  }
+
+  private var showsInlineActions: Bool {
+    #if os(iOS)
+    isEditing
+    #else
+    isEditing || isHovered
+    #endif
+  }
+}
+
+private struct PendingRuleSidebarRow: View {
+  var rule: PendingRuleCreation
+
+  var body: some View {
+    SidebarRowContent(
+      title: rule.name,
+      subtitle: "Creating...",
+      systemImage: "archivebox",
+      avatarName: nil,
+      avatarEmail: nil,
+      avatarURL: nil,
+      tint: .indigo,
+      count: 0,
+      showsProgress: true,
+      showsDragHandle: false
+    )
+    .opacity(0.76)
+    .listRowBackground(
+      SidebarRowBackground(
+        isSelected: false,
+        isHovered: false
+      )
+    )
+    .sidebarListRowChrome()
   }
 }
 
