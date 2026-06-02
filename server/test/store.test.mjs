@@ -311,6 +311,48 @@ test("search indexes HTML body text and rebuilds stale indexes", () => {
   }
 });
 
+test("search repairs missing FTS rows even when the index version is current", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-"));
+  const databasePath = join(dir, "mail.sqlite");
+  let store = new MailStore({ databasePath });
+  let reopened;
+
+  try {
+    const account = store.createAccount({
+      provider: "icloud",
+      email: "person@icloud.com",
+      displayName: "Person"
+    });
+    const inbox = store.mailboxForRole(account.id, "inbox");
+    const saved = store.upsertProviderEmail(testProviderEmail({
+      id: "missing-current-search-row",
+      accountId: account.id,
+      mailboxId: inbox.id,
+      providerUID: "provider-missing-current-search-row",
+      senderName: "Sanitas",
+      senderEmail: "citas@sanitas.es",
+      subject: "Recordatorio de cita médica",
+      bodyText: "Tu cita Sanitas es mañana."
+    }));
+
+    assert.equal(store.listEmails({ q: "Sanitas" })[0].id, saved.id);
+
+    store.deleteEmailFTS(saved.id);
+    store.setSetting("search.indexVersion", "3");
+    assert.equal(store.listEmails({ q: "Sanitas" }).length, 0);
+
+    store.close();
+    store = null;
+
+    reopened = new MailStore({ databasePath });
+    assert.equal(reopened.listEmails({ q: "Sanitas" })[0].id, saved.id);
+  } finally {
+    reopened?.close();
+    store?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("search indexing handles very large HTML bodies", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });

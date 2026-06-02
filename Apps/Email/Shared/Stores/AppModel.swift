@@ -15,7 +15,7 @@ struct PendingArchiveNotification: Identifiable, Hashable {
   var previousConversationEmails: [EmailDetail]
 }
 
-private struct EmailListCacheKey: Hashable {
+private struct EmailListCacheKey: Codable, Hashable {
   var accountId: String?
   var mailboxId: String?
   var mailboxRole: String?
@@ -33,6 +33,12 @@ private struct EmailListCacheKey: Hashable {
     self.query = query.q.trimmingCharacters(in: .whitespacesAndNewlines)
     unreadOnly = query.unreadOnly
   }
+}
+
+private struct PersistedEmailListCacheEntry: Codable {
+  var key: EmailListCacheKey
+  var emails: [EmailSummary]
+  var cachedAt: Date
 }
 
 struct PendingFilterCreation: Identifiable, Hashable {
@@ -186,7 +192,11 @@ final class AppModel {
   @ObservationIgnored private let initialEmailPageSize = 30
   @ObservationIgnored private let nextEmailPageSize = 80
   @ObservationIgnored private let maxEmailDetailCacheSize = 120
+  #if os(iOS)
+  @ObservationIgnored private let emailDetailPrefetchWindow = 2
+  #else
   @ObservationIgnored private let emailDetailPrefetchWindow = 5
+  #endif
   @ObservationIgnored private let importStatusPollingIntervalSeconds = 4
 
   init() {
@@ -204,6 +214,7 @@ final class AppModel {
     showsGlobalFoldersSection = Defaults.loadShowsGlobalFoldersSection()
     showsIOSRefreshButton = Defaults.loadShowsIOSRefreshButton()
     visibleGlobalFolders = Defaults.loadVisibleGlobalFolders()
+    emailListCache = Defaults.loadEmailListCache()
   }
 
   var colorScheme: ColorScheme? {
@@ -417,7 +428,9 @@ final class AppModel {
     hasMoreEmails = false
     isLoadingMoreEmails = false
 
-    if let cachedEmails = emailListCache[cacheKey] {
+    let cachedEmails = emailListCache[cacheKey] ?? []
+    let canKeepStartupCache = !hasLoadedInitialData && !query.refreshFilterCache
+    if !cachedEmails.isEmpty {
       emails = visibleEmails(cachedEmails)
       reconcileSelectedEmailWithVisibleList()
     } else {
@@ -453,8 +466,14 @@ final class AppModel {
 
     guard generation == emailListLoadGeneration else { return }
     let visiblePage = visibleEmails(page)
+    if visiblePage.isEmpty, !cachedEmails.isEmpty, canKeepStartupCache {
+      nextEmailOffset = page.count
+      hasMoreEmails = false
+      return
+    }
     emails = visiblePage
     emailListCache[cacheKey] = Array(visiblePage.prefix(initialEmailPageSize))
+    persistEmailListCache()
     nextEmailOffset = page.count
     hasMoreEmails = page.count == initialEmailPageSize
     reconcileSelectedEmailWithVisibleList()
@@ -665,6 +684,15 @@ final class AppModel {
   }
 
   private nonisolated static func isConnectivityError(_ error: Error) -> Bool {
+    if let apiError = error as? MailAPIError {
+      switch apiError {
+      case .server(_, let message):
+        return isTransientServerConnectivityMessage(message)
+      default:
+        break
+      }
+    }
+
     let nsError = error as NSError
     if nsError.domain == NSURLErrorDomain {
       return connectivityErrorCodes.contains(nsError.code)
@@ -678,6 +706,11 @@ final class AppModel {
     return false
   }
 
+  private nonisolated static func isTransientServerConnectivityMessage(_ message: String) -> Bool {
+    let normalized = message.lowercased()
+    return transientServerConnectivitySignals.contains { normalized.contains($0) }
+  }
+
   private nonisolated static var connectivityErrorCodes: Set<Int> {
     [
       NSURLErrorCannotFindHost,
@@ -688,6 +721,19 @@ final class AppModel {
       NSURLErrorSecureConnectionFailed,
       NSURLErrorServerCertificateUntrusted,
       NSURLErrorAppTransportSecurityRequiresSecureConnection
+    ]
+  }
+
+  private nonisolated static var transientServerConnectivitySignals: [String] {
+    [
+      "econnreset",
+      "etimedout",
+      "network connection was lost",
+      "fetch failed",
+      "socket",
+      "connection not available",
+      "cannot connect",
+      "connection refused"
     ]
   }
 
@@ -1342,6 +1388,7 @@ final class AppModel {
       guard let index = emailListCache[key]?.firstIndex(where: { $0.id == id }) else { continue }
       emailListCache[key]?[index].isRead = isRead
     }
+    persistEmailListCache()
   }
 
   private func setEmailReadLocally(id: String, isRead: Bool) {
@@ -1458,12 +1505,6 @@ final class AppModel {
       let detail = try await client.email(id: id)
       guard !Task.isCancelled else { return }
       cacheEmailDetail(detail)
-
-      guard !Task.isCancelled else { return }
-      if let thread = try? await client.thread(emailId: detail.id) {
-        guard !Task.isCancelled else { return }
-        cacheConversation(anchorID: id, thread)
-      }
     } catch {
       return
     }
@@ -2095,12 +2136,14 @@ final class AppModel {
       apply(&cached[index])
       emailListCache[key] = cached
     }
+    persistEmailListCache()
   }
 
   private func removeEmailFromListCaches(id: String) {
     for key in Array(emailListCache.keys) {
       emailListCache[key]?.removeAll { $0.id == id }
     }
+    persistEmailListCache()
   }
 
   private func removeEmailFromListCaches(ids: [String]) {
@@ -2109,6 +2152,11 @@ final class AppModel {
     for key in Array(emailListCache.keys) {
       emailListCache[key]?.removeAll { removed.contains($0.id) }
     }
+    persistEmailListCache()
+  }
+
+  private func persistEmailListCache() {
+    Defaults.saveEmailListCache(emailListCache)
   }
 
   private func scheduleSidebarCountsRefresh() {
@@ -2321,6 +2369,7 @@ private enum Defaults {
   static let serverURL = "email.serverURL"
   static let theme = "email.theme"
   static let shortcutBindings = "email.shortcutBindings.v1"
+  static let emailListCache = "email.emailListCache.v1"
   static let clientPendingMutations = "email.clientPendingMutations.v1"
   static let archiveUndoDurationSeconds = "email.archiveUndoDurationSeconds"
   static let showsGlobalFoldersSection = "email.sidebar.showsGlobalFoldersSection"
@@ -2330,6 +2379,8 @@ private enum Defaults {
   static let currentVisibleGlobalFolderRolesVersion = 2
   static let defaultArchiveUndoDurationSeconds = 4
   static let archiveUndoDurationRange = 1...15
+  static let maxPersistedEmailListCacheEntries = 20
+  static let maxPersistedEmailsPerList = 30
 
   static var defaultServerURL: String {
     Bundle.main.object(forInfoDictionaryKey: "EmailDefaultServerURL") as? String ?? "https://email.marlin-barbel.ts.net"
@@ -2376,6 +2427,42 @@ private enum Defaults {
   static func saveShortcutBindings(_ bindings: [MailShortcutBinding]) {
     guard let data = try? JSONEncoder().encode(bindings) else { return }
     UserDefaults.standard.set(data, forKey: shortcutBindings)
+  }
+
+  static func loadEmailListCache() -> [EmailListCacheKey: [EmailSummary]] {
+    guard
+      let data = UserDefaults.standard.data(forKey: emailListCache),
+      let entries = try? JSONDecoder().decode([PersistedEmailListCacheEntry].self, from: data)
+    else {
+      return [:]
+    }
+
+    var cache: [EmailListCacheKey: [EmailSummary]] = [:]
+    for entry in entries {
+      guard !entry.emails.isEmpty else { continue }
+      cache[entry.key] = Array(entry.emails.prefix(maxPersistedEmailsPerList))
+    }
+    return cache
+  }
+
+  static func saveEmailListCache(_ cache: [EmailListCacheKey: [EmailSummary]]) {
+    let entries = cache
+      .filter { !$0.value.isEmpty }
+      .prefix(maxPersistedEmailListCacheEntries)
+      .map { key, emails in
+        PersistedEmailListCacheEntry(
+          key: key,
+          emails: Array(emails.prefix(maxPersistedEmailsPerList)),
+          cachedAt: Date()
+        )
+      }
+
+    guard !entries.isEmpty else {
+      UserDefaults.standard.removeObject(forKey: emailListCache)
+      return
+    }
+    guard let data = try? JSONEncoder().encode(Array(entries)) else { return }
+    UserDefaults.standard.set(data, forKey: emailListCache)
   }
 
   static func loadClientPendingMutations() -> [ClientPendingMutation] {

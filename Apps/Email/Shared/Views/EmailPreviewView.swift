@@ -318,7 +318,6 @@ struct EmailPreviewView: View {
       .frame(maxWidth: .infinity, alignment: .topLeading)
     }
     .id(email.id)
-    .animation(.snappy(duration: 0.24), value: messages.map(\.id))
     .animation(.snappy(duration: 0.24), value: expandedMessageIDs)
   }
   #endif
@@ -400,7 +399,6 @@ struct EmailPreviewView: View {
             startReply(to: message)
           }
         )
-        .transition(.opacity)
 
         if inlineReplyEmailID == message.id {
           replyArea(for: message)
@@ -1453,7 +1451,6 @@ private struct ConversationMessageRow: View {
         .padding(.leading, 60)
         .padding(.trailing, 12)
         .padding(.bottom, 18)
-        .transition(.opacity)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2195,7 +2192,7 @@ private final class HTMLMailCoordinator: NSObject, WKNavigationDelegate {
     }
   }
 
-  private static let renderingRepairScript = """
+  fileprivate static let renderingRepairScript = """
   (() => {
     if (window.__mailRenderingRepairInstalled) {
       if (typeof window.__mailRepairRendering === "function") {
@@ -2422,6 +2419,13 @@ private func makeMailWebView(coordinator: HTMLMailCoordinator) -> WKWebView {
 
   let configuration = WKWebViewConfiguration()
   configuration.defaultWebpagePreferences = preferences
+  let userContentController = WKUserContentController()
+  userContentController.addUserScript(WKUserScript(
+    source: HTMLMailCoordinator.renderingRepairScript,
+    injectionTime: .atDocumentEnd,
+    forMainFrameOnly: true
+  ))
+  configuration.userContentController = userContentController
 
   #if os(macOS)
   let webView = MailHTMLWebView(frame: .zero, configuration: configuration)

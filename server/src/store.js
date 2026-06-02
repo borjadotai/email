@@ -3474,9 +3474,40 @@ export class MailStore {
 
   ensureSearchIndexVersion() {
     const version = this.getSetting("search.indexVersion", "0");
-    if (version === SEARCH_INDEX_VERSION) return;
+    if (version === SEARCH_INDEX_VERSION && !this.searchIndexNeedsRepair()) return;
     this.rebuildEmailFTS();
     this.setSetting("search.indexVersion", SEARCH_INDEX_VERSION);
+  }
+
+  searchIndexNeedsRepair() {
+    const counts = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM emails) AS emailCount,
+        (SELECT COUNT(*) FROM email_fts) AS ftsCount,
+        (SELECT COUNT(*) FROM email_fts_rows) AS mappedCount
+    `).get();
+
+    if (counts.emailCount !== counts.ftsCount || counts.emailCount !== counts.mappedCount) {
+      return true;
+    }
+
+    const missingEmail = this.db.prepare(`
+      SELECT 1
+      FROM emails e
+      LEFT JOIN email_fts_rows fts_rows ON fts_rows.email_id = e.id
+      WHERE fts_rows.email_id IS NULL
+      LIMIT 1
+    `).get();
+    if (missingEmail) return true;
+
+    const orphanedMapping = this.db.prepare(`
+      SELECT 1
+      FROM email_fts_rows fts_rows
+      LEFT JOIN emails e ON e.id = fts_rows.email_id
+      WHERE e.id IS NULL
+      LIMIT 1
+    `).get();
+    return Boolean(orphanedMapping);
   }
 
   ensureFilterCacheVersion() {
@@ -3578,21 +3609,27 @@ export class MailStore {
   }
 
   rebuildEmailFTS() {
-    const rows = this.db.prepare(`
+    const emailIds = this.db.prepare("SELECT id FROM emails ORDER BY rowid").all().map(row => row.id);
+    const emailById = this.db.prepare(`
       SELECT id, account_id AS accountId, subject, sender_name AS senderName,
              sender_email AS senderEmail, recipients_json AS recipientsJSON,
              snippet, body_text AS bodyText, body_html AS bodyHTML
       FROM emails
-    `).iterate();
+      WHERE id = ?
+    `);
 
-    this.db.prepare("DELETE FROM email_fts_rows").run();
-    this.db.prepare("DELETE FROM email_fts").run();
-    for (const row of rows) {
-      this.insertEmailFTS({
-        ...row,
-        recipients: parseJSON(row.recipientsJSON, [])
-      });
-    }
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM email_fts_rows").run();
+      this.db.prepare("DELETE FROM email_fts").run();
+      for (const id of emailIds) {
+        const row = emailById.get(id);
+        if (!row) continue;
+        this.insertEmailFTS({
+          ...row,
+          recipients: parseJSON(row.recipientsJSON, [])
+        });
+      }
+    });
   }
 
   rebuildEmailContacts() {

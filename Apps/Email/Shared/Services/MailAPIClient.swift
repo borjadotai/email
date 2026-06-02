@@ -606,7 +606,7 @@ struct MailAPIClient: Sendable {
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
 
-    let (data, response) = try await session.data(for: request)
+    let (data, response) = try await data(for: request, retryingTransientFailures: shouldRetryTransientFailures(method: method))
     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
     guard (200..<300).contains(status) else {
       let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.message) ??
@@ -640,6 +640,60 @@ struct MailAPIClient: Sendable {
       return 180
     }
     return 30
+  }
+
+  private func data(
+    for request: URLRequest,
+    retryingTransientFailures shouldRetry: Bool
+  ) async throws -> (Data, URLResponse) {
+    guard shouldRetry else {
+      return try await session.data(for: request)
+    }
+
+    var lastError: Error?
+    for delay in [0, 250, 900] {
+      if delay > 0 {
+        try? await Task.sleep(for: .milliseconds(delay))
+      }
+
+      do {
+        return try await session.data(for: request)
+      } catch {
+        guard Self.isTransientNetworkError(error) else { throw error }
+        lastError = error
+      }
+    }
+
+    throw lastError ?? MailAPIError.emptyResponse
+  }
+
+  private func shouldRetryTransientFailures(method: String) -> Bool {
+    method == "GET" || method == "HEAD"
+  }
+
+  private static func isTransientNetworkError(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain, transientNetworkErrorCodes.contains(nsError.code) {
+      return true
+    }
+
+    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+       underlyingError.domain == NSURLErrorDomain,
+       transientNetworkErrorCodes.contains(underlyingError.code) {
+      return true
+    }
+
+    return false
+  }
+
+  private static var transientNetworkErrorCodes: Set<Int> {
+    [
+      NSURLErrorCannotFindHost,
+      NSURLErrorCannotConnectToHost,
+      NSURLErrorNetworkConnectionLost,
+      NSURLErrorDNSLookupFailed,
+      NSURLErrorNotConnectedToInternet
+    ]
   }
 }
 
