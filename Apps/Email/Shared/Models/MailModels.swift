@@ -502,6 +502,8 @@ struct AddAccountRequest: Encodable {
 
 struct AuthSettings: Codable, Hashable {
   var gmailConfigured: Bool
+  var gmailOAuthMode: String?
+  var gmailRelayConfigured: Bool?
   var gmailRedirectURI: String
   var icloudConfigured: Bool
   var icloudAuthType: String

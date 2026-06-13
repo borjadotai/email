@@ -27,6 +27,9 @@ struct AddAccountView: View {
       .onAppear {
         model.errorMessage = nil
       }
+      .task {
+        await model.refreshAuthSettings()
+      }
       .onChange(of: provider) { _, _ in
         model.errorMessage = nil
       }
@@ -324,7 +327,8 @@ struct AddAccountView: View {
     }
     switch provider {
     case .gmail:
-      return model.authSettings?.gmailConfigured != true
+      return model.authSettings?.gmailConfigured != true ||
+        model.isGmailAuthBlockedByServerConfiguration
     case .icloud:
       return email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         appPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

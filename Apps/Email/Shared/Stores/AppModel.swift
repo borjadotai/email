@@ -334,14 +334,36 @@ final class AppModel {
 
   var gmailAuthConfigurationWarning: String? {
     guard authSettings?.gmailConfigured == true,
-          let redirectURI = authSettings?.gmailRedirectURI,
-          !Defaults.isLoopbackURL(serverURLString),
-          Defaults.isLoopbackURL(redirectURI)
+          let redirectURI = authSettings?.gmailRedirectURI
     else {
       return nil
     }
 
-    return "Gmail sign-in is still using a loopback callback while this client is connected through a public server URL. Restart the email server so it can use the hosted relay callback."
+    if authSettings?.gmailOAuthMode == "relay",
+       !Self.isHostedGmailRelayRedirect(redirectURI) {
+      return "Gmail sign-in is blocked because the email server is still returning its old Google callback. Restart or update the Carta server, then try again."
+    }
+
+    if !Defaults.isLoopbackURL(serverURLString),
+       Defaults.isLoopbackURL(redirectURI) {
+      return "Gmail sign-in is still using a loopback callback while this client is connected through a public server URL. Restart the email server so it can use the hosted relay callback."
+    }
+
+    return nil
+  }
+
+  var isGmailAuthBlockedByServerConfiguration: Bool {
+    gmailAuthConfigurationWarning != nil
+  }
+
+  private static func isHostedGmailRelayRedirect(_ value: String) -> Bool {
+    guard let components = URLComponents(string: value),
+          let host = components.host?.lowercased()
+    else {
+      return false
+    }
+    return !["127.0.0.1", "localhost", "::1"].contains(host)
+      && components.path == "/api/oauth/google/callback"
   }
 
   func bootstrap() async {
@@ -952,6 +974,10 @@ final class AppModel {
       }
       reportError(error)
     }
+  }
+
+  func refreshAuthSettings() async {
+    authSettings = try? await apiClient.authSettings()
   }
 
   func selectGlobalInbox() async {
@@ -1575,6 +1601,13 @@ final class AppModel {
     defer { isConnectingAccount = false }
 
     do {
+      authSettings = try await apiClient.authSettings()
+      if let warning = gmailAuthConfigurationWarning {
+        errorMessage = warning
+        statusMessage = nil
+        return nil
+      }
+
       let response = try await apiClient.startGmailAuth(GmailAuthStartRequest(
         displayName: displayName,
         syncHistory: syncHistory
