@@ -84,3 +84,48 @@ test("extracts email snippets from visible HTML body content", () => {
 
   assert.equal(plainSnippet(html), "Your order is ready. It ships tomorrow.");
 });
+
+test("provider sync refuses accounts that need auth before calling Gmail", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-provider-needs-auth-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person",
+      authType: "gmail_oauth",
+      status: "connected"
+    });
+    store.markAccountSyncFailed(
+      account.id,
+      "Gmail needs to be reconnected. Provider reported: Token has been expired or revoked.",
+      { needsAuth: true }
+    );
+
+    const providers = new ProviderService({
+      store,
+      secretStore: new MemorySecretStore(),
+      config: {},
+      baseURL: "http://127.0.0.1:7332"
+    });
+    let gmailSyncCalled = false;
+    providers.syncGmailAccount = async () => {
+      gmailSyncCalled = true;
+      return { imported: 0 };
+    };
+
+    await assert.rejects(
+      () => providers.syncAccount(account.id, { quick: true }),
+      error => {
+        assert.equal(error.status, 409);
+        assert.match(error.message, /Gmail needs to be reconnected/u);
+        return true;
+      }
+    );
+    assert.equal(gmailSyncCalled, false);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

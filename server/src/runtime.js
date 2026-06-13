@@ -1,7 +1,7 @@
 import { resolveConfig } from "./config.js";
 import { createServer } from "./http.js";
 import { InboxTriageService } from "./inboxTriage.js";
-import { ProviderService } from "./providerAdapters.js";
+import { ProviderService, providerAuthNeedsReconnect, providerSyncFailureMessage } from "./providerAdapters.js";
 import { PushNotificationService, summarizePushNotificationResult } from "./pushNotifications.js";
 import { applyStoredRelay } from "./relayConfig.js";
 import { createDefaultSecretStore } from "./secretStore.js";
@@ -149,7 +149,12 @@ export function createMailRuntime({
           await sendPushNotifications(sync.newEmails);
           prefetchInboxTriage();
         } catch (error) {
-          logger.warn(`${new Date().toISOString()} auto sync failed account=${current.id}: ${error.message}`);
+          const message = providerSyncFailureMessage(current, error);
+          mailStore.markAccountSyncFailed?.(current.id, message, {
+            needsAuth: providerAuthNeedsReconnect(current, error)
+          });
+          events.emit("accounts.changed", { accountId: current.id, syncFailed: true });
+          logger.warn(`${new Date().toISOString()} auto sync failed account=${current.id}: ${message}`);
         }
       }
     } finally {

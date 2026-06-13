@@ -106,6 +106,14 @@ struct MailImportStatus: Codable, Hashable {
     normalizedStatus == "failed"
   }
 
+  var isAuthFailure: Bool {
+    guard isFailed else { return false }
+    let normalizedError = error?.lowercased() ?? ""
+    return normalizedError.contains("needs to be reconnected") ||
+      normalizedError.contains("expired or revoked") ||
+      normalizedError.contains("invalid_grant")
+  }
+
   var isFullHistory: Bool {
     historyWindow == "all"
   }
@@ -170,6 +178,18 @@ struct MailImportStatus: Codable, Hashable {
 }
 
 extension MailAccount {
+  var normalizedStatus: String {
+    status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  var needsAuth: Bool {
+    normalizedStatus == "needs_auth" || importStatus?.isAuthFailure == true
+  }
+
+  var canReconnect: Bool {
+    provider == .gmail && needsAuth
+  }
+
   var importStatus: MailImportStatus? {
     providerMetadata?.cartaSyncStatus
   }

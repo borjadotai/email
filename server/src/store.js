@@ -956,6 +956,43 @@ export class MailStore {
     return this.getAccount(id);
   }
 
+  markAccountSyncFailed(id, message, { needsAuth = false } = {}) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+    const now = new Date().toISOString();
+    const syncStatus = {
+      ...(account.providerMetadata?.cartaSyncStatus ?? {}),
+      status: "failed",
+      error: requiredString(message, "message"),
+      updatedAt: now
+    };
+    return this.updateAccountStatus(
+      id,
+      needsAuth ? "needs_auth" : account.status,
+      { cartaSyncStatus: syncStatus }
+    );
+  }
+
+  clearAccountSyncFailure(id, patch = {}) {
+    const account = this.getAccount(id);
+    if (!account) return null;
+    const currentStatus = account.providerMetadata?.cartaSyncStatus ?? null;
+    if (currentStatus?.status !== "failed") {
+      return account.status === "needs_auth" ? this.updateAccountStatus(id, "connected") : account;
+    }
+
+    const now = new Date().toISOString();
+    const syncStatus = {
+      ...currentStatus,
+      status: "complete",
+      error: null,
+      completedAt: patch.completedAt ?? now,
+      updatedAt: now,
+      ...patch
+    };
+    return this.updateAccountStatus(id, "connected", { cartaSyncStatus: syncStatus });
+  }
+
   updateAccountSettings(id, input = {}) {
     const account = this.getAccount(id);
     if (!account) return null;

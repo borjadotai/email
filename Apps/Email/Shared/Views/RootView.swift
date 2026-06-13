@@ -96,7 +96,7 @@ struct RootView: View {
     .sheet(item: $sheet) { activeSheet in
       sheetView(activeSheet)
     }
-    .alert("Server unavailable", isPresented: errorBinding) {
+    .alert("Mail needs attention", isPresented: errorBinding) {
       Button("OK") {
         model.errorMessage = nil
       }

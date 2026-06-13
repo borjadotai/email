@@ -391,6 +391,7 @@ private struct StorageMetricTile: View {
 
 private struct AccountSyncStorageCard: View {
   @Environment(AppModel.self) private var model
+  @Environment(\.openURL) private var openURL
   var account: MailAccount
 
   var body: some View {
@@ -435,6 +436,15 @@ private struct AccountSyncStorageCard: View {
       }
 
       HStack(spacing: 10) {
+        if account.canReconnect {
+          Button {
+            reconnectGmail()
+          } label: {
+            Label("Reconnect", systemImage: "person.crop.circle.badge.exclamationmark")
+          }
+          .disabled(model.isConnectingAccount)
+        }
+
         Button {
           Task { await model.syncAccount(account, includeDiagnostics: true) }
         } label: {
@@ -469,6 +479,14 @@ private struct AccountSyncStorageCard: View {
       return "Continue Full Sync"
     }
     return "Sync Full History"
+  }
+
+  private func reconnectGmail() {
+    Task {
+      if let url = await model.startGmailAuth(displayName: account.displayName, syncHistory: account.syncHistory) {
+        openURL(url)
+      }
+    }
   }
 }
 
@@ -783,6 +801,7 @@ private struct AccountProfileSettingsPane: View {
 
 private struct AccountProfileEditorCard: View {
   @Environment(AppModel.self) private var model
+  @Environment(\.openURL) private var openURL
   var account: MailAccount
 
   @State private var displayName = ""
@@ -861,12 +880,21 @@ private struct AccountProfileEditorCard: View {
         }
         .disabled(!hasChanges || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
 
+        if account.canReconnect {
+          Button {
+            reconnectGmail()
+          } label: {
+            Label("Reconnect", systemImage: "person.crop.circle.badge.exclamationmark")
+          }
+          .disabled(model.isConnectingAccount)
+        }
+
         Button {
           Task { await model.syncAccount(account, includeDiagnostics: true) }
         } label: {
           Label("Sync Recent", systemImage: "arrow.clockwise")
         }
-        .disabled(model.syncingAccountID == account.id)
+        .disabled(account.status != "connected" || model.syncingAccountID == account.id)
 
         if isSaving || model.syncingAccountID == account.id {
           ProgressView()
@@ -919,6 +947,14 @@ private struct AccountProfileEditorCard: View {
 
   private var isSaving: Bool {
     model.updatingAccountID == account.id
+  }
+
+  private func reconnectGmail() {
+    Task {
+      if let url = await model.startGmailAuth(displayName: account.displayName, syncHistory: account.syncHistory) {
+        openURL(url)
+      }
+    }
   }
 
   private var hasChanges: Bool {
@@ -1437,6 +1473,7 @@ private struct AccountsSettingsPane: View {
 
 private struct AccountSettingsSection: View {
   @Environment(AppModel.self) private var model
+  @Environment(\.openURL) private var openURL
   var account: MailAccount
 
   @State private var displayName = ""
@@ -1500,12 +1537,21 @@ private struct AccountSettingsSection: View {
         }
         .disabled(!hasChanges || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
 
+        if account.canReconnect {
+          Button {
+            reconnectGmail()
+          } label: {
+            Label("Reconnect", systemImage: "person.crop.circle.badge.exclamationmark")
+          }
+          .disabled(model.isConnectingAccount)
+        }
+
         Button {
           Task { await model.syncAccount(account, includeDiagnostics: true) }
         } label: {
           Label("Sync Now", systemImage: "arrow.clockwise")
         }
-        .disabled(model.syncingAccountID == account.id)
+        .disabled(account.status != "connected" || model.syncingAccountID == account.id)
 
         if isSaving || model.syncingAccountID == account.id {
           ProgressView()
@@ -1614,6 +1660,14 @@ private struct AccountSettingsSection: View {
 
   private var isSaving: Bool {
     model.updatingAccountID == account.id
+  }
+
+  private func reconnectGmail() {
+    Task {
+      if let url = await model.startGmailAuth(displayName: account.displayName, syncHistory: account.syncHistory) {
+        openURL(url)
+      }
+    }
   }
 
   private var hasChanges: Bool {
@@ -1740,12 +1794,38 @@ private struct AccountStatusBadge: View {
   var status: String
 
   var body: some View {
-    Text(status)
+    Text(displayStatus)
       .font(.caption)
-      .foregroundStyle(status == "connected" ? .green : .secondary)
+      .foregroundStyle(statusColor)
       .padding(.horizontal, 8)
       .padding(.vertical, 4)
       .background(.quaternary, in: Capsule())
+  }
+
+  private var normalizedStatus: String {
+    status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private var displayStatus: String {
+    switch normalizedStatus {
+    case "connected":
+      "Connected"
+    case "needs_auth":
+      "Needs sign-in"
+    default:
+      status.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+  }
+
+  private var statusColor: Color {
+    switch normalizedStatus {
+    case "connected":
+      .green
+    case "needs_auth":
+      .red
+    default:
+      .secondary
+    }
   }
 }
 

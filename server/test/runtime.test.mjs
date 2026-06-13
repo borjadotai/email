@@ -71,6 +71,44 @@ test("runtime waits for in-flight background work before closing the store", asy
   }
 });
 
+test("auto sync marks revoked Gmail tokens as needing auth", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "carta-runtime-auth-failure-"));
+  try {
+    const runtime = createMailRuntime({
+      env: {
+        CARTA_CLI: "1",
+        EMAIL_DATA_DIR: temp,
+        EMAIL_DATABASE_PATH: join(temp, "mail.sqlite"),
+        EMAIL_SERVER_HOST: "127.0.0.1",
+        EMAIL_SERVER_PORT: "0",
+        EMAIL_AUTO_HISTORY_BACKFILL: "0",
+        EMAIL_AUTO_SYNC: "0"
+      },
+      logger: quietLogger()
+    });
+    const account = runtime.store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person",
+      authType: "gmail_oauth",
+      status: "connected"
+    });
+
+    runtime.providers.syncAccount = async () => {
+      throw Object.assign(new Error("Token has been expired or revoked."), { status: 502 });
+    };
+
+    await runtime.runAutoSyncPass();
+
+    const updated = runtime.store.getAccount(account.id);
+    assert.equal(updated.status, "needs_auth");
+    assert.equal(updated.providerMetadata.cartaSyncStatus.status, "failed");
+    assert.match(updated.providerMetadata.cartaSyncStatus.error, /Gmail needs to be reconnected/u);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 function quietLogger() {
   return {
     log() {},

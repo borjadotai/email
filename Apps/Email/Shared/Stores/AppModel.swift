@@ -790,13 +790,14 @@ final class AppModel {
   func refreshVisibleMail() async {
     guard !isRefreshingMail else { return }
     isRefreshingMail = true
-    let accountIds = visibleAccountIDsForRefresh()
+    let requestedAccountIds = visibleAccountIDsForRefresh()
+    let accountIds = syncableAccountIDs(from: requestedAccountIds)
     defer {
       isRefreshingMail = false
       syncingAccountID = nil
     }
 
-    if accountIds.isEmpty {
+    if requestedAccountIds.isEmpty {
       do {
         try await reloadVisibleMailAfterSync(refreshFilterCache: selectedFilterID != nil)
       } catch {
@@ -808,20 +809,22 @@ final class AppModel {
     syncingAccountID = accountIds.count == 1 ? accountIds.first : nil
     let syncErrors = await quickSyncAccounts(accountIds)
 
-    if syncErrors.first != nil {
-      errorMessage = nil
-      statusMessage = "Mail refresh is continuing"
-    } else {
-      errorMessage = nil
-      statusMessage = "Mail refreshed"
-    }
-
     do {
       try await reloadVisibleMailAfterSync(refreshFilterCache: selectedFilterID != nil)
     } catch {
       if syncErrors.isEmpty {
         reportError(error)
       }
+    }
+
+    let accountAttentionMessages = unsyncableAccountMessages(for: requestedAccountIds)
+    let syncIssues = syncErrors + accountAttentionMessages
+    if let summary = syncFailureSummary(syncIssues, totalCount: requestedAccountIds.count) {
+      statusMessage = summary.status
+      errorMessage = summary.shouldAlert ? summary.detail : nil
+    } else {
+      errorMessage = nil
+      statusMessage = "Mail refreshed"
     }
   }
 
@@ -834,20 +837,42 @@ final class AppModel {
       await refreshAll(reportErrors: false)
     }
 
-    let accountIDs = accounts.map(\.id)
-    guard !accountIDs.isEmpty else { return [] }
+    let requestedAccountIDs = accounts.map(\.id)
+    let accountIDs = syncableAccountIDs(from: requestedAccountIDs)
+    guard !accountIDs.isEmpty else {
+      await refreshAll(reportErrors: false)
+      if let summary = syncFailureSummary(
+        unsyncableAccountMessages(for: requestedAccountIDs),
+        totalCount: requestedAccountIDs.count
+      ) {
+        statusMessage = summary.status
+        if summary.shouldAlert {
+          errorMessage = summary.detail
+        }
+      }
+      return []
+    }
 
     var newEmailIDs: [String] = []
+    var syncErrors: [String] = []
     for accountID in accountIDs {
       do {
         let result = try await apiClient.syncAccount(id: accountID, limit: 10, quick: true)
         newEmailIDs.append(contentsOf: result.newEmailIds ?? [])
       } catch {
-        continue
+        guard !Self.isTimeoutError(error) else { continue }
+        syncErrors.append(error.localizedDescription)
       }
     }
 
     await refreshAll(reportErrors: false)
+    let syncIssues = syncErrors + unsyncableAccountMessages(for: requestedAccountIDs)
+    if let summary = syncFailureSummary(syncIssues, totalCount: requestedAccountIDs.count) {
+      statusMessage = summary.status
+      if summary.shouldAlert {
+        errorMessage = summary.detail
+      }
+    }
     return uniqueEmailIDs(newEmailIDs)
   }
 
@@ -862,9 +887,12 @@ final class AppModel {
   }
 
   private func quickSyncAccounts(_ accountIds: [String]) async -> [String] {
+    guard !accountIds.isEmpty else { return [] }
     let client = apiClient
+    let accountLabels = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, syncDisplayName($0)) })
     return await withTaskGroup(of: String?.self) { group in
       for accountId in accountIds {
+        let accountLabel = accountLabels[accountId] ?? "Account"
         group.addTask {
           do {
             _ = try await client.syncAccount(id: accountId, limit: 10, quick: true)
@@ -873,7 +901,7 @@ final class AppModel {
             if Self.isTimeoutError(error) {
               return nil
             }
-            return error.localizedDescription
+            return "\(accountLabel): \(error.localizedDescription)"
           }
         }
       }
@@ -886,6 +914,18 @@ final class AppModel {
       }
       return errors
     }
+  }
+
+  private func syncFailureSummary(_ errors: [String], totalCount: Int) -> (status: String, detail: String, shouldAlert: Bool)? {
+    let uniqueErrors = uniqueStrings(errors)
+    guard !uniqueErrors.isEmpty else { return nil }
+    let allFailed = errors.count >= totalCount && totalCount > 0
+    let status = allFailed ? "Mail sync needs attention" : "Some accounts need attention"
+    return (
+      status: status,
+      detail: uniqueErrors.joined(separator: "\n"),
+      shouldAlert: allFailed
+    )
   }
 
   func emailDetails(for ids: [String]) async -> [EmailDetail] {
@@ -2359,9 +2399,50 @@ final class AppModel {
     return accounts.map(\.id)
   }
 
+  private func syncableAccountIDs(from accountIds: [String]) -> [String] {
+    let syncableIDs = Set(accounts.filter(isSyncableAccount).map(\.id))
+    return uniqueStrings(accountIds).filter { syncableIDs.contains($0) }
+  }
+
+  private func isSyncableAccount(_ account: MailAccount) -> Bool {
+    account.normalizedStatus == "connected" && !account.needsAuth
+  }
+
+  private func unsyncableAccountMessages(for accountIds: [String]) -> [String] {
+    let requestedIDs = Set(accountIds)
+    return accounts.compactMap { account in
+      guard requestedIDs.contains(account.id), !isSyncableAccount(account) else { return nil }
+      if account.needsAuth {
+        if let error = account.importStatus?.error,
+           !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          return "\(syncDisplayName(account)): \(error)"
+        }
+        return "\(syncDisplayName(account)) needs to be reconnected."
+      }
+
+      let status = account.normalizedStatus.replacingOccurrences(of: "_", with: " ")
+      if !status.isEmpty, status != "connected" {
+        return "\(syncDisplayName(account)) is \(status)."
+      }
+      return nil
+    }
+  }
+
+  private func syncDisplayName(_ account: MailAccount) -> String {
+    if !account.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return account.email
+    }
+    return account.displayName
+  }
+
   private func uniqueEmailIDs(_ ids: [String]) -> [String] {
     var seen = Set<String>()
     return ids.filter { seen.insert($0).inserted }
+  }
+
+  private func uniqueStrings(_ values: [String]) -> [String] {
+    var seen = Set<String>()
+    return values.filter { seen.insert($0).inserted }
   }
 }
 

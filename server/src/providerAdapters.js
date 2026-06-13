@@ -343,6 +343,9 @@ export class ProviderService {
   async syncAccount(accountId, { limit = this.initialSyncLimit(), quick = false } = {}) {
     const account = this.store.getAccount(accountId);
     if (!account) throw httpError(404, "Account not found.");
+    const blockedMessage = providerAccountSyncBlockedMessage(account);
+    if (blockedMessage) throw httpError(409, blockedMessage);
+
     const syncLimit = clampSyncLimit(limit, this.initialSyncLimit());
 
     switch (account.provider) {
@@ -2351,6 +2354,75 @@ function decodeBase64URL(value) {
 export function plainSnippet(value) {
   const text = htmlToPlainText(value).replace(/\s+/gu, " ").trim();
   return text.slice(0, 180);
+}
+
+export function providerAuthNeedsReconnect(account, error) {
+  const provider = String(account?.provider ?? "").toLowerCase();
+  const message = providerErrorMessage(error).toLowerCase();
+  const code = String(error?.code ?? error?.status ?? "").toLowerCase();
+  if (provider === "gmail") {
+    return /\b(token|grant|credential|oauth)\b/u.test(message) &&
+      /\b(expired|revoked|invalid|missing|unauthorized)\b/u.test(message);
+  }
+  if (provider === "icloud" || provider === "imap") {
+    return code === "401" || code === "403" ||
+      /\b(authentication|credentials?|password|login)\b/u.test(message);
+  }
+  return false;
+}
+
+export function providerSyncFailureMessage(account, error) {
+  const message = providerErrorMessage(error);
+  if (/\bneeds to be reconnected\b/iu.test(message)) {
+    return message;
+  }
+  if (!providerAuthNeedsReconnect(account, error)) {
+    return message;
+  }
+  const providerName = providerDisplayName(account?.provider);
+  return `${providerName} needs to be reconnected. Provider reported: ${message}`;
+}
+
+export function providerAccountSyncBlockedMessage(account) {
+  const status = String(account?.status ?? "").trim().toLowerCase();
+  const syncStatus = account?.providerMetadata?.cartaSyncStatus ?? {};
+  const syncError = String(syncStatus.error ?? "").trim();
+
+  if (status === "needs_auth" || storedSyncNeedsAuth(syncStatus)) {
+    return syncError || `${providerDisplayName(account?.provider)} needs to be reconnected.`;
+  }
+
+  if (status && status !== "connected") {
+    return `Account is ${status.replaceAll("_", " ")}.`;
+  }
+
+  return null;
+}
+
+function providerErrorMessage(error) {
+  return String(error?.message || error || "Provider sync failed.");
+}
+
+function providerDisplayName(provider) {
+  switch (provider) {
+    case "gmail":
+      return "Gmail";
+    case "icloud":
+      return "iCloud Mail";
+    case "imap":
+      return "IMAP";
+    default:
+      return "Mail account";
+  }
+}
+
+function storedSyncNeedsAuth(syncStatus = {}) {
+  if (String(syncStatus.status ?? "").trim().toLowerCase() !== "failed") return false;
+  const error = String(syncStatus.error ?? "").toLowerCase();
+  return error.includes("needs to be reconnected") ||
+    error.includes("expired or revoked") ||
+    error.includes("invalid_grant") ||
+    error.includes("missing refresh token");
 }
 
 function htmlToPlainText(value) {

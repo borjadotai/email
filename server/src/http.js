@@ -1,6 +1,7 @@
 import { createServer as createHTTPServer } from "node:http";
 import { Buffer } from "node:buffer";
 import { createProviderMutationQueueProcessor, providerEmailSnapshot } from "./providerMutationQueue.js";
+import { providerAuthNeedsReconnect, providerSyncFailureMessage } from "./providerAdapters.js";
 import { summarizePushNotificationResult } from "./pushNotifications.js";
 import { httpError } from "./store.js";
 
@@ -19,7 +20,9 @@ export function createServer({ store, providers, pushNotifications, inboxTriage,
       await route({ req, res, store, providers, pushNotifications, inboxTriage, events, providerMutations, configuredBaseURL, fallbackBaseURL });
     } catch (error) {
       const status = error.status ?? 500;
-      console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
+      if (status >= 500) {
+        console.error(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}: ${error.message}`);
+      }
       sendJSON(res, status, {
         error: {
           message: status === 500 ? "Internal server error." : error.message,
@@ -183,13 +186,28 @@ async function route({ req, res, store, providers, pushNotifications, inboxTriag
   const accountSyncMatch = path.match(/^\/api\/accounts\/([^/]+)\/sync$/);
   if (accountSyncMatch && req.method === "POST") {
     requireProviders(providers);
+    const accountId = accountSyncMatch[1];
     const body = await readJSON(req);
-    const sync = await providers.syncAccount(accountSyncMatch[1], {
-      limit: body.limit,
-      quick: body.quick === true || url.searchParams.get("quick") === "1"
-    });
+    let sync;
+    try {
+      sync = await providers.syncAccount(accountId, {
+        limit: body.limit,
+        quick: body.quick === true || url.searchParams.get("quick") === "1"
+      });
+      store.clearAccountSyncFailure?.(accountId, {
+        imported: sync.imported ?? 0
+      });
+    } catch (error) {
+      const account = store.getAccount(accountId);
+      const message = providerSyncFailureMessage(account, error);
+      store.markAccountSyncFailed?.(accountId, message, {
+        needsAuth: account?.status === "needs_auth" || providerAuthNeedsReconnect(account, error)
+      });
+      events.emit("accounts.changed", { accountId, syncFailed: true });
+      throw httpError(error.status ?? 500, message);
+    }
     providerMutations?.wake?.();
-    events.emit("emails.changed", { accountId: accountSyncMatch[1] });
+    events.emit("emails.changed", { accountId });
     await sendPushNotifications(pushNotifications, sync.newEmails);
     prefetchInboxTriage(inboxTriage);
     sendJSON(res, 200, { sync: publicSyncResult(sync) });

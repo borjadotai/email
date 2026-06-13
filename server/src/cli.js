@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { createInterface } from "node:readline/promises";
 import { stdin as processStdin, stdout as processStdout } from "node:process";
 import { basename, dirname, extname, join, resolve } from "node:path";
+import { providerAccountSyncBlockedMessage, providerAuthNeedsReconnect, providerSyncFailureMessage } from "./providerAdapters.js";
 import {
   applyStoredServerAccess,
   effectiveServerBaseURL,
@@ -1037,8 +1038,9 @@ function syncStatusCommand(context, options) {
 async function syncOneAccount(context, account, policy, options = {}) {
   const current = context.store.getAccount(account.id);
   if (!current) throw cliError(404, `Account not found: ${account.id}`);
-  if (current.status !== "connected") {
-    throw cliError(400, `Account is not connected: ${current.email}`);
+  const blockedMessage = providerAccountSyncBlockedMessage(current);
+  if (blockedMessage) {
+    throw cliError(409, `${current.email}: ${blockedMessage}`);
   }
 
   setAccountSyncStatus(context.store, current.id, {
@@ -1086,12 +1088,16 @@ async function syncOneAccount(context, account, policy, options = {}) {
       status: syncComplete ? "complete" : "partial"
     };
   } catch (error) {
+    const message = providerSyncFailureMessage(current, error);
+    context.store.markAccountSyncFailed?.(current.id, message, {
+      needsAuth: providerAuthNeedsReconnect(current, error)
+    });
     setAccountSyncStatus(context.store, current.id, {
       status: "failed",
-      error: error.message,
+      error: message,
       updatedAt: new Date().toISOString()
     });
-    throw error;
+    throw Object.assign(new Error(message), { status: error.status });
   }
 }
 
