@@ -581,12 +581,7 @@ export class MailStore {
              a.created_at AS createdAt
       FROM accounts a
       ORDER BY a.sort_order ASC, a.created_at ASC
-    `).all().map(row => ({
-      ...row,
-      syncHistory: Boolean(row.syncHistory),
-      providerMetadata: parseJSON(row.providerMetadataJSON, {}),
-      ...(includeStats ? { stats: this.accountEmailStats(row.id, { requireAccount: false }) } : {})
-    }));
+    `).all().map(row => this.accountFromRow(row, { includeStats }));
   }
 
   reorderAccounts(ids) {
@@ -649,7 +644,16 @@ export class MailStore {
       WHERE a.id = ?
     `).get(id);
     if (!row) return null;
-    return { ...row, syncHistory: Boolean(row.syncHistory), providerMetadata: parseJSON(row.providerMetadataJSON, {}) };
+    return this.accountFromRow(row);
+  }
+
+  accountFromRow(row, { includeStats = false } = {}) {
+    return {
+      ...row,
+      syncHistory: Boolean(row.syncHistory),
+      providerMetadata: normalizeAccountProviderMetadata(row.provider, parseJSON(row.providerMetadataJSON, {})),
+      ...(includeStats ? { stats: this.accountEmailStats(row.id, { requireAccount: false }) } : {})
+    };
   }
 
   ensureLocalUser() {
@@ -4111,6 +4115,35 @@ function parseJSON(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function normalizeAccountProviderMetadata(provider, metadata = {}) {
+  const syncStatus = metadata?.cartaSyncStatus;
+  if (!syncStatus || syncStatus.status !== "running") return metadata;
+  if (!syncStatus.completedAt && !accountBackfillMetadataComplete(provider, metadata)) return metadata;
+
+  return {
+    ...metadata,
+    cartaSyncStatus: {
+      ...syncStatus,
+      status: "complete",
+      error: null,
+      completedAt: syncStatus.completedAt ?? syncStatus.updatedAt ?? null
+    }
+  };
+}
+
+function accountBackfillMetadataComplete(provider, metadata = {}) {
+  if (provider === "gmail") {
+    return metadata.gmailBackfillComplete === true && metadata.gmailSystemBackfillComplete === true;
+  }
+  if (provider === "icloud") {
+    return metadata.icloudBackfillComplete === true && metadata.icloudSystemBackfillComplete === true;
+  }
+  if (provider === "imap") {
+    return metadata.imapBackfillComplete === true && metadata.imapSystemBackfillComplete === true;
+  }
+  return false;
 }
 
 function normalizeFilterCriteria(value = {}) {

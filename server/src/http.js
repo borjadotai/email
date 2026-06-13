@@ -792,12 +792,14 @@ function syncAccountInBackground({ store, providers, events, providerMutations, 
       console.log(`${new Date().toISOString()} background sync completed account=${accountId} imported=${sync.imported}`);
       const account = store.getAccount(accountId);
       const previousStatus = account?.providerMetadata?.cartaSyncStatus ?? {};
+      const syncComplete = !account?.syncHistory || accountBackfillComplete(account);
       updateAccountSyncStatus(store, accountId, {
-        status: account?.syncHistory ? "running" : "complete",
+        status: syncComplete ? "complete" : "running",
         historyWindow: previousStatus.historyWindow ?? store.getSetting?.("carta.sync.window", "all") ?? "all",
         imported: Number(previousStatus.imported ?? 0) + Number(sync.imported ?? 0),
         oldestReceivedAt: store.oldestEmailReceivedAt(accountId),
         error: null,
+        completedAt: syncComplete ? new Date().toISOString() : null,
         updatedAt: new Date().toISOString()
       });
       events.emit("emails.changed", { accountId });

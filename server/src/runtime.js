@@ -67,7 +67,20 @@ export function createMailRuntime({
       for (const account of mailStore.listAccounts()) {
         if (closing) break;
         const current = mailStore.getAccount(account.id);
-        if (!current?.syncHistory || historyBackfillComplete(current)) continue;
+        if (!current?.syncHistory) continue;
+        if (historyBackfillComplete(current)) {
+          const currentStatus = current.providerMetadata?.cartaSyncStatus;
+          if (currentStatus?.status === "running") {
+            updateHistoryBackfillStatus(mailStore, current.id, {
+              status: "complete",
+              error: null,
+              completedAt: currentStatus.completedAt ?? new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+            events.emit("accounts.changed", { accountId: current.id, backfilled: true });
+          }
+          continue;
+        }
         try {
           logger.log(`${new Date().toISOString()} history backfill started account=${current.id}`);
           updateHistoryBackfillStatus(mailStore, current.id, {

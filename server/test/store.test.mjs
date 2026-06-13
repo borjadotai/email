@@ -71,6 +71,36 @@ test("migrates the account provider constraint to allow generic IMAP", () => {
   }
 });
 
+test("normalizes stale running import status when provider backfill is complete", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-store-import-status-"));
+  const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
+
+  try {
+    const account = store.createAccount({
+      provider: "gmail",
+      email: "person@example.com",
+      displayName: "Person"
+    });
+    store.updateAccountMetadata(account.id, {
+      gmailBackfillComplete: true,
+      gmailSystemBackfillComplete: true,
+      cartaSyncStatus: {
+        status: "running",
+        imported: 528,
+        oldestReceivedAt: "2013-02-05T16:17:07.000Z",
+        completedAt: "2026-06-13T11:22:06.592Z"
+      }
+    });
+
+    const normalized = store.getAccount(account.id);
+    assert.equal(normalized.providerMetadata.cartaSyncStatus.status, "complete");
+    assert.equal(normalized.providerMetadata.cartaSyncStatus.error, null);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("seeds demo accounts and searches with FTS", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-store-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite"), seedDemo: true });
