@@ -46,7 +46,7 @@ export class ProviderService {
       gmailOAuthSecretSource: this.config.googleOAuthClientSecretSource ?? (gmailClientSecretConfigured ? "configured" : "missing"),
       gmailRelaySource: this.config.relay?.source ?? "missing",
       gmailRelayTokenSource: this.config.relay?.tokenSource ?? "missing",
-      gmailRedirectURI: this.gmailRedirectURI(baseURL),
+      gmailRedirectURI: this.gmailAuthRedirectURI(baseURL),
       icloudConfigured: true,
       icloudAuthType: "app_specific_password",
       imapConfigured: true,
@@ -102,7 +102,7 @@ export class ProviderService {
 
     const state = randomUUID();
     const deliveryToken = randomUUID();
-    const callbackURL = this.gmailRedirectURI(baseURL ?? this.baseURL);
+    const callbackURL = this.gmailRelayCallbackURI(baseURL ?? this.baseURL);
     this.pendingGmailStates.set(state, {
       displayName: input.displayName?.trim() ?? "",
       syncHistory: input.syncHistory !== false,
@@ -119,7 +119,6 @@ export class ProviderService {
         state,
         deliveryToken,
         callbackURL,
-        deliveryMode: "local-code",
         scopes: GMAIL_SCOPES
       }
     });
@@ -129,7 +128,7 @@ export class ProviderService {
       relay: true,
       authorizationURL: requiredString(response.authorizationURL, "authorizationURL"),
       state,
-      redirectURI: requiredString(response.redirectURI ?? callbackURL, "redirectURI"),
+      redirectURI: requiredString(response.redirectURI ?? this.gmailRelayRedirectURI(), "redirectURI"),
       relaySessionId: response.sessionId ?? null
     };
   }
@@ -1783,6 +1782,18 @@ export class ProviderService {
 
   gmailRedirectURI(baseURL = this.baseURL) {
     return `${String(baseURL).replace(/\/+$/u, "")}/api/auth/gmail/callback`;
+  }
+
+  gmailRelayCallbackURI(baseURL = this.baseURL) {
+    return `${String(baseURL).replace(/\/+$/u, "")}/api/auth/gmail/relay/callback`;
+  }
+
+  gmailRelayRedirectURI() {
+    return `${String(this.config.relay?.baseURL ?? "").replace(/\/+$/u, "")}/api/oauth/google/callback`;
+  }
+
+  gmailAuthRedirectURI(baseURL = this.baseURL) {
+    return this.config.relay?.baseURL ? this.gmailRelayRedirectURI() : this.gmailRedirectURI(baseURL);
   }
 
   getGoogleClientId() {

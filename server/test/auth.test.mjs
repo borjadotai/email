@@ -135,13 +135,14 @@ test("Gmail can be advertised through a configured relay without local Google se
     assert.equal(settings.gmailOAuthMode, "relay");
     assert.equal(settings.gmailRelayConfigured, true);
     assert.equal(settings.gmailRelayTokenConfigured, true);
+    assert.equal(settings.gmailRedirectURI, "https://relay.example.test/api/oauth/google/callback");
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("Gmail relay auth starts with the local callback and relay exchange by default", async () => {
+test("Gmail relay auth uses the hosted relay callback by default", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-relay-start-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
   const originalFetch = globalThis.fetch;
@@ -149,11 +150,12 @@ test("Gmail relay auth starts with the local callback and relay exchange by defa
   try {
     globalThis.fetch = async (url, init = {}) => {
       calls.push({ url: String(url), init });
+      const redirectURI = "https://relay.example.test/api/oauth/google/callback";
       return Response.json({
-        authorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=local-state",
-        redirectURI: "http://127.0.0.1:7332/api/auth/gmail/callback",
+        authorizationURL: `https://accounts.google.com/o/oauth2/v2/auth?state=sealed-relay-state&redirect_uri=${encodeURIComponent(redirectURI)}`,
+        redirectURI,
         relay: true,
-        deliveryMode: "local-code"
+        deliveryMode: "relay-callback"
       });
     };
     const providers = new ProviderService({
@@ -174,13 +176,13 @@ test("Gmail relay auth starts with the local callback and relay exchange by defa
 
     const auth = await providers.startGmailAuth({ displayName: "Relay User" }, { baseURL: "http://127.0.0.1:7332" });
     assert.equal(auth.relay, true);
-    assert.equal(auth.redirectURI, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(auth.redirectURI, "https://relay.example.test/api/oauth/google/callback");
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://relay.example.test/api/oauth/google/start");
     assert.equal(calls[0].init.headers.authorization, "Bearer relay-token");
     const body = JSON.parse(calls[0].init.body);
-    assert.equal(body.deliveryMode, "local-code");
-    assert.equal(body.callbackURL, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(body.deliveryMode, undefined);
+    assert.equal(body.callbackURL, "http://127.0.0.1:7332/api/auth/gmail/relay/callback");
     assert.equal(body.state, auth.state);
   } finally {
     globalThis.fetch = originalFetch;
@@ -189,7 +191,7 @@ test("Gmail relay auth starts with the local callback and relay exchange by defa
   }
 });
 
-test("Gmail relay code callback uses the shared local Gmail callback path", async () => {
+test("Gmail relay callback completes with delivered tokens", async () => {
   const dir = mkdtempSync(join(tmpdir(), "email-auth-relay-code-"));
   const store = new MailStore({ databasePath: join(dir, "mail.sqlite") });
   const originalFetch = globalThis.fetch;
@@ -199,18 +201,12 @@ test("Gmail relay code callback uses the shared local Gmail callback path", asyn
       calls.push({ url: String(url), init });
       const body = JSON.parse(init.body);
       if (String(url).endsWith("/api/oauth/google/start")) {
+        const redirectURI = "https://relay.example.test/api/oauth/google/callback";
         return Response.json({
-          authorizationURL: `https://accounts.google.com/o/oauth2/v2/auth?state=${body.state}&redirect_uri=${encodeURIComponent(body.callbackURL)}`,
-          redirectURI: body.callbackURL,
+          authorizationURL: `https://accounts.google.com/o/oauth2/v2/auth?state=${body.state}&redirect_uri=${encodeURIComponent(redirectURI)}`,
+          redirectURI,
           relay: true,
-          deliveryMode: "local-code"
-        });
-      }
-      if (String(url).endsWith("/api/oauth/google/exchange")) {
-        return Response.json({
-          access_token: "relay-access-token",
-          refresh_token: "relay-refresh-token",
-          scope: "https://www.googleapis.com/auth/gmail.modify"
+          deliveryMode: "relay-callback"
         });
       }
       throw new Error(`Unexpected fetch URL: ${url}`);
@@ -245,19 +241,22 @@ test("Gmail relay code callback uses the shared local Gmail callback path", asyn
     });
 
     const auth = await providers.startGmailAuth({}, { baseURL: "http://127.0.0.1:7332" });
-    const result = await providers.completeGmailAuth({
+    const startBody = JSON.parse(calls[0].init.body);
+    const result = await providers.completeGmailRelayAuth({
       state: auth.state,
-      code: "relay-auth-code"
+      deliveryToken: startBody.deliveryToken,
+      tokens: JSON.stringify({
+        access_token: "relay-access-token",
+        refresh_token: "relay-refresh-token",
+        scope: "https://www.googleapis.com/auth/gmail.modify"
+      })
     });
 
-    assert.equal(auth.redirectURI, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(auth.redirectURI, "https://relay.example.test/api/oauth/google/callback");
+    assert.equal(startBody.callbackURL, "http://127.0.0.1:7332/api/auth/gmail/relay/callback");
     assert.equal(result.account.email, "relay@example.test");
     assert.equal(result.tokens.refresh_token, "relay-refresh-token");
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].url, "https://relay.example.test/api/oauth/google/exchange");
-    const exchangeBody = JSON.parse(calls[1].init.body);
-    assert.equal(exchangeBody.code, "relay-auth-code");
-    assert.equal(exchangeBody.redirectURI, "http://127.0.0.1:7332/api/auth/gmail/callback");
+    assert.equal(calls.length, 1);
   } finally {
     globalThis.fetch = originalFetch;
     store.close();

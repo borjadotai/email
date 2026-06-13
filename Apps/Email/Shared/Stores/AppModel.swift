@@ -341,7 +341,7 @@ final class AppModel {
       return nil
     }
 
-    return "Google is still configured to redirect to this Mac. Set EMAIL_PUBLIC_BASE_URL on the email server to its Tailscale HTTPS URL and register that callback in Google Cloud."
+    return "Gmail sign-in is still using a loopback callback while this client is connected through a public server URL. Restart the email server so it can use the hosted relay callback."
   }
 
   func bootstrap() async {
