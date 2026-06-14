@@ -22,6 +22,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+      EMAIL_MAC_PROVISIONING_PROFILE_BASE64: ${{ secrets.EMAIL_MAC_PROVISIONING_PROFILE_BASE64 }}
       EMAIL_RELEASE_SERVER_URL: ${{ vars.EMAIL_RELEASE_SERVER_URL }}
       MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
       MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -107,6 +108,26 @@ jobs:
 
           echo "SIGNING_ENABLED=1" >> "$GITHUB_ENV"
           security find-identity -p codesigning -v
+
+      - name: Import macOS APNs provisioning profile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${SIGNING_ENABLED:-0}" != "1" ]]; then
+            echo "Signing is disabled; skipping macOS APNs provisioning profile import."
+            exit 0
+          fi
+
+          if [[ -z "$EMAIL_MAC_PROVISIONING_PROFILE_BASE64" ]]; then
+            echo "::warning::EMAIL_MAC_PROVISIONING_PROFILE_BASE64 is not configured; macOS APNs will not work in these artifacts."
+            exit 0
+          fi
+
+          profile_path="$RUNNER_TEMP/EmailMac.provisionprofile"
+          echo "$EMAIL_MAC_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile_path"
+          echo "EMAIL_MAC_PROVISIONING_PROFILE=$profile_path" >> "$GITHUB_ENV"
+          echo "Imported macOS APNs provisioning profile."
 
       - name: Package macOS app
         shell: bash

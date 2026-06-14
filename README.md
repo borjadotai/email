@@ -437,6 +437,7 @@ Unsigned artifacts are useful for private testing, but public downloads should b
 MACOS_DEVELOPER_ID_CERTIFICATE_BASE64
 MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD
 DEVELOPER_ID_APPLICATION
+EMAIL_MAC_PROVISIONING_PROFILE_BASE64
 APPLE_ID
 APPLE_TEAM_ID
 APPLE_APP_SPECIFIC_PASSWORD
@@ -448,6 +449,8 @@ SPARKLE_PRIVATE_KEY
 ```text
 Developer ID Application: Your Name (TEAMID)
 ```
+
+`EMAIL_MAC_PROVISIONING_PROFILE_BASE64` is a base64-encoded Developer ID provisioning profile for `com.borjadotai.email.mac` with Push Notifications enabled. Without it, release artifacts can still be signed and notarized, but macOS APNs pushes will not work.
 
 Optionally set the GitHub repository variable `EMAIL_RELEASE_SERVER_URL` to the backend endpoint that release builds should use by default. Do not store provider secrets in release build variables or bundle them into the app. This URL is embedded in public app artifacts, so treat it as public configuration.
 
